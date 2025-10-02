@@ -112,7 +112,7 @@ dotnet QuantConnect.Lean.Launcher.dll
 
 **运行命令**:
 ```bash
-cd ..\Lean\Launcher
+cd ..\Launcher
 ./run.bat
 ```
 

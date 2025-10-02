@@ -110,6 +110,52 @@ def map_xstocks_to_symbol_database(xstocks_data: Dict[str, Any]) -> List[str]:
     return csv_rows
 
 
+def get_kraken_trade_pair(kraken_symbol: str) -> str:
+    """
+    Map Kraken xStock symbol to underlying stock ticker
+
+    Args:
+        kraken_symbol: Kraken symbol (e.g., "AAPLxUSD", "TSLAxUSD", "AAPLx/USD")
+
+    Returns:
+        Stock ticker symbol (e.g., "AAPL", "TSLA")
+
+    Examples:
+        >>> get_kraken_trade_pair("AAPLxUSD")
+        "AAPL"
+        >>> get_kraken_trade_pair("TSLAxUSD")
+        "TSLA"
+        >>> get_kraken_trade_pair("AAPLx/USD")
+        "AAPL"
+
+    Raises:
+        ValueError: If symbol format is invalid
+    """
+    if not kraken_symbol:
+        raise ValueError("Kraken symbol cannot be empty")
+
+    # Remove any slashes (e.g., "AAPLx/USD" -> "AAPLxUSD")
+    symbol = kraken_symbol.replace('/', '')
+
+    # Find 'x' followed by currency (USD, EUR, etc.)
+    # Pattern: <TICKER>x<CURRENCY>
+    if 'x' not in symbol:
+        raise ValueError(f"Invalid Kraken xStock symbol format: {kraken_symbol}")
+
+    # Split on 'x' and take the first part
+    parts = symbol.split('x')
+    if len(parts) < 2 or not parts[0]:
+        raise ValueError(f"Invalid Kraken xStock symbol format: {kraken_symbol}")
+
+    stock_ticker = parts[0]
+
+    # Validate that we have a reasonable ticker (alphanumeric, 1-5 chars typically)
+    if not stock_ticker.isalpha() or len(stock_ticker) > 10:
+        raise ValueError(f"Extracted ticker '{stock_ticker}' seems invalid from {kraken_symbol}")
+
+    return stock_ticker.upper()
+
+
 def add_xstocks_to_database(csv_rows: List[str], base_path: str = None) -> Dict[str, int]:
     """
     Add xStocks entries to symbol-properties-database.csv files, avoiding duplicates

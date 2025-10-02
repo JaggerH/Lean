@@ -3,11 +3,13 @@
 Brokerage Build Automation Script
 
 This script automates the process of cloning, building, and deploying LEAN brokerage plugins.
+Automatically handles dependencies (e.g., IBAutomater for InteractiveBrokers).
 
 Usage:
-    python build_brokerage.py                    # Build all brokerages (skip if already built)
-    python build_brokerage.py --rebuild Kraken   # Rebuild specific brokerage
-    python build_brokerage.py --rebuild all      # Rebuild all brokerages
+    python build_brokerage.py                              # Build all brokerages (skip if already built)
+    python build_brokerage.py --rebuild Kraken             # Rebuild specific brokerage
+    python build_brokerage.py --rebuild InteractiveBrokers # Rebuild IB (includes IBAutomater)
+    python build_brokerage.py --rebuild all                # Rebuild all brokerages
 """
 
 import os
@@ -15,6 +17,8 @@ import sys
 import subprocess
 import shutil
 import argparse
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -54,7 +58,8 @@ BROKERAGES = [
                 "src": "QuantConnect.InteractiveBrokersBrokerage/bin/Debug/CSharpAPI.dll",
                 "dst": "Launcher/bin/Debug/CSharpAPI.dll"
             }
-        ]
+        ],
+        "dependencies": ["IBAutomater"]
     }
 ]
 
@@ -267,6 +272,93 @@ def copy_dlls(brokerage_dir: str, dll_configs: List[Dict[str, str]], force: bool
     return all_success
 
 
+def download_ibautomater(force: bool = False) -> bool:
+    """
+    Download IBAutomater DLLs from NuGet package.
+
+    Args:
+        force: Force download even if already exists
+
+    Returns:
+        bool: True if download successful, False on error
+    """
+    target_dir = Path("Launcher/bin/Debug")
+    dll_path = target_dir / "QuantConnect.IBAutomater.dll"
+    jar_path = target_dir / "IBAutomater.jar"
+    sh_path = target_dir / "IBAutomater.sh"
+
+    # Check if already downloaded (unless force)
+    if not force and dll_path.exists() and jar_path.exists() and sh_path.exists():
+        log_skip("IBAutomater already downloaded")
+        return True
+
+    log_info("Downloading IBAutomater from NuGet...")
+
+    temp_dir = Path("temp_ibautomater")
+    zip_file = temp_dir / "IBAutomater.zip"
+
+    try:
+        # Create temp directory
+        temp_dir.mkdir(exist_ok=True)
+
+        # Download NuGet package
+        nuget_url = "https://www.nuget.org/api/v2/package/QuantConnect.IBAutomater"
+        log_info(f"Downloading from: {nuget_url}")
+
+        urllib.request.urlretrieve(nuget_url, str(zip_file))
+        log_success("Downloaded NuGet package")
+
+        # Extract package
+        log_info("Extracting package...")
+        with zipfile.ZipFile(str(zip_file), 'r') as zip_ref:
+            zip_ref.extractall(str(temp_dir))
+        log_success("Extracted package")
+
+        # Ensure target directory exists
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy DLL (try netstandard2.1 first, then netstandard2.0)
+        dll_src = temp_dir / "lib" / "netstandard2.1" / "QuantConnect.IBAutomater.dll"
+        if not dll_src.exists():
+            dll_src = temp_dir / "lib" / "netstandard2.0" / "QuantConnect.IBAutomater.dll"
+
+        if not dll_src.exists():
+            log_error("Could not find QuantConnect.IBAutomater.dll in package")
+            return False
+
+        shutil.copy2(str(dll_src), str(dll_path))
+        log_success(f"Copied {dll_path.name}")
+
+        # Copy JAR file
+        jar_src = temp_dir / "contentFiles" / "any" / "any" / "IBAutomater.jar"
+        if jar_src.exists():
+            shutil.copy2(str(jar_src), str(jar_path))
+            log_success(f"Copied {jar_path.name}")
+        else:
+            log_skip("IBAutomater.jar not found in package")
+
+        # Copy shell script
+        sh_src = temp_dir / "contentFiles" / "any" / "any" / "IBAutomater.sh"
+        if sh_src.exists():
+            shutil.copy2(str(sh_src), str(sh_path))
+            log_success(f"Copied {sh_path.name}")
+        else:
+            log_skip("IBAutomater.sh not found in package")
+
+        # Cleanup temp directory
+        shutil.rmtree(str(temp_dir))
+        log_success("IBAutomater downloaded and installed successfully")
+
+        return True
+
+    except Exception as e:
+        log_error(f"Failed to download IBAutomater: {e}")
+        # Cleanup on error
+        if temp_dir.exists():
+            shutil.rmtree(str(temp_dir))
+        return False
+
+
 def build_all_brokerages(rebuild_target: Optional[str] = None):
     """
     Main build process for all brokerages.
@@ -296,6 +388,20 @@ def build_all_brokerages(rebuild_target: Optional[str] = None):
                 log_info(f"Available brokerages: {', '.join([b['name'] for b in BROKERAGES])}")
                 sys.exit(1)
             log_info(f"Rebuilding brokerage: {rebuild_target} (forced)")
+
+            # Include dependencies
+            all_to_rebuild = []
+            for brokerage in brokerages_to_rebuild:
+                # Add dependencies first
+                if "dependencies" in brokerage:
+                    for dep_name in brokerage["dependencies"]:
+                        dep = next((b for b in BROKERAGES if b["name"] == dep_name), None)
+                        if dep and dep not in all_to_rebuild:
+                            all_to_rebuild.append(dep)
+                # Add the brokerage itself
+                if brokerage not in all_to_rebuild:
+                    all_to_rebuild.append(brokerage)
+            brokerages_to_rebuild = all_to_rebuild
     else:
         brokerages_to_rebuild = None
         # Step 2: Build LEAN (only if not rebuilding specific brokerage)
@@ -305,13 +411,49 @@ def build_all_brokerages(rebuild_target: Optional[str] = None):
             sys.exit(1)
         print()
 
+    # Track built brokerages
+    built_brokerages = set()
+
     # Step 3-5: Process each brokerage
-    for i, brokerage in enumerate(BROKERAGES):
+    brokerages_to_process = brokerages_to_rebuild if brokerages_to_rebuild else BROKERAGES
+
+    for i, brokerage in enumerate(brokerages_to_process):
         print(f"{'='*60}")
-        print(f"  Brokerage {i+1}/{len(BROKERAGES)}: {brokerage['name']}")
+        print(f"  Brokerage {i+1}/{len(brokerages_to_process)}: {brokerage['name']}")
         print(f"{'='*60}\n")
 
         force_rebuild = brokerages_to_rebuild and brokerage in brokerages_to_rebuild
+
+        # Check and handle dependencies first
+        if "dependencies" in brokerage:
+            log_info(f"Checking dependencies: {', '.join(brokerage['dependencies'])}")
+            for dep_name in brokerage["dependencies"]:
+                if dep_name not in built_brokerages:
+                    # Special handling for IBAutomater - download from NuGet instead of building
+                    if dep_name == "IBAutomater":
+                        log_info("Installing IBAutomater from NuGet...")
+                        if not download_ibautomater(force=force_rebuild):
+                            log_error("Failed to download IBAutomater")
+                            continue
+                        built_brokerages.add(dep_name)
+                        log_success("IBAutomater installed successfully")
+                    else:
+                        # Standard dependency - clone and build
+                        dep = next((b for b in BROKERAGES if b["name"] == dep_name), None)
+                        if dep:
+                            log_info(f"Building dependency: {dep_name}")
+                            if not clone_repo(dep["repo_url"], dep["target_dir"]):
+                                log_error(f"Failed to clone dependency {dep_name}")
+                                continue
+                            if not build_brokerage(dep["target_dir"], dep["solution_file"], force=force_rebuild):
+                                log_error(f"Failed to build dependency {dep_name}")
+                                continue
+                            if not copy_dlls(dep["target_dir"], dep["dlls"], force=force_rebuild):
+                                log_error(f"Failed to copy DLLs for dependency {dep_name}")
+                                continue
+                            built_brokerages.add(dep_name)
+                            log_success(f"Dependency {dep_name} built successfully")
+            print()
 
         # Step 2: Clone repository (skip if rebuilding)
         if not force_rebuild:
@@ -335,6 +477,8 @@ def build_all_brokerages(rebuild_target: Optional[str] = None):
             continue
         print()
 
+        built_brokerages.add(brokerage["name"])
+
     print("="*60)
     if rebuild_target:
         log_success("Rebuild complete!")
@@ -350,9 +494,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python build_brokerage.py                    # Build all brokerages (skip if built)
-  python build_brokerage.py --rebuild Kraken   # Rebuild Kraken brokerage only
-  python build_brokerage.py --rebuild all      # Rebuild all brokerages
+  python build_brokerage.py                              # Build all (skip if built)
+  python build_brokerage.py --rebuild Kraken             # Rebuild Kraken only
+  python build_brokerage.py --rebuild InteractiveBrokers # Rebuild IB (includes IBAutomater)
+  python build_brokerage.py --rebuild all                # Rebuild all
+
+Available Brokerages:
+  - Kraken
+  - InteractiveBrokers (automatically downloads IBAutomater from NuGet)
         """
     )
 
