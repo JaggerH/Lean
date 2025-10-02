@@ -154,7 +154,7 @@ class Arbitrage(QCAlgorithm):
                 self.debug(f"Time: {self.Time}")
                 self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
                 self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
-                self.debug(f"Spread: {spread_pct:.4f}% ({direction})")
+                self.debug(f"Spread: {spread_pct*100:.4f}% ({direction})")
                 self.debug("=" * 60)
 
             # Store monitoring data
@@ -178,7 +178,7 @@ class Arbitrage(QCAlgorithm):
                 self.debug(f"Time: {self.Time}")
                 self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
                 self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
-                self.debug(f"Spread: {spread_pct:.4f}% ({direction})")
+                self.debug(f"Spread: {spread_pct*100:.4f}% ({direction})")
 
                 # Phase 2: Trading logic would go here
                 # if spread_pct > threshold:
