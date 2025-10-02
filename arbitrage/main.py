@@ -64,7 +64,8 @@ class Arbitrage(QCAlgorithm):
                             equity_security = self.add_equity(
                                 equity_symbol.value,
                                 Resolution.Tick,
-                                Market.USA
+                                Market.USA,
+                                extended_market_hours=True
                             )
 
                         # Register the pair in SpreadManager
