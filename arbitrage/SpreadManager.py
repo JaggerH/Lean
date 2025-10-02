@@ -122,27 +122,49 @@ class SpreadManager:
         return self.stock_to_cryptos.get(stock_symbol, [])
 
     @staticmethod
-    def calculate_spread_pct(token_price: float, stock_price: float) -> float:
+    def calculate_spread_pct(token_bid: float, token_ask: float,
+                            stock_bid: float, stock_ask: float) -> float:
         """
-        Calculate spread percentage between token and stock
+        Calculate bidirectional spread percentage for arbitrage opportunities
 
-        Formula: (token_price - stock_price) / token_price * 100
+        Compares two arbitrage scenarios and returns the one with largest absolute value:
+        1. Short token, Long stock: (token_bid - stock_ask) / token_bid
+        2. Long token, Short stock: (token_ask - stock_bid) / token_ask
+
+        By using (token - stock) consistently, the sign indicates direction:
+        - Positive spread: token overpriced → short token, long stock
+        - Negative spread: token underpriced → long token, short stock
 
         Args:
-            token_price: Crypto token price
-            stock_price: Underlying stock price
+            token_bid: Crypto token best bid price
+            token_ask: Crypto token best ask price
+            stock_bid: Underlying stock best bid price
+            stock_ask: Underlying stock best ask price
 
         Returns:
-            Spread percentage (positive means token is more expensive)
+            Spread percentage with largest absolute value (preserves sign)
 
         Example:
-            >>> spread = SpreadManager.calculate_spread_pct(100.5, 100.0)
-            >>> print(f"{spread:.2f}%")  # 0.50%
+            >>> # AAPLx bid=150.5, ask=150.6, AAPL bid=150.0, ask=150.1
+            >>> spread = SpreadManager.calculate_spread_pct(150.5, 150.6, 150.0, 150.1)
+            >>> # Scenario 1: (150.5 - 150.1) / 150.5 = 0.266%
+            >>> # Scenario 2: (150.6 - 150.0) / 150.6 = 0.398%
+            >>> # Returns: 0.398 (larger abs value, positive = short token)
         """
-        if token_price == 0:
+        if token_bid == 0 or token_ask == 0:
             return 0.0
 
-        return ((token_price - stock_price) / token_price) * 100
+        # Scenario 1: Short token (sell at bid), Long stock (buy at ask)
+        spread_short_token = ((token_bid - stock_ask) / token_bid)
+
+        # Scenario 2: Long token (buy at ask), Short stock (sell at bid)
+        spread_long_token = ((token_ask - stock_bid) / token_ask)
+
+        # Return the spread with largest absolute value (best opportunity)
+        if abs(spread_short_token) >= abs(spread_long_token):
+            return spread_short_token
+        else:
+            return spread_long_token
 
     # ============================================================================
     # Phase 2: Position Management (To Be Implemented)
