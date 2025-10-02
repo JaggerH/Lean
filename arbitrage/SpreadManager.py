@@ -9,7 +9,6 @@ from typing import Dict, Set, List, Tuple, Optional
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
-from utils import get_kraken_trade_pair
 
 
 class SpreadManager:
@@ -56,74 +55,9 @@ class SpreadManager:
         # Format: {(crypto_symbol, stock_symbol): {'token_qty': -300, 'stock_qty': 300}}
         self.pair_positions: Dict[Tuple[Symbol, Symbol], Dict[str, float]] = {}
 
-    def get_stock_symbol_by_crypto(self, crypto: Security) -> str:
-        """
-        Get the underlying stock ticker from a crypto security
-
-        Args:
-            crypto: Crypto Security object (e.g., TSLAxUSD on Kraken)
-
-        Returns:
-            Stock ticker string (e.g., "TSLA")
-
-        Raises:
-            ValueError: If crypto market is not supported or mapping fails
-
-        Example:
-            >>> crypto = algorithm.AddCrypto("TSLAxUSD", Resolution.Tick, Market.Kraken)
-            >>> ticker = manager.get_stock_symbol_by_crypto(crypto)
-            >>> print(ticker)  # "TSLA"
-        """
-        market = crypto.Symbol.ID.Market
-        crypto_symbol_str = crypto.Symbol.Value
-
-        stock_ticker = None
-
-        # Route to appropriate mapping function based on market
-        if market == Market.Kraken:
-            stock_ticker = get_kraken_trade_pair(crypto_symbol_str)
-        # Future expansion:
-        # elif market == Market.SOME_OTHER_EXCHANGE:
-        #     stock_ticker = get_other_exchange_trade_pair(crypto_symbol_str)
-        else:
-            raise ValueError(f"Unsupported market for crypto-stock mapping: {market}")
-
-        if stock_ticker is None:
-            raise ValueError(f"No stock symbol found for crypto {crypto_symbol_str} on {market}")
-
-        return stock_ticker
-
-    def subscribe_stock_by_crypto(self, crypto: Security) -> Security:
-        """
-        Subscribe to the underlying stock for a crypto token (with automatic deduplication)
-
-        Args:
-            crypto: Crypto Security object
-
-        Returns:
-            Stock Security object (either newly subscribed or existing)
-
-        Example:
-            >>> crypto = algorithm.AddCrypto("TSLAxUSD", Resolution.Tick, Market.Kraken)
-            >>> stock = manager.subscribe_stock_by_crypto(crypto)
-            >>> print(stock.Symbol)  # TSLA
-        """
-        # Get stock ticker from crypto
-        stock_ticker = self.get_stock_symbol_by_crypto(crypto)
-
-        # Check if stock is already subscribed
-        for stock in self.stocks:
-            if stock.Symbol.Value == stock_ticker:
-                self.algorithm.Debug(f"Stock {stock_ticker} already subscribed, reusing existing subscription")
-                return stock
-
-        # Stock not subscribed yet, subscribe now
-        self.algorithm.Debug(f"Subscribing to stock {stock_ticker} for crypto {crypto.Symbol}")
-        stock = self.algorithm.AddEquity(stock_ticker, Resolution.Tick, Market.USA)
-        self.stocks.add(stock)
-
-        return stock
-
+    def is_equity_subscribed(self, stock: Security):
+        return stock in self.stocks
+    
     def add_pair(self, crypto: Security, stock: Security):
         """
         Register a crypto-stock trading pair

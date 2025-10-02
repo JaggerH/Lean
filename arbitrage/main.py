@@ -3,8 +3,7 @@ from AlgorithmImports import *
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
-from utils import get_xstocks_from_kraken
-from QuantConnect.Brokerages.Kraken import KrakenSymbolMapper
+from data_source import KrakenSymbolManager
 from SpreadManager import SpreadManager
 # endregion
 
@@ -23,76 +22,48 @@ class Arbitrage(QCAlgorithm):
         self.set_start_date(2025, 1, 1)
         self.set_cash(100000)
 
+        # Initialize data sources
+        self.sources = {
+            "kraken": KrakenSymbolManager()
+        }
+
         # Initialize SpreadManager for managing crypto-stock pairs
         self.spread_manager = SpreadManager(self)
 
-        # Initialize Kraken symbol mapper
-        self.kraken_mapper = KrakenSymbolMapper()
-
-        # Fetch xStocks assets from Kraken
-        self.debug("Fetching xStocks from Kraken API...")
-        try:
-            xstocks_data = get_xstocks_from_kraken()
-        except Exception as e:
-            self.debug(f"Error fetching Kraken data: {str(e)}")
-            return
-
         # Data storage for monitoring
         self.orderbook_data = {}
+        self.tick_count = 0
 
-        # Subscribe to first few xStocks for testing (limit to avoid overwhelming)
-        xstocks = list(xstocks_data.keys())[:5]
+        # Fetch and subscribe to trading pairs from all data sources
+        self.debug("Initializing data sources and fetching trading pairs...")
 
-        self.debug(f"Found {len(xstocks_data)} xStocks, subscribing to {len(xstocks)}...")
-
-        for pair_name in xstocks:
+        for exchange, manager in self.sources.items():
             try:
-                # Try to create LEAN symbol and check if it's in the mapper
-                lean_symbol_str = pair_name.replace('x', '').replace('/', '')
-                lean_symbol = Symbol.Create(lean_symbol_str, SecurityType.Crypto, Market.Kraken)
+                # Fetch tokenized stocks from exchange
+                self.debug(f"Fetching tokenized stocks from {exchange}...")
+                manager.get_tokenize_stocks()
 
-                # Check if this symbol is known by the mapper
-                if self.kraken_mapper.IsKnownLeanSymbol(lean_symbol):
-                    # Subscribe to crypto and corresponding stock using SpreadManager
-                    self.subscribe_crypto(lean_symbol_str, Market.KRAKEN)
-                else:
-                    self.debug(f"Symbol {lean_symbol_str} not in Kraken symbol database, skipping {pair_name}")
+                # Get trading pairs
+                trade_pairs = manager.get_trade_pairs()
+                self.debug(f"Found {len(trade_pairs)} trading pairs from {exchange}")
+
+                # Subscribe to each pair (limit to 5 for testing)
+                for crypto, equity in trade_pairs[:5]:
+                    try:
+                        self.add_crypto(crypto)
+                        if not self.spread_manager.is_equity_subscribed(equity):
+                            self.add_equity(equity)
+                        # Register the pair in SpreadManager
+                        self.spread_manager.add_pair(crypto, equity)
+                    except Exception as e:
+                        self.debug(f"Failed to subscribe to {crypto.Symbol.Value}/{equity.Symbol.Value}: {str(e)}")
 
             except Exception as e:
-                self.debug(f"Failed to subscribe to {pair_name}: {str(e)}")
+                self.debug(f"Error initializing {exchange} data source: {str(e)}")
 
         self.debug(f"Successfully subscribed to {len(self.spread_manager.pairs)} crypto-stock pairs")
         self.debug(f"  Crypto tokens: {len(self.spread_manager.cryptos)}")
         self.debug(f"  Underlying stocks: {len(self.spread_manager.stocks)}")
-        self.tick_count = 0
-
-    def subscribe_crypto(self, crypto_symbol: str, market: str):
-        """
-        Subscribe to a crypto token and automatically subscribe to its underlying stock
-
-        Args:
-            crypto_symbol: Crypto symbol string (e.g., "TSLAxUSD", "AAPLUSD")
-            market: Market string (e.g., Market.KRAKEN)
-
-        Side Effects:
-            - Subscribes to crypto via AddCrypto
-            - Subscribes to underlying stock via SpreadManager (with deduplication)
-            - Registers the pair in SpreadManager
-        """
-        try:
-            # Subscribe to crypto token
-            crypto = self.add_crypto(crypto_symbol, Resolution.TICK, market)
-            self.debug(f"Subscribed to crypto: {crypto.Symbol}")
-
-            # Subscribe to corresponding stock (SpreadManager handles deduplication)
-            stock = self.spread_manager.subscribe_stock_by_crypto(crypto)
-            self.debug(f"  Paired with stock: {stock.Symbol}")
-
-            # Register the crypto-stock pair
-            self.spread_manager.add_pair(crypto, stock)
-
-        except Exception as e:
-            self.debug(f"Error in subscribe_crypto for {crypto_symbol}: {str(e)}")
 
     def on_data(self, data: Slice):
         """
