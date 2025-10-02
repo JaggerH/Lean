@@ -50,14 +50,24 @@ class Arbitrage(QCAlgorithm):
                 # Subscribe to each pair (limit to 5 for testing)
                 for crypto_symbol, equity_symbol in trade_pairs[:5]:
                     try:
-                        crypto_security = self.add_security(crypto_symbol)  # 传入 Symbol，返回 Security
+                        # Subscribe to Tick resolution to get orderbook (bid/ask) data
+                        crypto_security = self.add_crypto(
+                            crypto_symbol.value,
+                            Resolution.Tick,
+                            Market.Kraken
+                        )
 
-                        # 检查股票是否已订阅 (使用 QCAlgorithm 自带的 securities 集合)
+                        # Check if stock is already subscribed
                         if equity_symbol in self.securities:
-                            equity_security = self.securities[equity_symbol]  # 获取已订阅的 Security
+                            equity_security = self.securities[equity_symbol]
                         else:
-                            equity_security = self.add_security(equity_symbol)  # 新订阅
-                        # Register the pair in SpreadManager (传入 Security 对象)
+                            equity_security = self.add_equity(
+                                equity_symbol.value,
+                                Resolution.Tick,
+                                Market.USA
+                            )
+
+                        # Register the pair in SpreadManager
                         self.spread_manager.add_pair(crypto_security, equity_security)
                     except Exception as e:
                         self.debug(f"Failed to subscribe to {crypto_symbol.value}/{equity_symbol.value}: {str(e)}")
@@ -71,7 +81,7 @@ class Arbitrage(QCAlgorithm):
 
     def on_data(self, data: Slice):
         """
-        Process incoming data and calculate spreads between crypto tokens and stocks
+        Process incoming tick data and calculate bidirectional spreads
 
         Phase 1: Monitor and log spread data only (no trading)
         Phase 2: Execute trades based on spread thresholds
@@ -79,76 +89,97 @@ class Arbitrage(QCAlgorithm):
         Args:
             data: Slice object containing tick data for both crypto and stocks
         """
+        # Check if we have tick data
+        if not data.Ticks or len(data.Ticks) == 0:
+            return
+
         self.tick_count += 1
 
         # Iterate through all crypto-stock pairs
         for crypto_symbol, stock_symbol in self.spread_manager.get_all_pairs():
 
-            # Check if we have data for both crypto and stock
-            if not (data.ContainsKey(crypto_symbol) and data.ContainsKey(stock_symbol)):
+            # Check if both symbols have tick data
+            if not (data.Ticks.ContainsKey(crypto_symbol) and
+                    data.Ticks.ContainsKey(stock_symbol)):
                 continue
 
-            # Get crypto data
-            crypto_data = data[crypto_symbol]
-            if isinstance(crypto_data, list) and len(crypto_data) > 0:
-                crypto_tick = crypto_data[-1]
-            else:
-                crypto_tick = crypto_data
+            # Get tick lists
+            crypto_ticks = data.Ticks[crypto_symbol]
+            stock_ticks = data.Ticks[stock_symbol]
 
-            # Get stock data
-            stock_data = data[stock_symbol]
-            if isinstance(stock_data, list) and len(stock_data) > 0:
-                stock_tick = stock_data[-1]
-            else:
-                stock_tick = stock_data
+            # Extract the latest QuoteTick (orderbook data)
+            crypto_quote = None
+            for tick in crypto_ticks:
+                if tick.TickType == TickType.Quote:
+                    crypto_quote = tick
 
-            # Extract prices
-            crypto_price = getattr(crypto_tick, 'Price', None)
-            stock_price = getattr(stock_tick, 'Price', None)
+            stock_quote = None
+            for tick in stock_ticks:
+                if tick.TickType == TickType.Quote:
+                    stock_quote = tick
 
-            if crypto_price is None or stock_price is None:
+            # Skip if no QuoteTicks available
+            if not crypto_quote or not stock_quote:
                 continue
 
-            # Calculate spread percentage
-            spread_pct = self.spread_manager.calculate_spread_pct(crypto_price, stock_price)
+            # Calculate bidirectional spread (4 prices: bid/ask for both)
+            spread_pct = self.spread_manager.calculate_spread_pct(
+                crypto_quote.BidPrice,  # token_bid
+                crypto_quote.AskPrice,  # token_ask
+                stock_quote.BidPrice,   # stock_bid
+                stock_quote.AskPrice    # stock_ask
+            )
 
-            # Store data for monitoring
+            # Determine arbitrage direction
+            direction = "SHORT_TOKEN" if spread_pct > 0 else "LONG_TOKEN"
+
+            # Store monitoring data
             pair_key = f"{crypto_symbol.Value}_{stock_symbol.Value}"
             self.orderbook_data[pair_key] = {
                 'time': self.Time,
                 'crypto_symbol': crypto_symbol.Value,
                 'stock_symbol': stock_symbol.Value,
-                'crypto_price': crypto_price,
-                'stock_price': stock_price,
-                'spread_pct': spread_pct
+                'crypto_bid': crypto_quote.BidPrice,
+                'crypto_ask': crypto_quote.AskPrice,
+                'stock_bid': stock_quote.BidPrice,
+                'stock_ask': stock_quote.AskPrice,
+                'spread_pct': spread_pct,
+                'direction': direction
             }
 
             # Log every 100 ticks
             if self.tick_count % 100 == 0:
+                self.debug("=" * 60)
                 self.debug(f"[{crypto_symbol.Value} <-> {stock_symbol.Value}] Tick #{self.tick_count}")
-                self.debug(f"  Time: {self.Time}")
-                self.debug(f"  Crypto: ${crypto_price:.2f} | Stock: ${stock_price:.2f}")
-                self.debug(f"  Spread: {spread_pct:.2f}%")
+                self.debug(f"Time: {self.Time}")
+                self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
+                self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
+                self.debug(f"Spread: {spread_pct:.4f}% ({direction})")
 
                 # Phase 2: Trading logic would go here
                 # if spread_pct > threshold:
-                #     # Open position: short crypto, long stock
+                #     # Open position based on direction
                 # elif spread_pct < -threshold:
                 #     # Close position
 
     def on_end_of_algorithm(self):
-        """Summary when algorithm ends"""
+        """Display detailed arbitrage monitoring summary"""
         self.debug("=" * 60)
-        self.debug("Arbitrage Algorithm Summary")
+        self.debug("ARBITRAGE ALGORITHM SUMMARY")
+        self.debug("=" * 60)
         self.debug(f"Total ticks received: {self.tick_count}")
         self.debug(f"Crypto-Stock pairs: {len(self.spread_manager.pairs)}")
         self.debug(f"Crypto tokens: {len(self.spread_manager.cryptos)}")
         self.debug(f"Underlying stocks: {len(self.spread_manager.stocks)}")
 
-        # Display final spreads
+        # Display final spreads with orderbook data
         if self.orderbook_data:
-            self.debug("\nFinal Spreads:")
-            for pair_key, data in self.orderbook_data.items():
-                self.debug(f"  {data['crypto_symbol']} <-> {data['stock_symbol']}: {data['spread_pct']:.2f}%")
+            self.debug("\nFinal Spreads (with Orderbook):")
+            for pair_key, d in self.orderbook_data.items():
+                self.debug(f"\n{d['crypto_symbol']} <-> {d['stock_symbol']}:")
+                self.debug(f"  Time: {d['time']}")
+                self.debug(f"  Crypto: Bid=${d['crypto_bid']:.4f}, Ask=${d['crypto_ask']:.4f}")
+                self.debug(f"  Stock:  Bid=${d['stock_bid']:.4f}, Ask=${d['stock_ask']:.4f}")
+                self.debug(f"  Spread: {d['spread_pct']:.4f}% ({d['direction']})")
 
         self.debug("=" * 60)
