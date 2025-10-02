@@ -34,6 +34,9 @@ class Arbitrage(QCAlgorithm):
         self.orderbook_data = {}
         self.tick_count = 0
 
+        # Cache for latest quotes (to handle asynchronous tick arrivals)
+        self.latest_quotes = {}
+
         # Fetch and subscribe to trading pairs from all data sources
         self.debug("Initializing data sources and fetching trading pairs...")
 
@@ -96,32 +99,41 @@ class Arbitrage(QCAlgorithm):
 
         self.tick_count += 1
 
+        # Debug: Log incoming tick symbols every 50 ticks
+        if self.tick_count % 50 == 0:
+            tick_symbols = [str(symbol.Value) for symbol in data.Ticks.Keys]
+            self.debug(f"Tick #{self.tick_count} - Received ticks from: {', '.join(tick_symbols)}")
+
+            # Log registered pairs
+            pairs_str = [f"{c.Value}<->{s.Value}" for c, s in self.spread_manager.get_all_pairs()]
+            self.debug(f"Registered pairs: {', '.join(pairs_str)}")
+
+        # First, update cache with incoming quotes
+        for symbol in data.Ticks.Keys:
+            ticks = data.Ticks[symbol]
+            for tick in ticks:
+                if tick.TickType == TickType.Quote:
+                    # Cache the latest quote for this symbol
+                    self.latest_quotes[symbol] = tick
+
         # Iterate through all crypto-stock pairs
         for crypto_symbol, stock_symbol in self.spread_manager.get_all_pairs():
+            # Get quotes from cache (not from current data slice)
+            crypto_quote = self.latest_quotes.get(crypto_symbol)
+            stock_quote = self.latest_quotes.get(stock_symbol)
 
-            # Check if both symbols have tick data
-            if not (data.Ticks.ContainsKey(crypto_symbol) and
-                    data.Ticks.ContainsKey(stock_symbol)):
-                continue
-
-            # Get tick lists
-            crypto_ticks = data.Ticks[crypto_symbol]
-            stock_ticks = data.Ticks[stock_symbol]
-
-            # Extract the latest QuoteTick (orderbook data)
-            crypto_quote = None
-            for tick in crypto_ticks:
-                if tick.TickType == TickType.Quote:
-                    crypto_quote = tick
-
-            stock_quote = None
-            for tick in stock_ticks:
-                if tick.TickType == TickType.Quote:
-                    stock_quote = tick
-
-            # Skip if no QuoteTicks available
+            # Skip if we don't have both quotes cached yet
             if not crypto_quote or not stock_quote:
+                # Debug: Log first 30 times when we skip due to missing quotes
+                if self.tick_count <= 30:
+                    has_crypto = crypto_quote is not None
+                    has_stock = stock_quote is not None
+                    self.debug(f"Tick #{self.tick_count}: Skipping {crypto_symbol.Value}<->{stock_symbol.Value} - Cached quotes: crypto={has_crypto}, stock={has_stock}")
                 continue
+
+            # Debug: Log first successful spread calculation
+            if self.tick_count <= 5:
+                self.debug(f"✅ Tick #{self.tick_count}: SUCCESS! {crypto_symbol.Value}<->{stock_symbol.Value} - Both quotes available in cache")
 
             # Calculate bidirectional spread (4 prices: bid/ask for both)
             spread_pct = self.spread_manager.calculate_spread_pct(
@@ -133,6 +145,17 @@ class Arbitrage(QCAlgorithm):
 
             # Determine arbitrage direction
             direction = "SHORT_TOKEN" if spread_pct > 0 else "LONG_TOKEN"
+
+            # Debug: Log first 3 successful spread calculations immediately
+            if self.tick_count <= 3:
+                self.debug("=" * 60)
+                self.debug(f"🎯 SPREAD CALCULATED! Tick #{self.tick_count}")
+                self.debug(f"Pair: {crypto_symbol.Value} <-> {stock_symbol.Value}")
+                self.debug(f"Time: {self.Time}")
+                self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
+                self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
+                self.debug(f"Spread: {spread_pct:.4f}% ({direction})")
+                self.debug("=" * 60)
 
             # Store monitoring data
             pair_key = f"{crypto_symbol.Value}_{stock_symbol.Value}"
