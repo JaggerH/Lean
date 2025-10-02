@@ -50,18 +50,18 @@ class BaseDataSource(ABC):
         pass
 
     @abstractmethod
-    def get_trade_pairs(self) -> List[Tuple[Security, Security]]:
+    def get_trade_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
         将交易所获得的交易对信息转换成LEAN Crypto Symbol和Equity Symbol
 
         此方法应该：
         1. 从self.source中读取原始交易对数据
         2. 解析每个交易对，提取crypto symbol和对应的stock symbol
-        3. 使用Symbol.Create()创建LEAN Security对象
-        4. 返回(crypto_security, equity_security)元组列表
+        3. 使用Symbol.Create()创建LEAN Symbol对象
+        4. 返回(crypto_symbol, equity_symbol)元组列表
 
         Returns:
-            List[Tuple[Security, Security]]: [(CryptoSecurity, EquitySecurity), ...]
+            List[Tuple[Symbol, Symbol]]: [(CryptoSymbol, EquitySymbol), ...]
             例如: [
                 (Symbol.Create("AAPLUSD", SecurityType.Crypto, Market.Kraken),
                  Symbol.Create("AAPL", SecurityType.Equity, Market.USA)),
@@ -70,9 +70,10 @@ class BaseDataSource(ABC):
             ]
 
         Note:
-            - 返回的是LEAN Symbol对象，不是字符串
-            - crypto_symbol: 使用SecurityType.Crypto和对应的交易所market
-            - equity_symbol: 使用SecurityType.Equity和Market.USA
+            - 返回的是LEAN Symbol对象（不是Security对象，也不是字符串）
+            - 使用 algorithm.add_security(symbol) 可以将Symbol转换为Security并订阅行情
+            - crypto_symbol: SecurityType.Crypto + 对应交易所的market
+            - equity_symbol: SecurityType.Equity + Market.USA
         """
         pass
 

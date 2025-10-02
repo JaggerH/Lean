@@ -55,9 +55,6 @@ class SpreadManager:
         # Format: {(crypto_symbol, stock_symbol): {'token_qty': -300, 'stock_qty': 300}}
         self.pair_positions: Dict[Tuple[Symbol, Symbol], Dict[str, float]] = {}
 
-    def is_equity_subscribed(self, stock: Security):
-        return stock in self.stocks
-    
     def add_pair(self, crypto: Security, stock: Security):
         """
         Register a crypto-stock trading pair

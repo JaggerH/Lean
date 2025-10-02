@@ -48,15 +48,19 @@ class Arbitrage(QCAlgorithm):
                 self.debug(f"Found {len(trade_pairs)} trading pairs from {exchange}")
 
                 # Subscribe to each pair (limit to 5 for testing)
-                for crypto, equity in trade_pairs[:5]:
+                for crypto_symbol, equity_symbol in trade_pairs[:5]:
                     try:
-                        self.add_crypto(crypto)
-                        if not self.spread_manager.is_equity_subscribed(equity):
-                            self.add_equity(equity)
-                        # Register the pair in SpreadManager
-                        self.spread_manager.add_pair(crypto, equity)
+                        crypto_security = self.add_security(crypto_symbol)  # 传入 Symbol，返回 Security
+
+                        # 检查股票是否已订阅 (使用 QCAlgorithm 自带的 securities 集合)
+                        if equity_symbol in self.securities:
+                            equity_security = self.securities[equity_symbol]  # 获取已订阅的 Security
+                        else:
+                            equity_security = self.add_security(equity_symbol)  # 新订阅
+                        # Register the pair in SpreadManager (传入 Security 对象)
+                        self.spread_manager.add_pair(crypto_security, equity_security)
                     except Exception as e:
-                        self.debug(f"Failed to subscribe to {crypto.Symbol.Value}/{equity.Symbol.Value}: {str(e)}")
+                        self.debug(f"Failed to subscribe to {crypto_symbol.value}/{equity_symbol.value}: {str(e)}")
 
             except Exception as e:
                 self.debug(f"Error initializing {exchange} data source: {str(e)}")

@@ -69,16 +69,17 @@ class KrakenSymbolManager(BaseDataSource):
         self.source = data.get('result', {})
         return self.source
 
-    def get_trade_pairs(self) -> List[Tuple[Security, Security]]:
+    def get_trade_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
         将Kraken xStocks转换为(crypto_symbol, equity_symbol)交易对
 
         Returns:
-            List[Tuple[Security, Security]]: 交易对列表 [(crypto, equity), ...]
+            List[Tuple[Symbol, Symbol]]: 交易对列表 [(crypto_symbol, equity_symbol), ...]
 
         Note:
             - 必须先调用get_tokenize_stocks()以填充self.source
-            - 返回的是LEAN Security对象，而不是字符串
+            - 返回的是LEAN Symbol对象（不是Security对象，也不是字符串）
+            - 使用 algorithm.add_security(symbol) 可以订阅行情并获取Security对象
 
         Raises:
             ValueError: 如果self.source为空或符号格式无效
