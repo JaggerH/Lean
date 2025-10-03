@@ -11,6 +11,7 @@ using System;
 using System.IO;
 using Python.Runtime;
 using QuantConnect.Configuration;
+using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Python;
 using QuantConnect.Util;
@@ -19,6 +20,27 @@ namespace QuantConnect.PythonTestRunner
 {
     class Program
     {
+        /// <summary>
+        /// Initialize LEAN providers (DataProvider, MapFileProvider, FactorFileProvider)
+        /// This is required for Symbol.Create() and other LEAN APIs to work correctly
+        /// </summary>
+        private static void InitializeLeanProviders()
+        {
+            Console.WriteLine("🔧 Initializing LEAN providers...");
+
+            var dataProvider = Composer.Instance.GetExportedValueByTypeName<IDataProvider>(
+                Config.Get("data-provider", "DefaultDataProvider"));
+            var mapFileProvider = Composer.Instance.GetExportedValueByTypeName<IMapFileProvider>(
+                Config.Get("map-file-provider", "LocalDiskMapFileProvider"));
+            var factorFileProvider = Composer.Instance.GetExportedValueByTypeName<IFactorFileProvider>(
+                Config.Get("factor-file-provider", "LocalDiskFactorFileProvider"));
+
+            mapFileProvider.Initialize(dataProvider);
+            factorFileProvider.Initialize(mapFileProvider, dataProvider);
+
+            Console.WriteLine("✅ Initialized LEAN providers (DataProvider, MapFileProvider, FactorFileProvider)");
+        }
+
         static int Main(string[] args)
         {
             if (args.Length == 0)
@@ -75,7 +97,10 @@ namespace QuantConnect.PythonTestRunner
                 Config.Set("data-folder", dataFolder);
                 Console.WriteLine($"✅ Set data-folder to: {dataFolder}");
 
-                // Initialize Python.NET AFTER changing directory
+                // Initialize LEAN providers BEFORE Python.NET
+                InitializeLeanProviders();
+
+                // Initialize Python.NET AFTER changing directory and initializing providers
                 if (!PythonEngine.IsInitialized)
                 {
                     Console.WriteLine("✅ Initializing Python.NET...");
