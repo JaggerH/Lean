@@ -9,6 +9,7 @@ from typing import Dict, Set, List, Tuple, Optional
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
+from limit_order_optimizer import LimitOrderOptimizer
 
 
 class SpreadManager:
@@ -30,14 +31,18 @@ class SpreadManager:
         manager.add_pair(crypto, stock)
     """
 
-    def __init__(self, algorithm: QCAlgorithm):
+    def __init__(self, algorithm: QCAlgorithm, strategy=None, aggression: float = 0.6):
         """
         Initialize SpreadManager
 
         Args:
             algorithm: QCAlgorithm instance for accessing trading APIs
+            strategy: GridStrategy instance
+            aggression: 限价单激进度
         """
         self.algorithm = algorithm
+        self.strategy = strategy
+        self.aggression = aggression
 
         # Crypto Symbol -> Stock Symbol mapping
         self.pairs: Dict[Symbol, Symbol] = {}
@@ -54,6 +59,10 @@ class SpreadManager:
         # Phase 2: Position tracking (to be implemented)
         # Format: {(crypto_symbol, stock_symbol): {'token_qty': -300, 'stock_qty': 300}}
         self.pair_positions: Dict[Tuple[Symbol, Symbol], Dict[str, float]] = {}
+
+        # Order tracking
+        # Format: {(crypto_symbol, stock_symbol): {'crypto_order': order_id, 'is_close': bool}}
+        self.orders: Dict[Tuple[Symbol, Symbol], Dict] = {}
 
     def add_pair(self, crypto: Security, stock: Security):
         """
@@ -107,6 +116,7 @@ class SpreadManager:
 
     def get_cryptos_for_stock(self, stock_symbol: Symbol) -> List[Symbol]:
         """
+        !!! 目前没有任何函数引用他
         Get all crypto symbols paired with a given stock (many-to-one relationship)
 
         Args:
@@ -121,6 +131,21 @@ class SpreadManager:
         """
         return self.stock_to_cryptos.get(stock_symbol, [])
 
+    def get_pair_symbol_from_crypto(self, crypto_symbol: Symbol) -> Optional[Tuple[Symbol, Symbol]]:
+        """
+        Get pair symbol from crypto symbol
+
+        Args:
+            crypto_symbol: Crypto Symbol
+
+        Returns:
+            (crypto_symbol, stock_symbol) tuple, or None if not found
+        """
+        stock_symbol = self.pairs.get(crypto_symbol)
+        if stock_symbol:
+            return (crypto_symbol, stock_symbol)
+        return None
+    
     @staticmethod
     def calculate_spread_pct(token_bid: float, token_ask: float,
                             stock_bid: float, stock_ask: float) -> float:
@@ -165,6 +190,46 @@ class SpreadManager:
             return spread_short_token
         else:
             return spread_long_token
+
+    def monitor_spread(self, latest_quotes: dict):
+        """
+        监控所有交易对的spread并触发策略
+
+        Args:
+            latest_quotes: {symbol: QuoteTick} 字典
+        """
+        if not self.strategy:
+            return
+
+        for crypto_symbol, stock_symbol in self.get_all_pairs():
+            crypto_quote = latest_quotes.get(crypto_symbol)
+            stock_quote = latest_quotes.get(stock_symbol)
+
+            if not crypto_quote or not stock_quote:
+                continue
+
+            # 计算限价单价格
+            crypto_bid_price = LimitOrderOptimizer.calculate_buy_limit_price(
+                crypto_quote.BidPrice, crypto_quote.AskPrice, self.aggression
+            )
+            crypto_ask_price = LimitOrderOptimizer.calculate_sell_limit_price(
+                crypto_quote.BidPrice, crypto_quote.AskPrice, self.aggression
+            )
+
+            # 计算spread (用限价单价格)
+            spread_pct = self.calculate_spread_pct(
+                crypto_bid_price,  # 我们的卖出限价
+                crypto_ask_price,  # 我们的买入限价
+                stock_quote.BidPrice,
+                stock_quote.AskPrice
+            )
+
+            # 触发策略
+            self.strategy.on_spread_update(
+                crypto_symbol, stock_symbol, spread_pct,
+                crypto_quote, stock_quote,
+                crypto_bid_price, crypto_ask_price
+            )
 
     # ============================================================================
     # Phase 2: Position Management (To Be Implemented)
@@ -257,3 +322,80 @@ class SpreadManager:
             'crypto_close_qty': close_qty,
             'stock_close_qty': close_qty
         }
+
+    # ============================================================================
+    # ExecutionEngine Integration Methods
+    # ============================================================================
+
+    def add_order(self, pair_symbol: Tuple[Symbol, Symbol], order_id: int, is_close: bool = False):
+        """
+        Add order to tracking
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+            order_id: Order ID
+            is_close: 是否平仓单
+        """
+        # 检查是否已有订单或仓位
+        if pair_symbol in self.orders and not is_close:
+            self.algorithm.Debug(f"⚠️ Order already exists for {pair_symbol}")
+            return
+
+        self.orders[pair_symbol] = {
+            'crypto_order': order_id,
+            'is_close': is_close
+        }
+
+        self.algorithm.Debug(f"Added order tracking: {pair_symbol[0].Value} <-> {pair_symbol[1].Value}")
+
+    def get_order(self, pair_symbol: Tuple[Symbol, Symbol]) -> Optional[Dict]:
+        """
+        Get order info
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+
+        Returns:
+            Order info dict, or None if not found
+        """
+        return self.orders.get(pair_symbol)
+
+    def get_pair_position(self, pair_symbol: Tuple[Symbol, Symbol]) -> Optional[Tuple[float, float]]:
+        """
+        Get pair position
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+
+        Returns:
+            (crypto_qty, stock_qty) tuple, or None if no position
+        """
+        position = self.pair_positions.get(pair_symbol)
+        if position:
+            return (position.get('token_qty', 0.0), position.get('stock_qty', 0.0))
+        return None
+
+    def update_pair_position(self, pair_symbol: Tuple[Symbol, Symbol],
+                            crypto_qty: float, stock_qty: float):
+        """
+        Update pair position (累加)
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+            crypto_qty: Crypto数量变化
+            stock_qty: Stock数量变化
+        """
+        if pair_symbol not in self.pair_positions:
+            self.pair_positions[pair_symbol] = {
+                'token_qty': 0.0,
+                'stock_qty': 0.0
+            }
+
+        position = self.pair_positions[pair_symbol]
+        position['token_qty'] += crypto_qty
+        position['stock_qty'] += stock_qty
+
+        self.algorithm.Debug(
+            f"Updated position: {pair_symbol[0].Value} ({position['token_qty']}) <-> "
+            f"{pair_symbol[1].Value} ({position['stock_qty']})"
+        )
