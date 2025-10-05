@@ -837,6 +837,23 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Issue a spread market order/trade for multiple correlated assets with atomic execution guarantee.
+        /// Designed for arbitrage and spread trading strategies where simultaneous execution across legs is critical.
+        /// All legs must fill successfully or the entire order is cancelled.
+        /// </summary>
+        /// <param name="legs">The list of legs the order consists of</param>
+        /// <param name="quantity">The total quantity for the order</param>
+        /// <param name="asynchronous">Send the order asynchronously (false). Otherwise we'll block until it fills</param>
+        /// <param name="tag">String tag for the order (optional)</param>
+        /// <param name="orderProperties">The order properties to use. Defaults to <see cref="DefaultOrderProperties"/></param>
+        /// <returns>Sequence of order tickets, one for each leg</returns>
+        [DocumentationAttribute(TradingAndOrders)]
+        public List<OrderTicket> SpreadMarketOrder(List<Leg> legs, int quantity, bool asynchronous = false, string tag = "", IOrderProperties orderProperties = null)
+        {
+            return SubmitSpreadOrder(legs, quantity, asynchronous, tag, orderProperties);
+        }
+
+        /// <summary>
         /// Issue a combo leg limit order/trade for multiple assets, each having its own limit price.
         /// </summary>
         /// <param name="legs">The list of legs the order consists of</param>
@@ -981,6 +998,62 @@ namespace QuantConnect.Algorithm
 
             // Wait for the order event to process, only if the exchange is open
             if (!asynchronous && orderType == OrderType.ComboMarket)
+            {
+                foreach (var ticket in orderTickets)
+                {
+                    if (ticket.Status.IsOpen())
+                    {
+                        Transactions.WaitForOrder(ticket.OrderId);
+                    }
+                }
+            }
+
+            return orderTickets;
+        }
+
+        private List<OrderTicket> SubmitSpreadOrder(List<Leg> legs, decimal quantity, bool asynchronous, string tag, IOrderProperties orderProperties)
+        {
+            CheckComboOrderSizing(legs, quantity);
+
+            var orderType = OrderType.SpreadMarket;
+
+            // we create a unique Id so the algorithm and the brokerage can relate the spread orders with each other
+            var groupOrderManager = new GroupOrderManager(Transactions.GetIncrementGroupOrderManagerId(), legs.Count, quantity, 0);
+
+            List<OrderTicket> orderTickets = new(capacity: legs.Count);
+            List<SubmitOrderRequest> submitRequests = new(capacity: legs.Count);
+            foreach (var leg in legs)
+            {
+                var security = Securities[leg.Symbol];
+
+                var request = CreateSubmitOrderRequest(
+                    orderType,
+                    security,
+                    ((decimal)leg.Quantity).GetOrderLegGroupQuantity(groupOrderManager),
+                    tag,
+                    orderProperties ?? DefaultOrderProperties?.Clone(),
+                    groupOrderManager: groupOrderManager,
+                    asynchronous: asynchronous);
+
+                // we execute pre order checks for all requests before submitting, so that if anything fails we are not left with half submitted spread orders
+                var response = PreOrderChecks(request);
+                if (response.IsError)
+                {
+                    orderTickets.Add(OrderTicket.InvalidSubmitRequest(Transactions, request, response));
+                    return orderTickets;
+                }
+
+                submitRequests.Add(request);
+            }
+
+            foreach (var request in submitRequests)
+            {
+                //Add the order and create a new order Id.
+                orderTickets.Add(Transactions.AddOrder(request));
+            }
+
+            // Wait for the order event to process, only if the exchange is open
+            if (!asynchronous)
             {
                 foreach (var ticket in orderTickets)
                 {

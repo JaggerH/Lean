@@ -319,6 +319,10 @@ namespace QuantConnect.Orders
                     };
                     break;
 
+                case OrderType.SpreadMarket:
+                    order = new SpreadMarketOrder() { GroupOrderManager = DeserializeGroupOrderManager(jObject) };
+                    break;
+
                 default:
                     throw new ArgumentOutOfRangeException();
             }

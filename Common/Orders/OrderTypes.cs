@@ -78,7 +78,12 @@ namespace QuantConnect.Orders
         /// <summary>
         /// Trailing Stop Order Type - (11)
         /// </summary>
-        TrailingStop
+        TrailingStop,
+
+        /// <summary>
+        /// Spread Market Order Type - for executing correlated trades simultaneously (12)
+        /// </summary>
+        SpreadMarket
     }
 
     /// <summary>
