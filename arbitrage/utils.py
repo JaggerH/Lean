@@ -2,6 +2,8 @@
 Utility functions for arbitrage trading
 """
 import os
+import sys
+from pathlib import Path
 from typing import List, Dict
 
 
@@ -18,6 +20,74 @@ CURRENCY_MAP = {
     'XLTC': 'LTC',
     'XETH': 'ETH'
 }
+
+
+def init_lean() -> bool:
+    """
+    Initialize LEAN environment for running Python code with AlgorithmImports
+
+    This function adds the Launcher/bin/Debug directory to sys.path and changes
+    the working directory to that location, enabling imports from AlgorithmImports.py
+
+    Can be called from:
+    - arbitrage/tests/test_spread_manager.py
+    - arbitrage/tests/data_source/test_kraken.py
+    - arbitrage/main.py
+
+    Returns:
+        bool: True if initialization succeeded, False otherwise
+
+    Example:
+        from utils import init_lean
+
+        if init_lean():
+            from AlgorithmImports import QCAlgorithm, Symbol
+            # Your code here
+        else:
+            print("LEAN initialization failed")
+    """
+    # Determine the LEAN root directory
+    # From arbitrage/utils.py, go up one level to reach Lean/
+    current_file = Path(__file__).resolve()
+    arbitrage_dir = current_file.parent
+    lean_root = arbitrage_dir.parent
+    launcher_bin = lean_root / "Launcher" / "bin" / "Debug"
+
+    # Check if Launcher/bin/Debug exists
+    if not launcher_bin.exists():
+        print(f"❌ LEAN bin directory not found: {launcher_bin}")
+        print(f"   Please build LEAN first: dotnet build QuantConnect.Lean.sln")
+        return False
+
+    # Check if AlgorithmImports.py exists
+    algorithm_imports = launcher_bin / "AlgorithmImports.py"
+    if not algorithm_imports.exists():
+        print(f"❌ AlgorithmImports.py not found: {algorithm_imports}")
+        print(f"   Please build LEAN first: dotnet build QuantConnect.Lean.sln")
+        return False
+
+    # Add Launcher/bin/Debug to sys.path if not already there
+    launcher_bin_str = str(launcher_bin)
+    if launcher_bin_str not in sys.path:
+        sys.path.insert(0, launcher_bin_str)
+        print(f"✅ Added to sys.path: {launcher_bin_str}")
+
+    # Change working directory to Launcher/bin/Debug
+    # This is important because AlgorithmImports.py loads DLLs from current directory
+    original_cwd = os.getcwd()
+    os.chdir(launcher_bin_str)
+    print(f"✅ Changed working directory to: {launcher_bin_str}")
+    print(f"   (Original: {original_cwd})")
+
+    # Verify PYTHONNET_PYDLL is set
+    pythonnet_dll = os.environ.get('PYTHONNET_PYDLL')
+    if pythonnet_dll:
+        print(f"✅ PYTHONNET_PYDLL: {pythonnet_dll}")
+    else:
+        print(f"⚠️  PYTHONNET_PYDLL not set (may cause issues)")
+        print(f"   Set it to: <conda_env_path>/python311.dll")
+
+    return True
 
 
 def add_xstocks_to_database(csv_rows: List[str], base_path: str = None) -> Dict[str, int]:

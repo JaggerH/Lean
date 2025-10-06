@@ -56,13 +56,37 @@ class SpreadManager:
         # Already subscribed cryptos (Security objects)
         self.cryptos: Set[Security] = set()
 
+        # Latest quotes cache (for handling asynchronous tick arrivals)
+        self.latest_quotes: Dict[Symbol, any] = {}
+
         # Phase 2: Position tracking (to be implemented)
         # Format: {(crypto_symbol, stock_symbol): {'token_qty': -300, 'stock_qty': 300}}
-        self.pair_positions: Dict[Tuple[Symbol, Symbol], Dict[str, float]] = {}
+        self.positions: Dict[Tuple[Symbol, Symbol], Dict[str, float]] = {}
 
         # Order tracking
         # Format: {(crypto_symbol, stock_symbol): {'crypto_order': order_id, 'is_close': bool}}
         self.orders: Dict[Tuple[Symbol, Symbol], Dict] = {}
+
+        # Execution tracking (for ExecutionEngine integration)
+        # Format: {(crypto_symbol, stock_symbol): {
+        #     'active_crypto_order': OrderTicket,
+        #     'active_stock_order': OrderTicket or None,
+        #     'crypto_orders': [OrderTicket],
+        #     'stock_orders': [OrderTicket, ...],
+        #     'type': 'open' | 'close',
+        #     'direction': 'long_crypto' | 'short_crypto',
+        #     'original_quantity': int,
+        #     'crypto_total_filled': float,
+        #     'theoretical_stock_qty': float,
+        #     'locked_cash_crypto': float,
+        #     'locked_cash_stock': float,
+        #     'status': 'opening' | 'open_completed' | 'closing' | 'canceled_waiting_hedge' | 'force_closed_no_hedge_needed' | 'completed',
+        #     'hedge_failure_count': int,
+        #     'force_close_ticket': OrderTicket or None,
+        #     'last_stock_expected_price': float,
+        #     'order_events': [OrderEvent, ...]
+        # }}
+        self.executions: Dict[Tuple[Symbol, Symbol], Dict] = {}
 
     def add_pair(self, crypto: Security, stock: Security):
         """
@@ -191,22 +215,65 @@ class SpreadManager:
         else:
             return spread_long_token
 
-    def monitor_spread(self, latest_quotes: dict):
+    def on_data(self, data):
+        """
+        处理数据更新 - 更新报价缓存并监控价差
+
+        Args:
+            data: Slice对象，包含tick数据
+        """
+        if not data.Ticks or len(data.Ticks) == 0:
+            return
+
+        # 更新报价缓存 (Quote ticks 优先，Trade ticks 作为备选)
+        for symbol in data.Ticks.Keys:
+            ticks = data.Ticks[symbol]
+            for tick in ticks:
+                if tick.TickType == TickType.Quote:
+                    self.latest_quotes[symbol] = tick
+                # elif tick.TickType == TickType.Trade and symbol.SecurityType == SecurityType.Equity:
+                #     # Stock 可能只有 Trade tick，作为备选
+                #     if symbol not in self.latest_quotes or self.latest_quotes[symbol].TickType != TickType.Quote:
+                #         self.latest_quotes[symbol] = tick
+
+        # 监控价差
+        self.monitor_spread()
+
+    def monitor_spread(self, latest_quotes: dict = None):
         """
         监控所有交易对的spread并触发策略
 
         Args:
-            latest_quotes: {symbol: QuoteTick} 字典
+            latest_quotes: (可选) {symbol: QuoteTick or TradeTick} 字典
+                          如果不提供，使用内部的self.latest_quotes
         """
         if not self.strategy:
             return
 
+        # 使用传入的quotes或内部缓存
+        quotes = latest_quotes if latest_quotes is not None else self.latest_quotes
+
         for crypto_symbol, stock_symbol in self.get_all_pairs():
-            crypto_quote = latest_quotes.get(crypto_symbol)
-            stock_quote = latest_quotes.get(stock_symbol)
+            crypto_quote = quotes.get(crypto_symbol)
+            stock_quote = quotes.get(stock_symbol)
 
             if not crypto_quote or not stock_quote:
                 continue
+
+            # 只处理 Quote tick (Crypto 和 Stock 都必须有 BidPrice/AskPrice)
+            if not hasattr(crypto_quote, 'BidPrice') or not hasattr(crypto_quote, 'AskPrice'):
+                continue
+            if not hasattr(stock_quote, 'BidPrice') or not hasattr(stock_quote, 'AskPrice'):
+                continue
+
+            # 验证价格有效性
+            if crypto_quote.BidPrice <= 0 or crypto_quote.AskPrice <= 0:
+                continue
+            if stock_quote.BidPrice <= 0 or stock_quote.AskPrice <= 0:
+                continue
+
+            stock_bid = stock_quote.BidPrice
+            stock_ask = stock_quote.AskPrice
 
             # 计算限价单价格
             crypto_bid_price = LimitOrderOptimizer.calculate_buy_limit_price(
@@ -220,9 +287,17 @@ class SpreadManager:
             spread_pct = self.calculate_spread_pct(
                 crypto_bid_price,  # 我们的卖出限价
                 crypto_ask_price,  # 我们的买入限价
-                stock_quote.BidPrice,
-                stock_quote.AskPrice
+                stock_bid,
+                stock_ask
             )
+
+            # Debug: 检测异常价差
+            if abs(spread_pct) > 0.5:  # 超过50%的价差肯定有问题
+                self.algorithm.Debug(
+                    f"⚠️ 异常价差 {spread_pct*100:.2f}% | "
+                    f"{crypto_symbol.Value}: bid={crypto_quote.BidPrice:.2f} ask={crypto_quote.AskPrice:.2f} | "
+                    f"{stock_symbol.Value}: bid={stock_bid:.2f} ask={stock_ask:.2f}"
+                )
 
             # 触发策略
             self.strategy.on_spread_update(
@@ -249,7 +324,7 @@ class SpreadManager:
         Note: To be implemented in Phase 2
         """
         pair_key = (crypto_symbol, stock_symbol)
-        self.pair_positions[pair_key] = {
+        self.positions[pair_key] = {
             'token_qty': crypto_qty,
             'stock_qty': stock_qty
         }
@@ -274,7 +349,7 @@ class SpreadManager:
         """
         net_position = 0.0
 
-        for (crypto_sym, stock_sym), position in self.pair_positions.items():
+        for (crypto_sym, stock_sym), position in self.positions.items():
             if stock_sym == stock_symbol:
                 net_position += position['stock_qty']
 
@@ -303,7 +378,7 @@ class SpreadManager:
             raise ValueError(f"No stock paired with crypto {crypto_symbol}")
 
         pair_key = (crypto_symbol, stock_symbol)
-        position = self.pair_positions.get(pair_key)
+        position = self.positions.get(pair_key)
 
         if not position:
             raise ValueError(f"No position found for pair {crypto_symbol} <-> {stock_symbol}")
@@ -370,7 +445,7 @@ class SpreadManager:
         Returns:
             (crypto_qty, stock_qty) tuple, or None if no position
         """
-        position = self.pair_positions.get(pair_symbol)
+        position = self.positions.get(pair_symbol)
         if position:
             return (position.get('token_qty', 0.0), position.get('stock_qty', 0.0))
         return None
@@ -385,13 +460,13 @@ class SpreadManager:
             crypto_qty: Crypto数量变化
             stock_qty: Stock数量变化
         """
-        if pair_symbol not in self.pair_positions:
-            self.pair_positions[pair_symbol] = {
+        if pair_symbol not in self.positions:
+            self.positions[pair_symbol] = {
                 'token_qty': 0.0,
                 'stock_qty': 0.0
             }
 
-        position = self.pair_positions[pair_symbol]
+        position = self.positions[pair_symbol]
         position['token_qty'] += crypto_qty
         position['stock_qty'] += stock_qty
 
