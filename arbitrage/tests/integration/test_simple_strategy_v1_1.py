@@ -7,13 +7,14 @@
 - 日期范围: 2025-09-02 至 2025-09-05
 - 策略: 简化版市价单套利
   - 开仓: spread <= -1% 时双市价单开仓 (long crypto + short stock)
-  - 平仓: spread >= 0% 时双市价单平仓
+  - 平仓: spread >= 2% 时双市价单平仓
   - 限制: 仅支持 long crypto + short stock (符合Kraken限制)
 """
 
 import sys
 from pathlib import Path
 import math
+from datetime import timedelta
 
 # Add arbitrage directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -30,13 +31,13 @@ class SimpleStrategy:
     特点:
     - 仅使用市价单 (Kraken + IBKR 均为市价单)
     - 开仓条件: spread <= -1% 且无持仓
-    - 平仓条件: spread >= 0% 且有持仓
+    - 平仓条件: spread >= 2% 且有持仓
     - 方向限制: 仅 long crypto + short stock
     """
 
     def __init__(self, algorithm: QCAlgorithm, spread_manager: SpreadManager,
-                 entry_threshold: float = 0.01,
-                 exit_threshold: float = 0.0,
+                 entry_threshold: float = -0.01,
+                 exit_threshold: float = 0.02,
                  position_size_pct: float = 0.25):
         """
         初始化策略
@@ -44,13 +45,13 @@ class SimpleStrategy:
         Args:
             algorithm: QCAlgorithm实例
             spread_manager: SpreadManager实例
-            entry_threshold: 开仓阈值 (正数, 实际判断为 <= -entry_threshold)
-            exit_threshold: 平仓阈值 (默认0%)
-            position_size_pct: 仓位大小百分比 (默认10%)
+            entry_threshold: 开仓阈值 (负数, spread <= entry_threshold 时开仓, 默认-1%)
+            exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
+            position_size_pct: 仓位大小百分比 (默认25%)
         """
         self.algorithm = algorithm
         self.spread_manager = spread_manager
-        self.entry_threshold = -abs(entry_threshold)  # 确保为负数
+        self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.position_size_pct = position_size_pct
 
@@ -59,6 +60,10 @@ class SimpleStrategy:
         self.open_count = 0
         self.close_count = 0
         self.trade_history = []
+
+        # 持仓时间追踪
+        self.open_times = {}  # {pair_symbol: open_time}
+        self.holding_times = []  # 每次回转交易的持仓时间 (timedelta)
 
         # Pending orders tracking - 防止重复开仓/平仓
         self.pending_orders = {}  # {pair_symbol: {'type': 'OPEN'/'CLOSE', 'tickets': [...], 'time': ...}}
@@ -69,6 +74,7 @@ class SimpleStrategy:
             f"Exit: spread >= {self.exit_threshold*100:.2f}% | "
             f"Position: {self.position_size_pct*100:.1f}%"
         )
+        self.debug_count = 0
 
     def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
                         spread_pct: float, crypto_quote, stock_quote,
@@ -87,19 +93,48 @@ class SimpleStrategy:
         """
         pair_symbol = (crypto_symbol, stock_symbol)
 
-        # 检查真实持仓（使用portfolio而不是自己维护的字典）
+        # 检查是否有pending订单 - 有pending就跳过，防止重复提交
+        if pair_symbol in self.pending_orders:
+            return
+
+        # 检查真实持仓（使用portfolio）
         crypto_holding = self.algorithm.portfolio[crypto_symbol].quantity
         stock_holding = self.algorithm.portfolio[stock_symbol].quantity
         has_position = abs(crypto_holding) > 1.0 or abs(stock_holding) > 1.0
 
-        # 开仓逻辑: spread <= -1% 且无持仓
+        # 开仓逻辑: spread <= entry_threshold (负数) 且无持仓
         if not has_position and spread_pct <= self.entry_threshold:
             self._open_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
 
-        # 平仓逻辑: spread >= 0% 且有持仓
+        # 平仓逻辑: spread >= exit_threshold (正数) 且有持仓
         elif has_position and spread_pct >= self.exit_threshold:
-            self._close_position(pair_symbol, spread_pct)
+            self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
+        
+        self.debug_count += 1
 
+    def cal_legs_and_multiple(self, pair_symbol: tuple, quantity: tuple, action: str = "TRADE"):
+        quantity_int = (int(quantity[0]), int(quantity[1]))
+        quantity_abs = (abs(quantity_int[0]), abs(quantity_int[1]))
+        gcd = math.gcd(quantity_abs[0], quantity_abs[1])
+        ratio = (quantity_int[0] // gcd, quantity_int[1] // gcd)
+
+        legs = [
+            Leg.create(pair_symbol[0], ratio[0]),
+            Leg.create(pair_symbol[1], ratio[1]),
+        ]
+
+        # Debug输出
+        self.algorithm.debug(
+            f"🔧 cal_legs_and_multiple [{action}] | "
+            f"Symbol: ({pair_symbol[0]}, {pair_symbol[1]}) | "
+            f"Input: ({quantity[0]}, {quantity[1]}) | "
+            f"GCD: {gcd} | "
+            f"Ratio: ({ratio[0]}, {ratio[1]}) | "
+            f"Result: {gcd}x({ratio[0]} {pair_symbol[0].value}, {ratio[1]} {pair_symbol[1].value})"
+        )
+
+        return legs, gcd
+        
     def _open_position(self, pair_symbol: tuple, spread_pct: float,
                       crypto_quote, stock_quote):
         """
@@ -111,19 +146,15 @@ class SimpleStrategy:
             crypto_quote: Crypto报价
             stock_quote: Stock报价
         """
-        # 检查是否有pending订单，防止重复开仓
-        if pair_symbol in self.pending_orders:
-            return  # 已有pending订单，跳过
-
         crypto_symbol, stock_symbol = pair_symbol
 
         # 计算仓位大小
         portfolio_value = self.algorithm.portfolio.total_portfolio_value
         target_value = portfolio_value * self.position_size_pct
 
-        # 使用crypto ask价格计算数量 (因为我们要买入crypto)
+        # 获取crypto价格 (使用ask价格，因为我们要买入)
         crypto_price = crypto_quote.ask_price
-        stock_price = stock_quote.bid_price  # 我们要卖出stock
+        stock_price = stock_price = stock_quote.bid_price
 
         if crypto_price == 0 or stock_price == 0:
             self.algorithm.debug(f"⚠️ Invalid prices: Crypto={crypto_price}, Stock={stock_price}")
@@ -132,32 +163,28 @@ class SimpleStrategy:
         crypto_qty = int(target_value / crypto_price)
         stock_qty = int(target_value / stock_price)
 
+        # 调试日志：显示计算的数量
+        self.algorithm.debug(
+            f"📊 Order Calculation | "
+            f"Portfolio: ${portfolio_value:,.0f} | Target: ${target_value:,.0f} ({self.position_size_pct*100}%) | "
+            f"Crypto: {crypto_qty} @ ${crypto_price:.2f} | Stock: {stock_qty} @ ${stock_price:.2f}"
+        )
+
         if crypto_qty == 0 or stock_qty == 0:
-            self.algorithm.debug(f"⚠️ Quantity too small: Crypto={crypto_qty}, Stock={stock_qty}")
+            self.algorithm.debug(f"⚠️ Invalid quantity: crypto_qty={crypto_qty}, stock_qty={stock_qty}")
             return
 
-        # 创建 SpreadMarketOrder legs - 使用GCD简化为ratio形式
-        # LEAN要求: legs中存储ratio, quantity参数存储实际倍数
-        gcd = math.gcd(crypto_qty, stock_qty)
-        crypto_ratio = crypto_qty // gcd
-        stock_ratio = stock_qty // gcd
-
-        legs = [
-            Leg.create(crypto_symbol, crypto_ratio),   # ratio
-            Leg.create(stock_symbol, -stock_ratio)     # ratio (negative for short)
-        ]
-
-        # 提交 SpreadMarketOrder
-        # quantity = GCD倍数, 实际数量 = ratio × quantity
+        legs, gcd = self.cal_legs_and_multiple(pair_symbol, (crypto_qty, -stock_qty), action="OPEN")
+        # 提交 SpreadMarketOrder (全局倍数 = GCD)
         tickets = self.algorithm.spread_market_order(
             legs,
-            gcd,  # 倍数
+            gcd,
             tag=f"OPEN Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
         )
 
-        # 检查订单是否成功提交（如果失败，tickets可能少于2个）
-        if len(tickets) < 2:
-            self.algorithm.debug(f"⚠️ SpreadMarketOrder failed to submit all legs. Got {len(tickets)} tickets")
+        # 检查订单是否成功提交
+        if len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
+            # 提交失败，静默跳过（LEAN已输出Error日志）
             return
 
         # 记录pending订单，防止重复提交
@@ -173,6 +200,9 @@ class SimpleStrategy:
         # 记录交易
         self.open_count += 1
         self.trade_count += 1
+
+        # 记录开仓时间
+        self.open_times[pair_symbol] = self.algorithm.time
 
         self.trade_history.append({
             'time': self.algorithm.time,
@@ -191,23 +221,21 @@ class SimpleStrategy:
             f"📈 OPEN #{self.open_count} | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
             f"Spread: {spread_pct*100:.2f}% | "
-            f"Crypto: BUY {crypto_qty} @ ${crypto_price:.2f} | "
-            f"Stock: SELL {stock_qty} @ ${stock_price:.2f} | "
-            f"[SpreadMarketOrder]"
+            f"Crypto: BUY {crypto_qty} @ ${crypto_price:.2f} = ${crypto_qty * crypto_price:,.0f} | "
+            f"Stock: SELL {stock_qty} @ ${stock_price:.2f} = ${stock_qty * stock_price:,.0f}"
         )
 
-    def _close_position(self, pair_symbol: tuple, spread_pct: float):
+    def _close_position(self, pair_symbol: tuple, spread_pct: float,
+                       crypto_quote, stock_quote):
         """
         平仓 - 使用 SpreadMarketOrder 实现市值对冲
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
             spread_pct: 当前spread百分比
+            crypto_quote: Crypto报价
+            stock_quote: Stock报价
         """
-        # 检查是否有pending订单，防止重复平仓
-        if pair_symbol in self.pending_orders:
-            return  # 已有pending订单，跳过
-
         crypto_symbol, stock_symbol = pair_symbol
 
         # 从portfolio获取真实持仓数量
@@ -218,30 +246,32 @@ class SimpleStrategy:
             self.algorithm.debug(f"⚠️ No significant position to close for {pair_symbol}")
             return
 
-        # 创建 SpreadMarketOrder legs - 反向平仓，使用GCD简化为ratio形式
-        crypto_qty_abs = int(abs(crypto_qty))
-        stock_qty_abs = int(abs(stock_qty))
-
-        gcd = math.gcd(crypto_qty_abs, stock_qty_abs)
-        crypto_ratio = -(crypto_qty // gcd)  # 反向（卖出crypto）
-        stock_ratio = -(stock_qty // gcd)    # 反向（买回stock）
-
-        legs = [
-            Leg.create(crypto_symbol, crypto_ratio),  # ratio
-            Leg.create(stock_symbol, stock_ratio)     # ratio
-        ]
-
-        # 提交 SpreadMarketOrder
+        legs, gcd = self.cal_legs_and_multiple(pair_symbol, (-crypto_qty, -stock_qty), action="CLOSE")
+        # 提交 SpreadMarketOrder (全局倍数 = GCD)
         tickets = self.algorithm.spread_market_order(
             legs,
-            gcd,  # 倍数
+            gcd,  # 全局倍数 = GCD (e.g., 75)
             tag=f"CLOSE Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
         )
 
-        # 检查订单是否成功提交（如果失败，tickets可能少于2个）
-        if len(tickets) < 2:
-            self.algorithm.debug(f"⚠️ SpreadMarketOrder failed to submit all legs. Got {len(tickets)} tickets")
+        # 检查订单是否成功提交
+        if len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
+            # 提交失败，静默跳过（LEAN已输出Error日志）
             return
+
+        # === Debug: Order Value 详细信息 ===
+        for ticket in tickets:
+            order = self.algorithm.transactions.get_order_by_id(ticket.order_id)
+            security = self.algorithm.securities[order.symbol]
+            order_value = order.get_value(security)
+            self.algorithm.debug(
+                f"🔍 CLOSE Order Debug | {order.symbol.value} | "
+                f"Qty={order.quantity} | Price=${order.price:.2f} | "
+                f"OrderValue=${order_value:,.0f} | "
+                f"Leverage={security.leverage} | "
+                f"ContractMultiplier={security.symbol_properties.contract_multiplier} | "
+                f"QuoteCurrency={security.quote_currency.symbol}"
+            )
 
         # 记录pending订单，防止重复提交
         self.pending_orders[pair_symbol] = {
@@ -257,6 +287,12 @@ class SimpleStrategy:
         self.close_count += 1
         self.trade_count += 1
 
+        # 计算持仓时间
+        if pair_symbol in self.open_times:
+            holding_time = self.algorithm.time - self.open_times[pair_symbol]
+            self.holding_times.append(holding_time)
+            del self.open_times[pair_symbol]
+
         self.trade_history.append({
             'time': self.algorithm.time,
             'type': 'CLOSE',
@@ -268,13 +304,18 @@ class SimpleStrategy:
             'stock_order_id': stock_ticket.order_id
         })
 
+        # Get prices from quote data (use BID for selling crypto, ASK for buying stock)
+        crypto_price = crypto_quote.bid_price  # Selling crypto at bid
+        stock_price = stock_quote.ask_price    # Buying stock at ask
+        crypto_qty_abs = abs(crypto_qty)
+        stock_qty_abs = abs(stock_qty)
+
         self.algorithm.debug(
             f"📉 CLOSE #{self.close_count} | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
             f"Spread: {spread_pct*100:.2f}% | "
-            f"Crypto: {'BUY' if crypto_ratio > 0 else 'SELL'} {abs(crypto_ratio * gcd)} | "
-            f"Stock: {'BUY' if stock_ratio > 0 else 'SELL'} {abs(stock_ratio * gcd)} | "
-            f"[SpreadMarketOrder]"
+            f"Crypto: SELL {crypto_qty_abs} @ ${crypto_price:.2f} = ${crypto_qty_abs * crypto_price:,.0f} | "
+            f"Stock: BUY {stock_qty_abs} @ ${stock_price:.2f} = ${stock_qty_abs * stock_price:,.0f}"
         )
 
         # 立即设置仓位为0，防止重复平仓
@@ -302,8 +343,8 @@ class SimpleStrategyTest(TestableAlgorithm):
 
         # === 1. 添加股票数据 (Databento) ===
         self.debug("📈 Adding Stock Data (Databento)...")
-        self.tsla_stock = self.add_equity("TSLA", Resolution.TICK, Market.USA)
-        self.aapl_stock = self.add_equity("AAPL", Resolution.TICK, Market.USA)
+        self.tsla_stock = self.add_equity("TSLA", Resolution.TICK, Market.USA, extended_market_hours=False)
+        self.aapl_stock = self.add_equity("AAPL", Resolution.TICK, Market.USA, extended_market_hours=False)
 
         self.tsla_stock.data_normalization_mode = DataNormalizationMode.RAW
         self.aapl_stock.data_normalization_mode = DataNormalizationMode.RAW
@@ -341,8 +382,8 @@ class SimpleStrategyTest(TestableAlgorithm):
         self.strategy = SimpleStrategy(
             algorithm=self,
             spread_manager=self.spread_manager,
-            entry_threshold=0.01,  # -1%
-            exit_threshold=0.0,    # 0%
+            entry_threshold=-0.01,  # -1%
+            exit_threshold=0.02,    # 2%
             position_size_pct=0.25  # 25%
         )
 
@@ -356,7 +397,6 @@ class SimpleStrategyTest(TestableAlgorithm):
 
         # === 8. 数据追踪 ===
         self.tick_count = 0
-        self.latest_quotes = {}
         self.order_events = []
 
         # === 断言验证 ===
@@ -380,26 +420,14 @@ class SimpleStrategyTest(TestableAlgorithm):
         self.end_test_phase()
 
     def on_data(self, data: Slice):
-        """处理数据 - 更新报价缓存并监控价差"""
+        """处理数据 - 委托给SpreadManager处理"""
         if not data.ticks or len(data.ticks) == 0:
             return
 
         self.tick_count += 1
 
-        # 更新报价缓存
-        for symbol in data.ticks.keys():
-            ticks = data.ticks[symbol]
-            for tick in ticks:
-                if tick.tick_type == TickType.Quote:
-                    self.latest_quotes[symbol] = tick
-
-        # 每1000个tick输出一次状态
-        # if self.tick_count % 1000 == 0:
-        #     self.debug(f"📊 Tick #{self.tick_count} | Time: {self.time} | "
-        #               f"Trades: {self.strategy.trade_count}")
-
-        # 监控价差 (SpreadManager会调用strategy.on_spread_update)
-        self.spread_manager.monitor_spread(self.latest_quotes)
+        # 委托给SpreadManager处理数据并监控价差
+        self.spread_manager.on_data(data)
 
     def on_order_event(self, order_event: OrderEvent):
         """处理订单事件"""
@@ -410,6 +438,27 @@ class SimpleStrategyTest(TestableAlgorithm):
                 f"✅ Order Filled | {order_event.symbol.value} | "
                 f"Qty: {order_event.fill_quantity} @ ${order_event.fill_price:.2f}"
             )
+
+            # === 打印 CashBook 信息 ===
+            self.debug(f"💵 CashBook Status:")
+            for currency, cash in self.portfolio.cash_book.items():
+                self.debug(
+                    f"  {currency}: Amount={cash.amount:,.2f}, "
+                    f"ValueInAccountCurrency=${cash.value_in_account_currency:,.2f}, "
+                    f"ConversionRate={cash.conversion_rate:.6f}"
+                )
+
+            # === 打印持仓信息 ===
+            self.debug(f"📦 Portfolio Holdings:")
+            for symbol, holding in self.portfolio.items():
+                if holding.quantity != 0:
+                    self.debug(
+                        f"  {symbol.value}: Qty={holding.quantity}, "
+                        f"AvgPrice=${holding.average_price:.2f}, "
+                        f"MarketPrice=${holding.price:.2f}, "
+                        f"MarketValue=${holding.holdings_value:,.2f}, "
+                        f"UnrealizedPnL=${holding.unrealized_profit:,.2f}"
+                    )
 
             # 更新仓位到SpreadManager
             # 查找对应的pair
@@ -436,8 +485,7 @@ class SimpleStrategyTest(TestableAlgorithm):
         for pair_symbol, pending in list(self.strategy.pending_orders.items()):
             all_done = all(
                 self.transactions.get_order_by_id(ticket.order_id).status in [
-                    OrderStatus.Filled, OrderStatus.Canceled,
-                    OrderStatus.Invalid, OrderStatus.PartiallyFilled
+                    OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid
                 ]
                 for ticket in pending['tickets']
             )
@@ -460,6 +508,29 @@ class SimpleStrategyTest(TestableAlgorithm):
         self.debug(f"开仓次数: {self.strategy.open_count}")
         self.debug(f"平仓次数: {self.strategy.close_count}")
         self.debug(f"订单事件数: {len(self.order_events)}")
+
+        # === 输出持仓时间统计 ===
+        if self.strategy.holding_times:
+            self.debug("\n" + "="*60)
+            self.debug("⏱️  持仓时间统计")
+            self.debug("="*60)
+
+            # 计算统计数据
+            min_holding = min(self.strategy.holding_times)
+            max_holding = max(self.strategy.holding_times)
+            avg_holding = sum(self.strategy.holding_times, timedelta()) / len(self.strategy.holding_times)
+
+            self.debug(f"回转交易次数: {len(self.strategy.holding_times)}")
+            self.debug(f"最短持仓时间: {min_holding}")
+            self.debug(f"最长持仓时间: {max_holding}")
+            self.debug(f"平均持仓时间: {avg_holding}")
+
+            # 输出每次回转交易的持仓时间
+            self.debug("\n详细持仓时间:")
+            for i, holding_time in enumerate(self.strategy.holding_times, 1):
+                self.debug(f"  #{i}: {holding_time}")
+        else:
+            self.debug("\n⚠️ 无持仓时间数据 (无完整的回转交易)")
 
         # === 输出交易历史 ===
         if self.strategy.trade_history:
