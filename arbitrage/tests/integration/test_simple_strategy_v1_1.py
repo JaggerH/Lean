@@ -238,11 +238,15 @@ class SimpleStrategy:
         """
         crypto_symbol, stock_symbol = pair_symbol
 
-        # 从portfolio获取真实持仓数量
-        crypto_qty = self.algorithm.portfolio[crypto_symbol].quantity
+        # 获取真实持仓数量
+        # Crypto: 从 CashBook 获取（因为被当作"货币"处理，存储在 BaseCurrency 中）
+        # Stock: 从 Portfolio 获取（传统证券持仓）
+        crypto_security = self.algorithm.securities[crypto_symbol]
+        crypto_base_currency_symbol = crypto_security.base_currency.symbol
+        crypto_qty = self.algorithm.portfolio.cash_book[crypto_base_currency_symbol].amount
         stock_qty = self.algorithm.portfolio[stock_symbol].quantity
 
-        if abs(crypto_qty) < 1.0 and abs(stock_qty) < 1.0:
+        if abs(crypto_qty) < 1e-8 and abs(stock_qty) < 1e-8:
             self.algorithm.debug(f"⚠️ No significant position to close for {pair_symbol}")
             return
 
@@ -258,20 +262,6 @@ class SimpleStrategy:
         if len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
             # 提交失败，静默跳过（LEAN已输出Error日志）
             return
-
-        # === Debug: Order Value 详细信息 ===
-        for ticket in tickets:
-            order = self.algorithm.transactions.get_order_by_id(ticket.order_id)
-            security = self.algorithm.securities[order.symbol]
-            order_value = order.get_value(security)
-            self.algorithm.debug(
-                f"🔍 CLOSE Order Debug | {order.symbol.value} | "
-                f"Qty={order.quantity} | Price=${order.price:.2f} | "
-                f"OrderValue=${order_value:,.0f} | "
-                f"Leverage={security.leverage} | "
-                f"ContractMultiplier={security.symbol_properties.contract_multiplier} | "
-                f"QuoteCurrency={security.quote_currency.symbol}"
-            )
 
         # 记录pending订单，防止重复提交
         self.pending_orders[pair_symbol] = {
@@ -439,26 +429,27 @@ class SimpleStrategyTest(TestableAlgorithm):
                 f"Qty: {order_event.fill_quantity} @ ${order_event.fill_price:.2f}"
             )
 
-            # === 打印 CashBook 信息 ===
-            self.debug(f"💵 CashBook Status:")
-            for currency, cash in self.portfolio.cash_book.items():
-                self.debug(
-                    f"  {currency}: Amount={cash.amount:,.2f}, "
-                    f"ValueInAccountCurrency=${cash.value_in_account_currency:,.2f}, "
-                    f"ConversionRate={cash.conversion_rate:.6f}"
-                )
-
-            # === 打印持仓信息 ===
-            self.debug(f"📦 Portfolio Holdings:")
-            for symbol, holding in self.portfolio.items():
-                if holding.quantity != 0:
+            if order_event.symbol.security_type == SecurityType.Crypto:
+                # === 打印 CashBook 信息 ===
+                self.debug(f"💵 CashBook Status:")
+                for currency, cash in self.portfolio.cash_book.items():
                     self.debug(
-                        f"  {symbol.value}: Qty={holding.quantity}, "
-                        f"AvgPrice=${holding.average_price:.2f}, "
-                        f"MarketPrice=${holding.price:.2f}, "
-                        f"MarketValue=${holding.holdings_value:,.2f}, "
-                        f"UnrealizedPnL=${holding.unrealized_profit:,.2f}"
+                        f"  {currency}: Amount={cash.amount:,.2f}, "
+                        f"ValueInAccountCurrency=${cash.value_in_account_currency:,.2f}, "
+                        f"ConversionRate={cash.conversion_rate:.6f}"
                     )
+
+                # === 打印持仓信息 ===
+                self.debug(f"📦 Portfolio Holdings:")
+                for symbol, holding in self.portfolio.items():
+                    if holding.quantity != 0:
+                        self.debug(
+                            f"  {symbol.value}: Qty={holding.quantity}, "
+                            f"AvgPrice=${holding.average_price:.2f}, "
+                            f"MarketPrice=${holding.price:.2f}, "
+                            f"MarketValue=${holding.holdings_value:,.2f}, "
+                            f"UnrealizedPnL=${holding.unrealized_profit:,.2f}"
+                        )
 
             # 更新仓位到SpreadManager
             # 查找对应的pair
