@@ -25,10 +25,8 @@ namespace QuantConnect.Orders
     /// Spread Market Order Type - executes multiple correlated trades simultaneously at market prices.
     /// Designed for arbitrage and spread trading strategies where atomic execution across legs is critical.
     /// </summary>
-    public class SpreadMarketOrder : Order
+    public class SpreadMarketOrder : ComboOrder
     {
-        private decimal _ratio = 1m;
-
         /// <summary>
         /// The legs of this spread order
         /// </summary>
@@ -40,19 +38,9 @@ namespace QuantConnect.Orders
         public override OrderType Type => OrderType.SpreadMarket;
 
         /// <summary>
-        /// Gets or sets the quantity for this order.
-        /// The actual quantity for each leg = Leg.Quantity (ratio) × this Quantity
-        /// </summary>
-        public override decimal Quantity
-        {
-            get { return _ratio.GetOrderLegGroupQuantity(GroupOrderManager).Normalize(); }
-            internal set { _ratio = value.GetOrderLegRatio(GroupOrderManager); }
-        }
-
-        /// <summary>
         /// Creates a new instance of SpreadMarketOrder
         /// </summary>
-        public SpreadMarketOrder()
+        public SpreadMarketOrder() : base()
         {
             Legs = new List<Leg>();
         }
@@ -67,9 +55,8 @@ namespace QuantConnect.Orders
         /// <param name="tag">Optional order tag</param>
         /// <param name="properties">Optional order properties</param>
         public SpreadMarketOrder(Symbol symbol, decimal quantity, DateTime time, GroupOrderManager groupOrderManager, string tag = "", IOrderProperties properties = null)
-            : base(symbol, quantity, time, tag, properties)
+            : base(symbol, quantity, time, groupOrderManager, tag, properties)
         {
-            GroupOrderManager = groupOrderManager;
             Legs = new List<Leg>();
         }
 
@@ -91,8 +78,7 @@ namespace QuantConnect.Orders
         {
             var order = new SpreadMarketOrder
             {
-                Legs = Legs?.Select(leg => Leg.Create(leg.Symbol, leg.Quantity, leg.OrderPrice)).ToList(),
-                _ratio = _ratio
+                Legs = Legs?.Select(leg => Leg.Create(leg.Symbol, leg.Quantity, leg.OrderPrice)).ToList()
             };
             CopyTo(order);
             return order;
@@ -107,20 +93,6 @@ namespace QuantConnect.Orders
                 ? $" with {Legs.Count} legs: [{string.Join(", ", Legs.Select(l => $"{l.Symbol}×{l.Quantity}"))}]"
                 : "";
             return $"{base.ToString()}{legInfo}";
-        }
-
-        /// <summary>
-        /// Modifies the state of this order to match the update request
-        /// </summary>
-        /// <param name="request">The request to update this order object</param>
-        public override void ApplyUpdateOrderRequest(UpdateOrderRequest request)
-        {
-            base.ApplyUpdateOrderRequest(request);
-
-            if (request.Quantity.HasValue)
-            {
-                _ratio = request.Quantity.Value.GetOrderLegRatio(GroupOrderManager);
-            }
         }
     }
 }
