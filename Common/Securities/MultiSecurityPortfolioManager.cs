@@ -163,8 +163,9 @@ namespace QuantConnect.Securities
                                         if (CashBook.ContainsKey(baseCurrencySymbolStr))
                                         {
                                             var mainCash = CashBook[baseCurrencySymbolStr];
-                                            subAccountCashBook.Add(baseCurrencySymbolStr, mainCash.Amount, mainCash.ConversionRate);
-                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {baseCurrencySymbolStr} to account '{targetAccount}' CashBook (Amount: {mainCash.Amount}, Rate: {mainCash.ConversionRate})");
+                                            // ✅ Add reference to shared Cash object (not copy) so ConversionRate updates are synchronized
+                                            subAccountCashBook.Add(baseCurrencySymbolStr, mainCash);
+                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {baseCurrencySymbolStr} to account '{targetAccount}' CashBook (shared reference, Amount: {mainCash.Amount}, Rate: {mainCash.ConversionRate})");
                                         }
                                         else
                                         {
@@ -179,8 +180,9 @@ namespace QuantConnect.Securities
                                         if (CashBook.ContainsKey(quoteCurrencySymbolStr))
                                         {
                                             var mainQuoteCash = CashBook[quoteCurrencySymbolStr];
-                                            subAccountCashBook.Add(quoteCurrencySymbolStr, mainQuoteCash.Amount, mainQuoteCash.ConversionRate);
-                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {quoteCurrencySymbolStr} to account '{targetAccount}' CashBook (Amount: {mainQuoteCash.Amount}, Rate: {mainQuoteCash.ConversionRate})");
+                                            // ✅ Add reference to shared Cash object (not copy) so ConversionRate updates are synchronized
+                                            subAccountCashBook.Add(quoteCurrencySymbolStr, mainQuoteCash);
+                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {quoteCurrencySymbolStr} to account '{targetAccount}' CashBook (shared reference, Amount: {mainQuoteCash.Amount}, Rate: {mainQuoteCash.ConversionRate})");
                                         }
                                         else
                                         {
