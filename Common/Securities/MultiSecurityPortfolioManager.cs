@@ -402,7 +402,7 @@ namespace QuantConnect.Securities
         /// we can simply sum the TotalPortfolioValue of all sub-accounts.
         /// No risk of double-counting as Securities are routed exclusively to their respective accounts.
         /// </remarks>
-        public new decimal TotalPortfolioValue
+        public override decimal TotalPortfolioValue
         {
             get
             {

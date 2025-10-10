@@ -426,7 +426,7 @@ namespace QuantConnect.Securities
         /// <seealso cref="Cash"/>
         /// <seealso cref="TotalUnrealizedProfit"/>
         /// <seealso cref="TotalUnleveredAbsoluteHoldingsCost"/>
-        public decimal TotalPortfolioValue
+        public virtual decimal TotalPortfolioValue
         {
             get
             {
