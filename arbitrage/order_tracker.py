@@ -93,6 +93,12 @@ class OrderTracker:
         # 确定账户归属
         account = self._determine_account(symbol)
 
+        # 获取费用并转换为账户货币 (与 STATISTICS 相同的逻辑)
+        fee_cash_amount = order_event.order_fee.value
+        fee_in_account_currency = float(
+            self.algorithm.portfolio.cash_book.convert_to_account_currency(fee_cash_amount).amount
+        )
+
         # 创建订单记录
         order_info = {
             'order_id': order_id,
@@ -103,7 +109,9 @@ class OrderTracker:
             'quantity': abs(order_event.fill_quantity),
             'signed_quantity': order_event.fill_quantity,
             'price': float(order_event.fill_price),
-            'fee': float(order_event.order_fee.value.amount),
+            'fee': fee_in_account_currency,  # 使用转换后的费用（账户货币）
+            'fee_currency': fee_cash_amount.currency,  # 保存原始货币供调试
+            'fee_amount_original': float(fee_cash_amount.amount),  # 保存原始金额供调试
             'time': self._serialize_datetime(order_event.utc_time),
             'time_obj': order_event.utc_time,
             'status': 'OPEN',
@@ -114,6 +122,13 @@ class OrderTracker:
 
         # 更新最后已知价格
         self.last_prices[symbol] = float(order_event.fill_price)
+
+        # 🔍 DEBUG: 记录手续费（显示原始费用和转换后费用）
+        self.algorithm.debug(
+            f"💳 Fee Recorded | Order={order_id} | Symbol={symbol.value} | "
+            f"Fee(Original)={order_info['fee_amount_original']:.4f} {order_info['fee_currency']} | "
+            f"Fee(USD)=${order_info['fee']:.4f}"
+        )
 
         # ========== Round Trip 追踪 ==========
         if self.strategy:
@@ -493,11 +508,14 @@ class OrderTracker:
             active_trip['status'] = 'CLOSED'
             active_trip['close_time'] = order_info['time_obj']
 
+            # 🔍 DEBUG: 打印要计算的订单列表
+            self.algorithm.debug(
+                f"🔍 Calculating PnL for Round Trip #{active_trip['round_trip_id']} | Orders: {active_trip['orders']}"
+            )
+
             # 配对计算 PnL
             pnl_result = self._calculate_paired_pnl(active_trip['orders'], crypto_symbol, stock_symbol)
-            active_trip['pnl'] = pnl_result['total_pnl']
-            active_trip['open_cost'] = pnl_result['total_open_cost']
-            active_trip['close_revenue'] = pnl_result['total_close_revenue']
+            active_trip['pnl'] = pnl_result['net_pnl']  # ← 使用 net_pnl
 
             # ✅ 保存配对PnL详情（用于HTML显示）
             active_trip['crypto_pnl'] = pnl_result['crypto_pnl']
@@ -537,7 +555,7 @@ class OrderTracker:
         2. 配对每组的 BUY 和 SELL 订单
         3. 计算每组的 realized PnL = (sell_price - buy_price) × quantity
         4. 累加所有手续费
-        5. Total PnL = crypto_pnl + stock_pnl - total_fees
+        5. Net PnL = crypto_pnl + stock_pnl - total_fees
 
         Args:
             order_ids: 4个订单ID列表
@@ -549,10 +567,8 @@ class OrderTracker:
             {
                 'crypto_pnl': float,  # Crypto realized PnL (不含手续费)
                 'stock_pnl': float,   # Stock realized PnL (不含手续费)
-                'total_fees': float,  # 总手续费
-                'total_pnl': float,   # 净盈亏 = crypto_pnl + stock_pnl - total_fees
-                'total_open_cost': float,  # 开仓成本（用于显示）
-                'total_close_revenue': float,  # 平仓收入（用于显示）
+                'total_fees': float,  # 总手续费（4个订单）
+                'net_pnl': float,     # 净盈亏 = crypto_pnl + stock_pnl - total_fees
             }
         """
         # 初始化结果
@@ -560,14 +576,14 @@ class OrderTracker:
             'crypto_pnl': 0.0,
             'stock_pnl': 0.0,
             'total_fees': 0.0,
-            'total_pnl': 0.0,
-            'total_open_cost': 0.0,
-            'total_close_revenue': 0.0,
+            'net_pnl': 0.0,
         }
 
         # 分组：crypto 和 stock 订单
         crypto_orders = []
         stock_orders = []
+
+        self.algorithm.debug(f"🔍 Processing {len(order_ids)} orders for PnL calculation")
 
         for order_id in order_ids:
             order = self.orders.get(order_id)
@@ -583,6 +599,13 @@ class OrderTracker:
             # 累加手续费
             result['total_fees'] += order['fee']
 
+            # 🔍 DEBUG: 打印每个订单的手续费
+            self.algorithm.debug(
+                f"  📝 Order {order_id}: {order['symbol']} | Direction={order['direction']} | "
+                f"Qty={order['quantity']:.2f} | Price=${order['price']:.2f} | "
+                f"Fee=${order['fee']:.4f} | Total Fees So Far=${result['total_fees']:.4f}"
+            )
+
         # 验证订单数量
         if len(crypto_orders) != 2 or len(stock_orders) != 2:
             self.algorithm.debug(
@@ -590,17 +613,12 @@ class OrderTracker:
             )
             return result
 
-        # ========== 1. 计算 Crypto PnL ==========
-        # 找到 BUY 和 SELL 订单
+        # ========== 1. 计算 Crypto PnL（纯价差，不含手续费）==========
         crypto_buy = next((o for o in crypto_orders if o['direction'] == 'BUY'), None)
         crypto_sell = next((o for o in crypto_orders if o['direction'] == 'SELL'), None)
 
         if crypto_buy and crypto_sell:
-            # Realized PnL = (sell_price - buy_price) × quantity (使用SELL的数量)
             result['crypto_pnl'] = (crypto_sell['price'] - crypto_buy['price']) * crypto_sell['quantity']
-            result['total_open_cost'] += crypto_buy['price'] * crypto_buy['quantity'] + crypto_buy['fee']
-            result['total_close_revenue'] += crypto_sell['price'] * crypto_sell['quantity'] - crypto_sell['fee']
-
             self.algorithm.debug(
                 f"💰 Crypto PnL: ({crypto_sell['price']:.2f} - {crypto_buy['price']:.2f}) × {crypto_sell['quantity']:.2f} "
                 f"= ${result['crypto_pnl']:.2f}"
@@ -608,18 +626,13 @@ class OrderTracker:
         else:
             self.algorithm.debug(f"⚠️ Crypto BUY/SELL pair incomplete")
 
-        # ========== 2. 计算 Stock PnL ==========
-        # 找到 BUY 和 SELL 订单 (注意：对冲策略中，我们先 SELL stock，后 BUY stock 平仓)
+        # ========== 2. 计算 Stock PnL（纯价差，不含手续费）==========
         stock_buy = next((o for o in stock_orders if o['direction'] == 'BUY'), None)
         stock_sell = next((o for o in stock_orders if o['direction'] == 'SELL'), None)
 
         if stock_buy and stock_sell:
-            # Realized PnL = (sell_price - buy_price) × quantity (使用BUY的数量，因为是平仓)
-            # 对于 Short 策略: PnL = (initial_sell_price - cover_buy_price) × quantity
+            # 对于做空策略: PnL = (sell_price - buy_price) × quantity
             result['stock_pnl'] = (stock_sell['price'] - stock_buy['price']) * stock_buy['quantity']
-            result['total_open_cost'] += stock_sell['price'] * stock_sell['quantity'] + stock_sell['fee']
-            result['total_close_revenue'] += stock_buy['price'] * stock_buy['quantity'] - stock_buy['fee']
-
             self.algorithm.debug(
                 f"💰 Stock PnL: ({stock_sell['price']:.2f} - {stock_buy['price']:.2f}) × {stock_buy['quantity']:.2f} "
                 f"= ${result['stock_pnl']:.2f}"
@@ -627,13 +640,13 @@ class OrderTracker:
         else:
             self.algorithm.debug(f"⚠️ Stock BUY/SELL pair incomplete")
 
-        # ========== 3. 计算总 PnL ==========
-        result['total_pnl'] = result['crypto_pnl'] + result['stock_pnl'] - result['total_fees']
+        # ========== 3. 计算净盈亏（价差 - 手续费）==========
+        result['net_pnl'] = result['crypto_pnl'] + result['stock_pnl'] - result['total_fees']
 
         self.algorithm.debug(
             f"📊 Round Trip PnL Summary | Crypto: ${result['crypto_pnl']:.2f} | "
-            f"Stock: ${result['stock_pnl']:.2f} | Fees: ${result['total_fees']:.2f} | "
-            f"Net: ${result['total_pnl']:.2f}"
+            f"Stock: ${result['stock_pnl']:.2f} | Total Fees: ${result['total_fees']:.2f} | "
+            f"Net PnL: ${result['net_pnl']:.2f}"
         )
 
         return result
@@ -774,10 +787,11 @@ class OrderTracker:
                 'close_time': None,
                 'orders': rt['orders'],
                 'order_count': len(rt['orders']),
-                'open_cost': rt['open_cost'],
-                'close_revenue': rt['close_revenue'],
                 'pnl': None,
                 'unrealized_pnl': rt.get('unrealized_pnl'),  # 从 finalize_open_round_trips() 获取
+                'crypto_pnl': rt.get('crypto_pnl', 0.0),
+                'stock_pnl': rt.get('stock_pnl', 0.0),
+                'total_fees': rt.get('total_fees', 0.0),
             })
 
         # 2. 添加已完成的 round trips
@@ -791,10 +805,8 @@ class OrderTracker:
                     'close_time': self._serialize_datetime(rt['close_time']) if rt['close_time'] else None,
                     'orders': rt['orders'],
                     'order_count': len(rt['orders']),
-                    'open_cost': rt['open_cost'],
-                    'close_revenue': rt['close_revenue'],
                     'pnl': rt['pnl'],
-                    # ✅ 添加详细的配对PnL字段
+                    # ✅ 详细的配对PnL字段
                     'crypto_pnl': rt.get('crypto_pnl', 0.0),
                     'stock_pnl': rt.get('stock_pnl', 0.0),
                     'total_fees': rt.get('total_fees', 0.0),
