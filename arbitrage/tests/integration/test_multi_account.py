@@ -36,6 +36,289 @@ from testing.testable_algorithm import TestableAlgorithm
 from SpreadManager import SpreadManager
 
 
+class OrderTracker:
+    """
+    独立的订单追踪系统 - 用于验证 MultiSecurityPortfolioManager 的正确性
+
+    功能:
+    1. 追踪每笔订单的开仓/平仓价格、数量、手续费
+    2. 计算每笔交易的盈亏（含手续费）
+    3. 算法结束时使用最后价格标记未平仓合约
+    4. 生成详细的统计报告
+    """
+
+    def __init__(self, algorithm: QCAlgorithm):
+        """
+        初始化订单追踪器
+
+        Args:
+            algorithm: QCAlgorithm实例
+        """
+        self.algorithm = algorithm
+
+        # 订单记录: {order_id: order_info}
+        self.orders = {}
+
+        # 账户级别的订单列表
+        self.account_orders = {
+            'IBKR': [],     # 股票订单
+            'Kraken': [],   # 加密货币订单
+        }
+
+        # 配对交易追踪: {(crypto_symbol, stock_symbol): [trade_pairs]}
+        # trade_pairs: [{'open': [crypto_order_id, stock_order_id], 'close': [crypto_order_id, stock_order_id]}]
+        self.pair_trades = {}
+
+        # 最后已知价格: {symbol: last_price}
+        self.last_prices = {}
+
+        algorithm.debug("📊 OrderTracker initialized")
+
+    def record_fill(self, order_event: OrderEvent):
+        """
+        记录订单成交事件
+
+        Args:
+            order_event: 订单成交事件
+        """
+        if order_event.status != OrderStatus.Filled:
+            return
+
+        order_id = order_event.order_id
+        symbol = order_event.symbol
+
+        # 确定账户归属
+        account = self._determine_account(symbol)
+
+        # 创建订单记录
+        order_info = {
+            'order_id': order_id,
+            'symbol': symbol,
+            'account': account,
+            'direction': 'BUY' if order_event.direction == OrderDirection.Buy else 'SELL',
+            'quantity': abs(order_event.fill_quantity),
+            'signed_quantity': order_event.fill_quantity,  # 保留符号: BUY=正, SELL=负
+            'price': order_event.fill_price,
+            'fee': order_event.order_fee.value.amount,
+            'time': order_event.utc_time,
+            'status': 'OPEN',
+            'pnl': None,
+            'exit_price': None,
+            'exit_time': None,
+            'exit_fee': None,
+        }
+
+        # 记录到全局订单字典
+        self.orders[order_id] = order_info
+
+        # 记录到账户级别
+        self.account_orders[account].append(order_id)
+
+        # 更新最后已知价格
+        self.last_prices[symbol] = order_event.fill_price
+
+        self.algorithm.debug(
+            f"📝 OrderTracker: Recorded fill | OrderID={order_id} | "
+            f"Symbol={symbol.value} | Account={account} | "
+            f"Direction={order_info['direction']} | "
+            f"Qty={order_info['quantity']:.2f} @ ${order_info['price']:.2f} | "
+            f"Fee=${order_info['fee']:.4f}"
+        )
+
+    def _determine_account(self, symbol: Symbol) -> str:
+        """
+        根据 Symbol 确定账户归属
+
+        Args:
+            symbol: 交易标的
+
+        Returns:
+            账户名称 ('IBKR' 或 'Kraken')
+        """
+        if symbol.security_type == SecurityType.Equity and symbol.id.market == Market.USA:
+            return 'IBKR'
+        elif symbol.security_type == SecurityType.Crypto and symbol.id.market == Market.Kraken:
+            return 'Kraken'
+        else:
+            return 'Unknown'
+
+    def mark_open_positions_with_final_price(self):
+        """
+        使用最后已知价格标记所有未平仓订单的退出价格
+        """
+        for order_id, order_info in self.orders.items():
+            if order_info['status'] == 'OPEN':
+                symbol = order_info['symbol']
+                if symbol in self.last_prices:
+                    order_info['exit_price'] = self.last_prices[symbol]
+                    order_info['exit_time'] = self.algorithm.time
+                    order_info['exit_fee'] = 0.0  # 未实际平仓，无手续费
+
+                    # 计算浮动盈亏
+                    order_info['pnl'] = self._calculate_pnl(order_info)
+
+                    self.algorithm.debug(
+                        f"💰 OrderTracker: Marked open position with final price | "
+                        f"OrderID={order_id} | Symbol={symbol.value} | "
+                        f"EntryPrice=${order_info['price']:.2f} | "
+                        f"ExitPrice=${order_info['exit_price']:.2f} | "
+                        f"UnrealizedPnL=${order_info['pnl']:.2f}"
+                    )
+
+    def _calculate_pnl(self, order_info: dict) -> float:
+        """
+        计算订单的盈亏（含手续费）
+
+        Args:
+            order_info: 订单信息
+
+        Returns:
+            盈亏金额（正数=盈利，负数=亏损）
+        """
+        if order_info['exit_price'] is None:
+            return None
+
+        entry_price = order_info['price']
+        exit_price = order_info['exit_price']
+        quantity = order_info['quantity']
+        entry_fee = order_info['fee']
+        exit_fee = order_info.get('exit_fee', 0.0)
+
+        # 计算价差盈亏
+        if order_info['direction'] == 'BUY':
+            # 买入: 盈亏 = (卖出价 - 买入价) * 数量
+            price_pnl = (exit_price - entry_price) * quantity
+        else:
+            # 卖出: 盈亏 = (卖出价 - 买入价) * 数量
+            price_pnl = (entry_price - exit_price) * quantity
+
+        # 减去手续费
+        total_pnl = price_pnl - entry_fee - exit_fee
+
+        return total_pnl
+
+    def generate_report(self) -> str:
+        """
+        生成详细的订单追踪报告
+
+        Returns:
+            格式化的报告字符串
+        """
+        report = []
+        report.append("=" * 100)
+        report.append("📊 OrderTracker - 独立订单追踪报告")
+        report.append("=" * 100)
+
+        # === 1. 订单汇总 ===
+        report.append("\n【订单汇总】")
+        report.append(f"总订单数: {len(self.orders)}")
+        report.append(f"IBKR 账户订单: {len(self.account_orders['IBKR'])}")
+        report.append(f"Kraken 账户订单: {len(self.account_orders['Kraken'])}")
+
+        # === 2. 按账户分组的订单明细 ===
+        for account_name in ['IBKR', 'Kraken']:
+            report.append(f"\n{'=' * 100}")
+            report.append(f"【{account_name} 账户订单明细】")
+            report.append(f"{'=' * 100}")
+
+            order_ids = self.account_orders[account_name]
+            if not order_ids:
+                report.append("(无订单)")
+                continue
+
+            # 表头
+            report.append(
+                f"{'OrderID':<10} {'Symbol':<15} {'Dir':<5} {'Qty':<10} "
+                f"{'EntryPrice':<12} {'ExitPrice':<12} {'EntryFee':<10} {'ExitFee':<10} "
+                f"{'PnL':<12} {'Status':<8} {'Time':<20}"
+            )
+            report.append("-" * 100)
+
+            account_total_pnl = 0.0
+            account_total_fees = 0.0
+
+            for order_id in order_ids:
+                order_info = self.orders[order_id]
+
+                pnl_str = f"${order_info['pnl']:.2f}" if order_info['pnl'] is not None else "N/A"
+                exit_price_str = f"${order_info['exit_price']:.2f}" if order_info['exit_price'] is not None else "N/A"
+                exit_fee_str = f"${order_info.get('exit_fee', 0):.4f}" if order_info.get('exit_fee') is not None else "N/A"
+
+                report.append(
+                    f"{order_info['order_id']:<10} "
+                    f"{order_info['symbol'].value:<15} "
+                    f"{order_info['direction']:<5} "
+                    f"{order_info['quantity']:<10.2f} "
+                    f"${order_info['price']:<11.2f} "
+                    f"{exit_price_str:<12} "
+                    f"${order_info['fee']:<9.4f} "
+                    f"{exit_fee_str:<10} "
+                    f"{pnl_str:<12} "
+                    f"{order_info['status']:<8} "
+                    f"{str(order_info['time'])[:19]:<20}"
+                )
+
+                if order_info['pnl'] is not None:
+                    account_total_pnl += order_info['pnl']
+                account_total_fees += order_info['fee']
+                if order_info.get('exit_fee') is not None:
+                    account_total_fees += order_info['exit_fee']
+
+            report.append("-" * 100)
+            report.append(f"账户总盈亏 (PnL): ${account_total_pnl:.2f}")
+            report.append(f"账户总手续费: ${account_total_fees:.4f}")
+
+        # === 3. 全局统计 ===
+        report.append(f"\n{'=' * 100}")
+        report.append("【全局统计】")
+        report.append(f"{'=' * 100}")
+
+        total_pnl = sum(o['pnl'] for o in self.orders.values() if o['pnl'] is not None)
+        total_fees = sum(o['fee'] for o in self.orders.values())
+        total_fees += sum(o.get('exit_fee', 0) for o in self.orders.values() if o.get('exit_fee') is not None)
+
+        open_positions = [o for o in self.orders.values() if o['status'] == 'OPEN']
+        closed_positions = [o for o in self.orders.values() if o['status'] == 'CLOSED']
+
+        report.append(f"总盈亏 (PnL): ${total_pnl:.2f}")
+        report.append(f"总手续费: ${total_fees:.4f}")
+        report.append(f"净盈亏 (PnL - Fees): ${total_pnl:.2f}")  # PnL already includes fees
+        report.append(f"未平仓订单数: {len(open_positions)}")
+        report.append(f"已平仓订单数: {len(closed_positions)}")
+
+        # === 4. 未平仓订单详情 ===
+        if open_positions:
+            report.append(f"\n{'=' * 100}")
+            report.append("【未平仓订单 (使用最后价格标记)】")
+            report.append(f"{'=' * 100}")
+
+            report.append(
+                f"{'OrderID':<10} {'Symbol':<15} {'Dir':<5} {'Qty':<10} "
+                f"{'EntryPrice':<12} {'LastPrice':<12} {'UnrealizedPnL':<15}"
+            )
+            report.append("-" * 100)
+
+            for order_info in open_positions:
+                pnl_str = f"${order_info['pnl']:.2f}" if order_info['pnl'] is not None else "N/A"
+                last_price_str = f"${order_info['exit_price']:.2f}" if order_info['exit_price'] is not None else "N/A"
+
+                report.append(
+                    f"{order_info['order_id']:<10} "
+                    f"{order_info['symbol'].value:<15} "
+                    f"{order_info['direction']:<5} "
+                    f"{order_info['quantity']:<10.2f} "
+                    f"${order_info['price']:<11.2f} "
+                    f"{last_price_str:<12} "
+                    f"{pnl_str:<15}"
+                )
+
+        report.append("=" * 100)
+        report.append("✅ OrderTracker 报告生成完成")
+        report.append("=" * 100)
+
+        return "\n".join(report)
+
+
 class SimpleStrategy:
     """
     简单套利策略 - 市价单版本
@@ -300,8 +583,13 @@ class SimpleStrategy:
         stock_qty = self.algorithm.portfolio[stock_symbol].quantity
         self.algorithm.debug(f"🔍 [CLOSE] Stock quantity: {stock_qty:.2f}")
 
-        if abs(crypto_qty) < 1e-8 and abs(stock_qty) < 1e-8:
-            self.algorithm.debug(f"⚠️ No significant position to close for {pair_symbol}")
+        # 检查是否有足够的仓位可以平仓
+        # 如果任何一条腿的数量为0或接近0，则无法计算GCD，跳过平仓
+        if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
+            self.algorithm.debug(
+                f"⚠️ Cannot close position - one or both legs have zero quantity | "
+                f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
+            )
             return
 
         legs, gcd = self.cal_legs_and_multiple(pair_symbol, (-crypto_qty, -stock_qty), action="CLOSE")
@@ -379,7 +667,7 @@ class MultiAccountTest(TestableAlgorithm):
 
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 5)
+        self.set_end_date(2025, 9, 27)
 
         # 注意: 不在这里设置现金，因为多账户配置会覆盖
         # 多账户配置在 config.json 中设置:
@@ -468,7 +756,7 @@ class MultiAccountTest(TestableAlgorithm):
             spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
-            position_size_pct=0.10  # 10% (更保守，因为有两个账户)
+            position_size_pct=0.4  # 10% (更保守，因为有两个账户)
         )
 
         # 链接策略到 SpreadManager
@@ -489,6 +777,10 @@ class MultiAccountTest(TestableAlgorithm):
             'Kraken': [],
             'Unknown': []
         }
+
+        # === 10. 初始化独立的订单追踪器 ===
+        self.debug("📊 Initializing OrderTracker for independent order verification...")
+        self.order_tracker = OrderTracker(self)
 
         # === 断言验证 ===
         self.assert_not_none(self.tsla_stock, "TSLA Stock Symbol 应该存在")
@@ -539,6 +831,9 @@ class MultiAccountTest(TestableAlgorithm):
 
         # 记录到对应账户
         self.account_order_events[expected_account].append(order_event)
+
+        # === 记录订单填充到独立追踪器 ===
+        self.order_tracker.record_fill(order_event)
 
         if order_event.status == OrderStatus.Filled:
             self.debug(
@@ -677,6 +972,19 @@ class MultiAccountTest(TestableAlgorithm):
     def on_end_of_algorithm(self):
         """算法结束 - 输出统计信息和验证多账户行为"""
         self.begin_test_phase("final_validation")
+
+        # === 使用最后价格标记未平仓订单 ===
+        self.debug("💰 Marking open positions with final prices...")
+        self.order_tracker.mark_open_positions_with_final_price()
+
+        # === 生成独立订单追踪报告 ===
+        self.debug("")
+        self.debug("")
+        report = self.order_tracker.generate_report()
+        for line in report.split('\n'):
+            self.debug(line)
+        self.debug("")
+        self.debug("")
 
         # === 验证数据完整性 ===
         self.assert_greater(self.tick_count, 0, "应该接收到tick数据")
