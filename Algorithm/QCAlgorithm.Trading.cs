@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections;
 using System.Linq;
 using QuantConnect.Orders;
 using QuantConnect.Interfaces;
@@ -23,6 +24,7 @@ using QuantConnect.Securities.Option;
 using static QuantConnect.StringExtensions;
 using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Orders.TimeInForces;
+using Python.Runtime;
 
 namespace QuantConnect.Algorithm
 {
@@ -854,6 +856,152 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Issue a spread market order/trade using direct symbol-quantity pairs (simplified API).
+        /// This is a simpler alternative to the Leg-based API - no need to calculate GCD or ratios.
+        /// Designed for arbitrage and spread trading where you want to specify exact quantities directly.
+        /// All orders are linked via GroupOrderManager to ensure atomic execution.
+        ///
+        /// Python usage: self.spread_market_order([(crypto_symbol, 150.5), (stock_symbol, -225.3)])
+        /// </summary>
+        /// <param name="legs">List of (Symbol, Quantity) tuples. Python: pass list of tuples [(symbol1, qty1), (symbol2, qty2)]</param>
+        /// <param name="asynchronous">Send the order asynchronously (false). Otherwise we'll block until it fills</param>
+        /// <param name="tag">String tag for the order (optional)</param>
+        /// <param name="orderProperties">The order properties to use. Defaults to <see cref="DefaultOrderProperties"/></param>
+        /// <returns>Sequence of order tickets, one for each leg</returns>
+        /// <example>
+        /// // C# example: Buy 150.5 BTC and sell 225.3 TSLA (no GCD calculation needed!)
+        /// var tickets = SpreadMarketOrder(
+        ///     new List<(Symbol, decimal)> {
+        ///         (btcSymbol, 150.5m),
+        ///         (tslaSymbol, -225.3m)
+        ///     },
+        ///     tag: "Crypto-Stock Arbitrage"
+        /// );
+        /// // Python example:
+        /// tickets = self.spread_market_order(
+        ///     [(btc_symbol, 150.5), (tsla_symbol, -225.3)],
+        ///     tag="Crypto-Stock Arbitrage"
+        /// )
+        /// </example>
+        [DocumentationAttribute(TradingAndOrders)]
+        public List<OrderTicket> SpreadMarketOrder(object legs, bool asynchronous = false, string tag = "", IOrderProperties orderProperties = null)
+        {
+            // Handle both C# ValueTuple list and Python list of tuples
+            var symbolQuantityPairs = new List<(Symbol, decimal)>();
+
+            // Try to cast as C# list of ValueTuples first (for C# code)
+            if (legs is List<(Symbol, decimal)> csharpList)
+            {
+                symbolQuantityPairs = csharpList;
+            }
+            // Handle Python list of tuples
+            else if (legs is IEnumerable enumerable)
+            {
+                foreach (var item in enumerable)
+                {
+                    // Python tuples may come through as PyObject, Object[], or ValueTuple
+                    if (item is PyObject pyTuple)
+                    {
+                        // Convert Python tuple (symbol, quantity) to C# ValueTuple
+                        var symbol = pyTuple[0].As<Symbol>();
+                        var quantity = pyTuple[1].As<decimal>();
+                        symbolQuantityPairs.Add((symbol, quantity));
+                    }
+                    // Python tuples also come through as Object[] arrays
+                    else if (item is object[] objArray && objArray.Length == 2)
+                    {
+                        var symbol = objArray[0] as Symbol ?? throw new ArgumentException("First element of tuple must be a Symbol");
+                        var quantity = Convert.ToDecimal(objArray[1]);
+                        symbolQuantityPairs.Add((symbol, quantity));
+                    }
+                    // Handle if it's already converted to ValueTuple
+                    else if (item is ValueTuple<Symbol, decimal> valueTuple)
+                    {
+                        symbolQuantityPairs.Add(valueTuple);
+                    }
+                    else
+                    {
+                        // Try dynamic cast as fallback
+                        try
+                        {
+                            dynamic dynItem = item;
+                            symbolQuantityPairs.Add(((Symbol)dynItem.Item1, (decimal)dynItem.Item2));
+                        }
+                        catch
+                        {
+                            throw new ArgumentException($"Invalid item type in legs list: {item?.GetType().Name}. Expected (Symbol, decimal) tuples.");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                throw new ArgumentException($"Invalid legs parameter type: {legs?.GetType().Name}. Expected list of (Symbol, decimal) tuples.");
+            }
+
+            if (symbolQuantityPairs.Count == 0)
+            {
+                throw new ArgumentException("Symbol-quantity pairs list cannot be empty");
+            }
+
+            // Create a GroupOrderManager to link all orders together
+            var groupOrderManager = new GroupOrderManager(
+                id: Transactions.GetIncrementGroupOrderManagerId(),
+                legCount: symbolQuantityPairs.Count,
+                quantity: 1,  // We use quantity=1 since we're specifying exact quantities directly
+                limitPrice: 0
+            );
+
+            List<OrderTicket> orderTickets = new(capacity: symbolQuantityPairs.Count);
+            List<SubmitOrderRequest> submitRequests = new(capacity: symbolQuantityPairs.Count);
+
+            foreach (var (symbol, quantity) in symbolQuantityPairs)
+            {
+                var security = Securities[symbol];
+
+                // Create SpreadMarketOrder request with the exact quantity (no ratio calculation!)
+                var request = CreateSubmitOrderRequest(
+                    OrderType.SpreadMarket,
+                    security,
+                    quantity,  // Use actual quantity directly - supports decimals!
+                    tag,
+                    orderProperties ?? DefaultOrderProperties?.Clone(),
+                    groupOrderManager: groupOrderManager,
+                    asynchronous: asynchronous);
+
+                // Pre-check all orders before submitting any
+                var response = PreOrderChecks(request);
+                if (response.IsError)
+                {
+                    orderTickets.Add(OrderTicket.InvalidSubmitRequest(Transactions, request, response));
+                    return orderTickets;
+                }
+
+                submitRequests.Add(request);
+            }
+
+            // Submit all orders (atomic submission via GroupOrderManager)
+            foreach (var request in submitRequests)
+            {
+                orderTickets.Add(Transactions.AddOrder(request));
+            }
+
+            // Wait for orders to fill if synchronous
+            if (!asynchronous)
+            {
+                foreach (var ticket in orderTickets)
+                {
+                    if (ticket.Status.IsOpen())
+                    {
+                        Transactions.WaitForOrder(ticket.OrderId);
+                    }
+                }
+            }
+
+            return orderTickets;
+        }
+
+        /// <summary>
         /// Issue a combo leg limit order/trade for multiple assets, each having its own limit price.
         /// </summary>
         /// <param name="legs">The list of legs the order consists of</param>
@@ -1627,13 +1775,121 @@ namespace QuantConnect.Algorithm
         [DocumentationAttribute(TradingAndOrders)]
         public decimal CalculateOrderQuantity(Symbol symbol, decimal target)
         {
-            var percent = PortfolioTarget.Percent(this, symbol, target, true);
+            SecurityPortfolioManager portfolioToUse = null;
+
+            // Check if we're in a multi-account scenario
+            if (Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+            {
+                // Create a temporary order to determine routing target
+                // Using MarketOrder with quantity 0 as a routing probe
+                var tempOrder = new MarketOrder(symbol, 0, UtcTime);
+
+                // Use the router to determine which sub-account this order will route to
+                var router = multiPortfolio.GetType()
+                    .GetField("_router", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(multiPortfolio) as IOrderRouter;
+
+                if (router != null)
+                {
+                    var targetAccount = router.Route(tempOrder);
+                    portfolioToUse = multiPortfolio.GetAccount(targetAccount);
+
+                    Debug($"CalculateOrderQuantity: Multi-account detected. Symbol {symbol} routed to account '{targetAccount}' with portfolio value ${portfolioToUse.TotalPortfolioValue:N2}");
+                }
+            }
+
+            var percent = PortfolioTarget.Percent(this, symbol, target, true, portfolio: portfolioToUse);
 
             if (percent == null)
             {
                 return 0;
             }
             return percent.Quantity;
+        }
+
+        /// <summary>
+        /// Calculates order quantities for a hedged pair of symbols, ensuring equal market values
+        /// </summary>
+        /// <param name="symbol1">First symbol (e.g., crypto)</param>
+        /// <param name="symbol2">Second symbol (e.g., stock)</param>
+        /// <param name="targetPercent">Target percentage of portfolio value (positive for long, negative for short)</param>
+        /// <param name="oppositeDirection">
+        /// If true, symbol2 will be in opposite direction to symbol1 (hedged)
+        /// If false, both symbols will be in the same direction
+        /// </param>
+        /// <returns>
+        /// A tuple containing:
+        /// - quantity1: Order quantity for symbol1 (signed: positive = buy, negative = sell)
+        /// - quantity2: Order quantity for symbol2 (signed: positive = buy, negative = sell)
+        /// - marketValue: Actual market value to be used (same for both symbols)
+        /// Returns null if unable to construct a valid order pair
+        /// </returns>
+        [DocumentationAttribute(TradingAndOrders)]
+        public List<(Symbol, decimal)> CalculateOrderPair(
+            Symbol symbol1,
+            Symbol symbol2,
+            decimal targetPercent,
+            bool oppositeDirection = true)
+        {
+            // 1. Calculate target quantities for each account using existing method
+            //    CalculateOrderQuantity already handles:
+            //    - Multi-account routing
+            //    - BuyingPower validation and auto-downgrade
+            //    - Leverage and margin calculations
+            //    - Long/Short (positive/negative percentage)
+            var qty1 = CalculateOrderQuantity(symbol1, targetPercent);
+
+            // For symbol2, reverse the percentage if oppositeDirection is true (hedging)
+            var targetPercent2 = oppositeDirection ? -targetPercent : targetPercent;
+            var qty2 = CalculateOrderQuantity(symbol2, targetPercent2);
+
+            // 2. Get current prices
+            if (!Securities.TryGetValue(symbol1, out var security1))
+            {
+                Error($"CalculateOrderPair: {symbol1} not found in securities");
+                return null;
+            }
+
+            if (!Securities.TryGetValue(symbol2, out var security2))
+            {
+                Error($"CalculateOrderPair: {symbol2} not found in securities");
+                return null;
+            }
+
+            var price1 = security1.Price;
+            var price2 = security2.Price;
+
+            if (price1 == 0 || price2 == 0)
+            {
+                Error($"CalculateOrderPair: Invalid price - {symbol1}: ${price1}, {symbol2}: ${price2}");
+                return null;
+            }
+
+            // 3. Calculate market values (absolute value)
+            var value1 = Math.Abs(qty1 * price1);
+            var value2 = Math.Abs(qty2 * price2);
+
+            // 4. Hedging constraint: use minimum value (ensure both accounts can support it)
+            var finalValue = Math.Min(value1, value2);
+
+            if (finalValue == 0)
+            {
+                Error($"CalculateOrderPair: Final value is zero (Symbol1 value: {value1}, Symbol2 value: {value2})");
+                return null;
+            }
+
+            // 5. Recalculate quantities based on minimum value (ensure equal market values)
+            //    Preserve the original direction sign
+            var sign1 = Math.Sign(qty1);
+            var sign2 = Math.Sign(qty2);
+
+            var finalQty1 = (finalValue / price1) * sign1;
+            var finalQty2 = (finalValue / price2) * sign2;
+
+            Debug($"CalculateOrderPair: {symbol1} {finalQty1:F2} @ ${price1:F2} = ${Math.Abs(finalQty1 * price1):F2}, " +
+                  $"{symbol2} {finalQty2:F2} @ ${price2:F2} = ${Math.Abs(finalQty2 * price2):F2}");
+
+            return new List<(Symbol, decimal)> { (symbol1, finalQty1), (symbol2, finalQty2) };
         }
 
         /// <summary>

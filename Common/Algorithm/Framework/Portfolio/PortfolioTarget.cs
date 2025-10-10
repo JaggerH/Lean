@@ -131,8 +131,10 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// <param name="returnDeltaQuantity">True, result quantity will be the Delta required to reach target percent.
         /// False, the result quantity will be the Total quantity to reach the target percent, including current holdings</param>
         /// <param name="tag">The target tag with additional information</param>
+        /// <param name="portfolio">Optional portfolio to use for calculation. If null, uses algorithm.Portfolio.
+        /// In multi-account scenarios, this should be the specific sub-account portfolio where the order will execute.</param>
         /// <returns>A portfolio target for the specified symbol/percent</returns>
-        public static IPortfolioTarget Percent(IAlgorithm algorithm, Symbol symbol, decimal percent, bool returnDeltaQuantity = false, string tag = "")
+        public static IPortfolioTarget Percent(IAlgorithm algorithm, Symbol symbol, decimal percent, bool returnDeltaQuantity = false, string tag = "", SecurityPortfolioManager portfolio = null)
         {
             var absolutePercentage = Math.Abs(percent);
             if (absolutePercentage > algorithm.Settings.MaxAbsolutePortfolioTargetPercentage
@@ -159,15 +161,18 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                 return null;
             }
 
+            // Use provided portfolio or default to algorithm.Portfolio
+            var portfolioToUse = portfolio ?? algorithm.Portfolio;
+
             // Factoring in FreePortfolioValuePercentage.
-            var adjustedPercent = percent * algorithm.Portfolio.TotalPortfolioValueLessFreeBuffer / algorithm.Portfolio.TotalPortfolioValue;
+            var adjustedPercent = percent * portfolioToUse.TotalPortfolioValueLessFreeBuffer / portfolioToUse.TotalPortfolioValue;
 
             // we normalize the target buying power by the leverage so we work in the land of margin
             var targetFinalMarginPercentage = adjustedPercent / security.BuyingPowerModel.GetLeverage(security);
 
-            var positionGroup = algorithm.Portfolio.Positions.GetOrCreateDefaultGroup(security);
+            var positionGroup = portfolioToUse.Positions.GetOrCreateDefaultGroup(security);
             var result = positionGroup.BuyingPowerModel.GetMaximumLotsForTargetBuyingPower(
-                new GetMaximumLotsForTargetBuyingPowerParameters(algorithm.Portfolio, positionGroup,
+                new GetMaximumLotsForTargetBuyingPowerParameters(portfolioToUse, positionGroup,
                     targetFinalMarginPercentage, algorithm.Settings.MinimumOrderMarginPortfolioPercentage));
 
             if (result.IsError)

@@ -14,7 +14,6 @@
 */
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Interfaces;
 using QuantConnect.Securities;
@@ -24,14 +23,13 @@ namespace QuantConnect.Orders
     /// <summary>
     /// Spread Market Order Type - executes multiple correlated trades simultaneously at market prices.
     /// Designed for arbitrage and spread trading strategies where atomic execution across legs is critical.
+    ///
+    /// Note: This is a simplified version that works with GroupOrderManager to achieve atomicity.
+    /// Each leg is created as a separate MarketOrder with the same GroupOrderManager,
+    /// which ensures all legs pass pre-validation together and are submitted atomically.
     /// </summary>
-    public class SpreadMarketOrder : ComboOrder
+    public class SpreadMarketOrder : MarketOrder
     {
-        /// <summary>
-        /// The legs of this spread order
-        /// </summary>
-        public List<Leg> Legs { get; set; }
-
         /// <summary>
         /// Spread Market Order Type
         /// </summary>
@@ -42,33 +40,21 @@ namespace QuantConnect.Orders
         /// </summary>
         public SpreadMarketOrder() : base()
         {
-            Legs = new List<Leg>();
         }
 
         /// <summary>
         /// Creates a new instance of SpreadMarketOrder with specified parameters
         /// </summary>
-        /// <param name="symbol">The symbol (primary symbol for the order)</param>
-        /// <param name="quantity">The quantity multiplier for all legs</param>
+        /// <param name="symbol">The symbol for this leg of the spread order</param>
+        /// <param name="quantity">The actual quantity to trade (not a multiplier)</param>
         /// <param name="time">The time the order was placed</param>
-        /// <param name="groupOrderManager">The group order manager for this order</param>
+        /// <param name="groupOrderManager">The group order manager linking all legs together</param>
         /// <param name="tag">Optional order tag</param>
         /// <param name="properties">Optional order properties</param>
         public SpreadMarketOrder(Symbol symbol, decimal quantity, DateTime time, GroupOrderManager groupOrderManager, string tag = "", IOrderProperties properties = null)
-            : base(symbol, quantity, time, groupOrderManager, tag, properties)
+            : base(symbol, quantity, time, tag, properties)
         {
-            Legs = new List<Leg>();
-        }
-
-        /// <summary>
-        /// Gets the order value in units of the security's quote currency
-        /// </summary>
-        /// <param name="security">The security matching this order's symbol</param>
-        protected override decimal GetValueImpl(Security security)
-        {
-            // For spread orders, the value is the sum of all leg values
-            // This is a simplified calculation - actual value should consider all legs
-            return Quantity * security.Price;
+            GroupOrderManager = groupOrderManager;
         }
 
         /// <summary>
@@ -76,10 +62,7 @@ namespace QuantConnect.Orders
         /// </summary>
         public override Order Clone()
         {
-            var order = new SpreadMarketOrder
-            {
-                Legs = Legs?.Select(leg => Leg.Create(leg.Symbol, leg.Quantity, leg.OrderPrice)).ToList()
-            };
+            var order = new SpreadMarketOrder();
             CopyTo(order);
             return order;
         }
@@ -89,10 +72,10 @@ namespace QuantConnect.Orders
         /// </summary>
         public override string ToString()
         {
-            var legInfo = Legs != null && Legs.Any()
-                ? $" with {Legs.Count} legs: [{string.Join(", ", Legs.Select(l => $"{l.Symbol}×{l.Quantity}"))}]"
+            var groupInfo = GroupOrderManager != null
+                ? $" [Group {GroupOrderManager.Id}, Leg {Array.IndexOf(GroupOrderManager.OrderIds.ToArray(), Id) + 1}/{GroupOrderManager.Count}]"
                 : "";
-            return $"{base.ToString()}{legInfo}";
+            return $"{base.ToString()}{groupInfo}";
         }
     }
 }
