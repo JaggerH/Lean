@@ -160,15 +160,24 @@ class BaseStrategy:
             self._debug(f"⚠️ Cannot build order pair - insufficient buying power or invalid prices")
             return None
 
-        # 验证数量有效性（解包仅用于验证）
-        (sym1, qty1), (sym2, qty2) = order_pair
+        # 验证数量有效性 - 使用 .Item1 和 .Item2 访问 C# ValueTuple
+        # Python.NET 无法直接解包 C# ValueTuple，需要使用属性访问
+        pair1 = order_pair[0]  # 第一个 (Symbol, decimal) tuple
+        pair2 = order_pair[1]  # 第二个 (Symbol, decimal) tuple
+
+        sym1 = pair1.Item1      # Symbol
+        qty1 = float(pair1.Item2)  # decimal -> float
+
+        sym2 = pair2.Item1      # Symbol
+        qty2 = float(pair2.Item2)  # decimal -> float
+
         if int(qty1) == 0 or int(qty2) == 0:
-            self._debug(f"⚠️ Invalid quantity after rounding: qty1={qty1:.2f}, qty2={qty2:.2f}")
+            self._debug(f"⚠️ Invalid quantity: {sym1.value}={qty1:.2f}, {sym2.value}={qty2:.2f}")
             return None
 
         # 日志：显示计算的订单对
         self._debug(
-            f"📊 Order Pair Calculated | Target: {position_size_pct*100}% | "
+            f"📊 Order Pair | Target: {position_size_pct*100}% | "
             f"{sym1.value}: {qty1:.2f} | {sym2.value}: {qty2:.2f}"
         )
 
