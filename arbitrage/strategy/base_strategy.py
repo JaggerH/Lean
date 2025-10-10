@@ -199,8 +199,9 @@ class BaseStrategy:
         """
         平仓 - 使用 SpreadMarketOrder 平掉当前持仓
 
-        ⚠️ 重要: 使用 SpreadManager 追踪的仓位,而非 Portfolio 总量
-        这样可以正确处理多对一场景 (多个 crypto → 同一个 stock)
+        ⚠️ 重要:
+        - Crypto数量从 Portfolio.CashBook 获取实际持仓（因为可能有部分成交/滑点）
+        - Stock数量从 pair_position 获取（追踪的数量是可靠的）
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -217,13 +218,19 @@ class BaseStrategy:
         if not self._should_close_position(crypto_symbol, stock_symbol):
             return None
 
-        # ✅ 获取这个交易对追踪的仓位 (不是 Portfolio 总量!)
+        # ✅ 获取这个交易对追踪的stock仓位
         pair_position = self.get_pair_position(pair_symbol)
         if not pair_position:
             self._debug(f"⚠️ No tracked position for {crypto_symbol.value} <-> {stock_symbol.value}")
             return None
 
-        crypto_qty, stock_qty = pair_position
+        _, stock_qty = pair_position
+
+        # ✅ 获取 crypto 实际持仓（从 CashBook）
+        # 使用 Lean 官方方法: Security.BaseCurrency.Symbol
+        crypto_security = self.algorithm.securities[crypto_symbol]
+        crypto_asset = crypto_security.base_currency.symbol
+        crypto_qty = self.algorithm.portfolio.cash_book[crypto_asset].amount
 
         # 检查是否有足够的仓位可以平仓
         if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
@@ -233,9 +240,9 @@ class BaseStrategy:
             )
             return None
 
-        # 构建平仓订单对 (使用追踪的数量,取反平仓)
-        # 注意: crypto_qty 可能是正或负,stock_qty 可能是正或负
-        # 平仓就是完全反向操作
+        # 构建平仓订单对 (使用实际数量,取反平仓)
+        # crypto_qty 来自 CashBook (实际持仓)
+        # stock_qty 来自 pair_position (追踪的数量)
         close_pair = [(crypto_symbol, -crypto_qty), (stock_symbol, -stock_qty)]
 
         # 使用 SpreadMarketOrder 平仓
@@ -299,6 +306,7 @@ class BaseStrategy:
     def register_orders(self, tickets: List, pair_symbol: Tuple[Symbol, Symbol]):
         """
         注册订单ID到交易对的映射关系
+        主要作用是更新 position 中的对应持仓，其实就是stock的持仓是多对一的，这样可以明确知道哪个订单归属于哪个持仓
 
         在创建 SpreadMarketOrder (开仓/平仓) 后调用此方法,建立订单到交易对的映射。
         这样在 on_order_event 时可以精确查找订单所属的交易对。
