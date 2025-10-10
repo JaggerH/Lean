@@ -4,7 +4,7 @@ Base Strategy - 套利策略基类
 提供基础的开仓/平仓逻辑，供具体策略继承和扩展
 """
 from AlgorithmImports import *
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 
 
 class BaseStrategy:
@@ -16,6 +16,7 @@ class BaseStrategy:
     - 使用 Lean 原生接口防止重复订单（Portfolio.Invested + GetOpenOrders）
     - 只检查 crypto 侧状态，避免多交易所对冲冲突
     - 可选的debug输出控制
+    - 管理交易对的仓位和订单追踪
 
     子类需要实现:
     - on_spread_update(): 处理价差更新的具体逻辑
@@ -31,6 +32,15 @@ class BaseStrategy:
         """
         self.algorithm = algorithm
         self.debug = debug
+
+        # Position tracking: {(crypto_symbol, stock_symbol): (token_qty, stock_qty)}
+        # 维护每个交易对的仓位，解决多对一映射问题
+        # Example: {(TSLAxUSD, TSLA): (300, -290)}
+        self.positions: Dict[Tuple[Symbol, Symbol], Tuple[float, float]] = {}
+
+        # Order to pair mapping: {order_id: (crypto_symbol, stock_symbol)}
+        # 用于在 on_order_event 时精确查找订单所属的交易对
+        self.order_to_pair: Dict[int, Tuple[Symbol, Symbol]] = {}
 
     def _debug(self, message: str):
         """
@@ -173,6 +183,9 @@ class BaseStrategy:
             self._debug(f"❌ Order submission failed")
             return None
 
+        # ✅ 注册订单 (用于 on_order_event 路由)
+        self.register_orders(tickets, pair_symbol)
+
         self._debug(
             f"📈 OPEN | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
@@ -185,6 +198,9 @@ class BaseStrategy:
                        crypto_quote, stock_quote) -> Optional[List]:
         """
         平仓 - 使用 SpreadMarketOrder 平掉当前持仓
+
+        ⚠️ 重要: 使用 SpreadManager 追踪的仓位,而非 Portfolio 总量
+        这样可以正确处理多对一场景 (多个 crypto → 同一个 stock)
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -201,53 +217,26 @@ class BaseStrategy:
         if not self._should_close_position(crypto_symbol, stock_symbol):
             return None
 
-        # 获取真实持仓数量
-        # Crypto: 从 CashBook 获取（因为被当作"货币"处理，存储在 BaseCurrency 中）
-        # Stock: 从 Portfolio 获取（传统证券持仓）
-        crypto_security = self.algorithm.securities[crypto_symbol]
-        crypto_base_currency_symbol = crypto_security.base_currency.symbol
+        # ✅ 获取这个交易对追踪的仓位 (不是 Portfolio 总量!)
+        pair_position = self.get_pair_position(pair_symbol)
+        if not pair_position:
+            self._debug(f"⚠️ No tracked position for {crypto_symbol.value} <-> {stock_symbol.value}")
+            return None
 
-        # 尝试从多账户获取
-        crypto_qty = 0
-        if hasattr(self.algorithm.portfolio, 'get_account'):
-            try:
-                # 从 Kraken 子账户获取
-                kraken_account = self.algorithm.portfolio.get_account("Kraken")
-                if kraken_account.cash_book.contains_key(crypto_base_currency_symbol):
-                    crypto_qty = kraken_account.cash_book[crypto_base_currency_symbol].amount
-                    self._debug(f"✅ Got crypto_qty from Kraken: {crypto_qty:.2f}")
-                else:
-                    self._debug(f"⚠️ {crypto_base_currency_symbol} not in Kraken CashBook")
-            except Exception as e:
-                self._debug(f"⚠️ Error accessing Kraken account: {e}")
-                # 回退到主账户
-                if self.algorithm.portfolio.cash_book.contains_key(crypto_base_currency_symbol):
-                    crypto_qty = self.algorithm.portfolio.cash_book[crypto_base_currency_symbol].amount
-                    self._debug(f"⚠️ Fallback to main CashBook: {crypto_qty:.2f}")
-                else:
-                    self._debug(f"❌ {crypto_base_currency_symbol} not in main CashBook either")
-        else:
-            # 单账户模式
-            if self.algorithm.portfolio.cash_book.contains_key(crypto_base_currency_symbol):
-                crypto_qty = self.algorithm.portfolio.cash_book[crypto_base_currency_symbol].amount
-                self._debug(f"ℹ️ Single account mode, crypto_qty: {crypto_qty:.2f}")
-            else:
-                self._debug(f"❌ {crypto_base_currency_symbol} not in CashBook")
-
-        # 获取股票数量（Holdings 是共享的）
-        stock_qty = self.algorithm.portfolio[stock_symbol].quantity
-        self._debug(f"🔍 Stock quantity: {stock_qty:.2f}")
+        crypto_qty, stock_qty = pair_position
 
         # 检查是否有足够的仓位可以平仓
         if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
             self._debug(
-                f"⚠️ Cannot close position - one or both legs have zero quantity | "
+                f"⚠️ Position too small to close | "
                 f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
             )
             return None
 
-        # 构建平仓订单对: [(crypto_symbol, -crypto_qty), (stock_symbol, stock_qty)]
-        close_pair = [(crypto_symbol, -crypto_qty), (stock_symbol, stock_qty)]
+        # 构建平仓订单对 (使用追踪的数量,取反平仓)
+        # 注意: crypto_qty 可能是正或负,stock_qty 可能是正或负
+        # 平仓就是完全反向操作
+        close_pair = [(crypto_symbol, -crypto_qty), (stock_symbol, -stock_qty)]
 
         # 使用 SpreadMarketOrder 平仓
         tickets = self.algorithm.spread_market_order(
@@ -260,6 +249,9 @@ class BaseStrategy:
             self._debug(f"❌ Close order submission failed")
             return None
 
+        # ✅ 注册订单 (用于 on_order_event 路由)
+        self.register_orders(tickets, pair_symbol)
+
         self._debug(
             f"📉 CLOSE | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
@@ -267,6 +259,127 @@ class BaseStrategy:
         )
 
         return tickets
+
+    # ============================================================================
+    #                      Position and Order Management
+    # ============================================================================
+
+    def get_pair_position(self, pair_symbol: Tuple[Symbol, Symbol]) -> Optional[Tuple[float, float]]:
+        """
+        获取交易对的仓位
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+
+        Returns:
+            (crypto_qty, stock_qty) tuple, or None if no position
+        """
+        return self.positions.get(pair_symbol)
+
+    def update_pair_position(self, pair_symbol: Tuple[Symbol, Symbol],
+                            crypto_qty: float, stock_qty: float):
+        """
+        更新交易对仓位 (累加)
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+            crypto_qty: Crypto数量变化
+            stock_qty: Stock数量变化
+        """
+        current_crypto, current_stock = self.positions.get(pair_symbol, (0.0, 0.0))
+        new_crypto = current_crypto + crypto_qty
+        new_stock = current_stock + stock_qty
+        self.positions[pair_symbol] = (new_crypto, new_stock)
+
+        self._debug(
+            f"Updated position: {pair_symbol[0].value} ({new_crypto}) <-> "
+            f"{pair_symbol[1].value} ({new_stock})"
+        )
+
+    def register_orders(self, tickets: List, pair_symbol: Tuple[Symbol, Symbol]):
+        """
+        注册订单ID到交易对的映射关系
+
+        在创建 SpreadMarketOrder (开仓/平仓) 后调用此方法,建立订单到交易对的映射。
+        这样在 on_order_event 时可以精确查找订单所属的交易对。
+
+        Args:
+            tickets: SpreadMarketOrder 返回的 OrderTicket 列表
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
+        """
+        if not tickets:
+            return
+
+        for ticket in tickets:
+            self.order_to_pair[ticket.order_id] = pair_symbol
+
+        self._debug(
+            f"📝 Registered {len(tickets)} orders for pair: "
+            f"{pair_symbol[0].value} <-> {pair_symbol[1].value}"
+        )
+
+    def get_pair_by_order_id(self, order_id: int) -> Optional[Tuple[Symbol, Symbol]]:
+        """
+        通过订单ID查找对应的交易对
+
+        在 on_order_event 中使用,将订单事件路由到正确的交易对。
+
+        Args:
+            order_id: 订单ID
+
+        Returns:
+            (crypto_symbol, stock_symbol) 或 None (如果订单不是被追踪的订单)
+        """
+        return self.order_to_pair.get(order_id)
+
+    def on_order_event(self, order_event):
+        """
+        处理订单事件 - 更新追踪的仓位
+
+        通过 order_id 查找对应的交易对,然后根据成交数量更新该交易对的仓位。
+        这样可以正确处理多对一场景 (多个 crypto → 同一个 stock)。
+
+        Args:
+            order_event: OrderEvent 对象
+        """
+        # 查找订单所属的交易对
+        pair_symbol = self.get_pair_by_order_id(order_event.order_id)
+
+        if not pair_symbol:
+            # 不是此策略追踪的订单,忽略
+            return
+
+        # 只在成交时更新仓位
+        if order_event.status not in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
+            return
+
+        crypto_symbol, stock_symbol = pair_symbol
+        fill_qty = order_event.fill_quantity
+
+        # 根据 symbol 判断是 crypto 还是 stock 的订单
+        if order_event.symbol == crypto_symbol:
+            # 更新 crypto 仓位
+            self.update_pair_position(
+                pair_symbol,
+                crypto_qty=fill_qty,
+                stock_qty=0.0
+            )
+            self._debug(
+                f"📊 Crypto filled: {crypto_symbol.value} "
+                f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
+            )
+
+        elif order_event.symbol == stock_symbol:
+            # 更新 stock 仓位
+            self.update_pair_position(
+                pair_symbol,
+                crypto_qty=0.0,
+                stock_qty=fill_qty
+            )
+            self._debug(
+                f"📊 Stock filled: {stock_symbol.value} "
+                f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
+            )
 
     def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
                         spread_pct: float, crypto_quote, stock_quote,
