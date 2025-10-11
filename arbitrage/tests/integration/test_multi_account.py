@@ -70,12 +70,6 @@ class SimpleStrategy(BaseStrategy):
         self.exit_threshold = exit_threshold
         self.position_size_pct = position_size_pct
 
-        # 交易统计
-        self.trade_count = 0
-        self.open_count = 0
-        self.close_count = 0
-        self.trade_history = []
-
         # 持仓时间追踪
         self.open_times = {}  # {pair_symbol: open_time}
         self.holding_times = []  # 每次回转交易的持仓时间 (timedelta)
@@ -115,58 +109,17 @@ class SimpleStrategy(BaseStrategy):
                 self.position_size_pct
             )
             if tickets:
-                self.open_count += 1
-                self.trade_count += 1
                 self.open_times[pair_symbol] = self.algorithm.time
-
-                # 记录交易历史
-                crypto_price = crypto_quote.ask_price
-                stock_price = stock_quote.bid_price
-                crypto_qty = tickets[0].quantity
-                stock_qty = tickets[1].quantity
-
-                self.trade_history.append({
-                    'time': self.algorithm.time,
-                    'type': 'OPEN',
-                    'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
-                    'spread_pct': spread_pct,
-                    'crypto_qty': crypto_qty,
-                    'stock_qty': stock_qty,
-                    'crypto_price': crypto_price,
-                    'stock_price': stock_price,
-                    'crypto_order_id': tickets[0].order_id,
-                    'stock_order_id': tickets[1].order_id
-                })
 
         # 平仓逻辑: spread >= exit_threshold (正数) 且可以平仓
         elif can_close and spread_pct >= self.exit_threshold:
             tickets = self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
             if tickets:
-                self.close_count += 1
-                self.trade_count += 1
-
                 # 计算持仓时间
                 if pair_symbol in self.open_times:
                     holding_time = self.algorithm.time - self.open_times[pair_symbol]
                     self.holding_times.append(holding_time)
                     del self.open_times[pair_symbol]
-
-                # 记录交易历史
-                crypto_price = crypto_quote.bid_price
-                stock_price = stock_quote.ask_price
-                crypto_qty = abs(tickets[0].quantity)
-                stock_qty = abs(tickets[1].quantity)
-
-                self.trade_history.append({
-                    'time': self.algorithm.time,
-                    'type': 'CLOSE',
-                    'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
-                    'spread_pct': spread_pct,
-                    'crypto_qty': crypto_qty,
-                    'stock_qty': stock_qty,
-                    'crypto_order_id': tickets[0].order_id,
-                    'stock_order_id': tickets[1].order_id
-                })
 
 
 class MultiAccountTest(TestableAlgorithm):
@@ -502,15 +455,21 @@ class MultiAccountTest(TestableAlgorithm):
         # === 验证数据完整性 ===
         self.assert_greater(self.tick_count, 0, "应该接收到tick数据")
 
-        # === 输出交易统计 ===
+        # === 输出交易统计 (从 OrderTracker) ===
         self.debug("" + "="*60)
-        self.debug("📊 交易统计")
+        self.debug("📊 交易统计 (从 OrderTracker)")
         self.debug("="*60)
         self.debug(f"总Tick数: {self.tick_count:,}")
-        self.debug(f"总交易次数: {self.strategy.trade_count}")
-        self.debug(f"开仓次数: {self.strategy.open_count}")
-        self.debug(f"平仓次数: {self.strategy.close_count}")
+
+        # 从 OrderTracker 获取统计
+        open_count = sum(1 for rt in self.order_tracker.round_trips if rt['status'] in ['open', 'closed'])
+        close_count = sum(1 for rt in self.order_tracker.round_trips if rt['status'] == 'closed')
+
+        self.debug(f"总回转交易: {len(self.order_tracker.round_trips)}")
+        self.debug(f"开仓次数: {open_count}")
+        self.debug(f"平仓次数: {close_count}")
         self.debug(f"订单事件数: {len(self.order_events)}")
+        self.debug(f"已实现盈亏: ${self.order_tracker.realized_pnl:.2f}")
 
         # === 输出多账户订单分布 ===
         self.debug("" + "="*60)
@@ -613,17 +572,22 @@ class MultiAccountTest(TestableAlgorithm):
         else:
             self.debug("⚠️ 无持仓时间数据 (无完整的回转交易)")
 
-        # === 输出交易历史 ===
-        if self.strategy.trade_history:
-            self.debug("" + "="*60)
-            self.debug("📋 交易历史")
-            self.debug("="*60)
+        # === 输出交易历史 (从 OrderTracker) ===
+        self.debug("" + "="*60)
+        self.debug("📋 交易历史 (从 OrderTracker)")
+        self.debug("="*60)
 
-            for trade in self.strategy.trade_history:
+        if self.order_tracker.round_trips:
+            for i, rt in enumerate(self.order_tracker.round_trips, 1):
+                status = "✅ CLOSED" if rt['status'] == 'closed' else "🔓 OPEN"
                 self.debug(
-                    f"{trade['time']} | {trade['type']} | {trade['pair']} | "
-                    f"Spread: {trade['spread_pct']*100:.2f}%"
+                    f"#{i} {status} | {rt['pair']} | "
+                    f"Open: {rt['open_time']} @ {rt['open_spread_pct']*100:.2f}% | "
+                    f"Close: {rt['close_time']} @ {rt['close_spread_pct']*100:.2f}% | "
+                    f"PnL: ${rt['pnl']:.2f}"
                 )
+        else:
+            self.debug("⚠️ 无交易历史")
 
         # === 输出最终仓位 (从 BaseStrategy 追踪的仓位) ===
         self.debug("" + "="*60)
