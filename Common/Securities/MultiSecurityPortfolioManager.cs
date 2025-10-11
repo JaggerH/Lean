@@ -31,6 +31,7 @@ namespace QuantConnect.Securities
         private readonly Dictionary<string, SecurityPortfolioManager> _subAccounts;
         private readonly Dictionary<string, SecurityManager> _subAccountSecurityManagers;
         private readonly IOrderRouter _router;
+        private readonly RoutingCashBook _routingCashBook;
 
         /// <summary>
         /// Creates a new multi-account portfolio manager
@@ -91,10 +92,80 @@ namespace QuantConnect.Securities
             // Set aggregated cash in main portfolio
             SetCash(accountConfigs.Values.Sum());
 
+            // Subscribe to main CashBook's Updated event for delayed BaseCurrency synchronization
+            // This ensures CurrencyConversion is initialized before syncing to sub-accounts
+            // Use base.CashBook to access the actual CashBook before _routingCashBook is initialized
+            base.CashBook.Updated += OnMainCashBookUpdated;
+
             // Subscribe to SecurityManager changes to sync Securities to sub-accounts
             securityManager.CollectionChanged += OnSecurityManagerCollectionChanged;
 
+            // Create RoutingCashBook for transparent currency routing
+            _routingCashBook = new RoutingCashBook(base.CashBook, _subAccounts, _subAccountSecurityManagers);
+
             Log.Trace($"MultiSecurityPortfolioManager: Created with {_subAccounts.Count} accounts");
+        }
+
+        /// <summary>
+        /// Handles main CashBook Updated events to sync BaseCurrency to sub-accounts
+        /// </summary>
+        /// <remarks>
+        /// This method is called AFTER EnsureCurrencyDataFeed has initialized CurrencyConversion.
+        /// This ensures we sync BaseCurrency only when ConversionRate is properly set.
+        /// Flow: SecurityService.CreateSecurity → UniverseSelection.EnsureCurrencyDataFeeds
+        ///       → CashBook.Updated event → OnMainCashBookUpdated (sync happens here)
+        /// </remarks>
+        private void OnMainCashBookUpdated(object sender, CashBookUpdatedEventArgs args)
+        {
+            // Sync when currencies are added OR when CurrencyConversion is updated (UpdateType.Updated)
+            // Added: Initial currency creation (Rate still 0 at this point)
+            // Updated: When CurrencyConversion is set by EnsureCurrencyDataFeed
+            if (args.UpdateType != CashBookUpdateType.Added && args.UpdateType != CashBookUpdateType.Updated)
+            {
+                return;
+            }
+
+            var cash = args.Cash;
+            var currencySymbol = cash.Symbol;
+
+            // Only sync if CurrencyConversion has been properly initialized
+            // This happens after EnsureCurrencyDataFeed completes
+            if (cash.CurrencyConversion == null)
+            {
+                return;
+            }
+
+            // Check if any sub-account needs this currency as BaseCurrency
+            foreach (var subAccountKvp in _subAccountSecurityManagers)
+            {
+                var accountName = subAccountKvp.Key;
+                var subSecurityManager = subAccountKvp.Value;
+                var subCashBook = _subAccounts[accountName].CashBook;
+
+                // Check each security in this sub-account
+                foreach (var securityKvp in subSecurityManager)
+                {
+                    var security = securityKvp.Value;
+
+                    // Only sync for IBaseCurrencySymbol (Crypto/Forex)
+                    if (security is IBaseCurrencySymbol baseCurrencySymbol
+                        && baseCurrencySymbol.BaseCurrency.Symbol == currencySymbol)
+                    {
+                        // Check if this currency is not already in the sub-account CashBook
+                        if (!subCashBook.ContainsKey(currencySymbol))
+                        {
+                            // Create independent Cash with same CurrencyConversion
+                            var independentCash = new Cash(currencySymbol, 0m, cash.ConversionRate);
+                            independentCash.CurrencyConversion = cash.CurrencyConversion;
+
+                            subCashBook.Add(currencySymbol, independentCash);
+                        }
+
+                        // No need to check other securities once we've processed this currency
+                        break;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -156,22 +227,10 @@ namespace QuantConnect.Securities
 
                                     Log.Trace($"MultiSecurityPortfolioManager: Synchronizing Cash entries for {symbol} (IBaseCurrencySymbol)");
 
-                                    // Sync BaseCurrency (e.g., "TSLA" for TSLAUSD crypto, "EUR" for EURUSD forex)
-                                    var baseCurrencySymbolStr = baseCurrencySymbol.BaseCurrency.Symbol;
-                                    if (!subAccountCashBook.ContainsKey(baseCurrencySymbolStr))
-                                    {
-                                        if (CashBook.ContainsKey(baseCurrencySymbolStr))
-                                        {
-                                            var mainCash = CashBook[baseCurrencySymbolStr];
-                                            // ✅ Add reference to shared Cash object (not copy) so ConversionRate updates are synchronized
-                                            subAccountCashBook.Add(baseCurrencySymbolStr, mainCash);
-                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {baseCurrencySymbolStr} to account '{targetAccount}' CashBook (shared reference, Amount: {mainCash.Amount}, Rate: {mainCash.ConversionRate})");
-                                        }
-                                        else
-                                        {
-                                            Log.Trace($"MultiSecurityPortfolioManager: ⚠️ BaseCurrency {baseCurrencySymbolStr} not found in main CashBook");
-                                        }
-                                    }
+                                    // ⚠️ DO NOT sync BaseCurrency here - it will be synced later via OnMainCashBookUpdated event
+                                    // Reason: At this point, CurrencyConversion has not been initialized yet (ConversionRate = 0)
+                                    // Flow: SecurityService.CreateSecurity (Rate=0) → THIS METHOD → UniverseSelection.EnsureCurrencyDataFeeds (Rate initialized)
+                                    //       → CashBook.Updated event → OnMainCashBookUpdated (BaseCurrency synced with correct Rate)
 
                                     // Sync QuoteCurrency (usually "USD" but could be different)
                                     var quoteCurrencySymbolStr = security.QuoteCurrency.Symbol;
@@ -180,9 +239,25 @@ namespace QuantConnect.Securities
                                         if (CashBook.ContainsKey(quoteCurrencySymbolStr))
                                         {
                                             var mainQuoteCash = CashBook[quoteCurrencySymbolStr];
-                                            // ✅ Add reference to shared Cash object (not copy) so ConversionRate updates are synchronized
-                                            subAccountCashBook.Add(quoteCurrencySymbolStr, mainQuoteCash);
-                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Added {quoteCurrencySymbolStr} to account '{targetAccount}' CashBook (shared reference, Amount: {mainQuoteCash.Amount}, Rate: {mainQuoteCash.ConversionRate})");
+
+                                            // Get the sub-account's existing USD balance (set during initialization via SetCash)
+                                            // We need to preserve this initial balance when creating the independent Cash object
+                                            var subAccountInitialCash = _subAccounts[targetAccount].CashBook.TryGetValue(quoteCurrencySymbolStr, out var existingCash)
+                                                ? existingCash.Amount
+                                                : 0m;
+
+                                            // ✅ Create independent Cash object with sub-account's initial balance but shared CurrencyConversion
+                                            var independentQuoteCash = new Cash(quoteCurrencySymbolStr, subAccountInitialCash, mainQuoteCash.ConversionRate);
+                                            independentQuoteCash.CurrencyConversion = mainQuoteCash.CurrencyConversion;
+
+                                            // Replace the existing entry if it was already created during SetCash()
+                                            if (subAccountCashBook.ContainsKey(quoteCurrencySymbolStr))
+                                            {
+                                                subAccountCashBook.Remove(quoteCurrencySymbolStr);
+                                            }
+
+                                            subAccountCashBook.Add(quoteCurrencySymbolStr, independentQuoteCash);
+                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Created independent Cash for {quoteCurrencySymbolStr} in account '{targetAccount}' (Amount: {subAccountInitialCash}, Rate: {independentQuoteCash.ConversionRate})");
                                         }
                                         else
                                         {
@@ -220,6 +295,20 @@ namespace QuantConnect.Securities
                 Log.Trace("MultiSecurityPortfolioManager: ======================================");
             }
         }
+
+        /// <summary>
+        /// Gets the RoutingCashBook that automatically routes currency access to the correct sub-account
+        /// </summary>
+        /// <remarks>
+        /// This property returns a RoutingCashBook instead of the base CashBook.
+        /// When accessing crypto asset currencies (e.g., AAPL, TSLA), it automatically
+        /// routes to the appropriate sub-account's CashBook (e.g., Kraken).
+        /// For standard currencies (e.g., USD), it uses the main CashBook.
+        ///
+        /// This enables transparent multi-account support without modifying existing code
+        /// that accesses portfolio.cash_book[currency].
+        /// </remarks>
+        public new CashBook CashBook => _routingCashBook;
 
         /// <summary>
         /// Gets all sub-account portfolios
