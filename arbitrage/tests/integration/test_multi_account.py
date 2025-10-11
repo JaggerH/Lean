@@ -25,7 +25,6 @@
 
 import sys
 from pathlib import Path
-import math
 from datetime import timedelta
 
 # Add arbitrage directory to path
@@ -34,297 +33,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from AlgorithmImports import *
 from testing.testable_algorithm import TestableAlgorithm
 from SpreadManager import SpreadManager
+from strategy.base_strategy import BaseStrategy
+from order_tracker import OrderTracker as EnhancedOrderTracker
 
 
-class OrderTracker:
+class SimpleStrategy(BaseStrategy):
     """
-    独立的订单追踪系统 - 用于验证 MultiSecurityPortfolioManager 的正确性
-
-    功能:
-    1. 追踪每笔订单的开仓/平仓价格、数量、手续费
-    2. 计算每笔交易的盈亏（含手续费）
-    3. 算法结束时使用最后价格标记未平仓合约
-    4. 生成详细的统计报告
-    """
-
-    def __init__(self, algorithm: QCAlgorithm):
-        """
-        初始化订单追踪器
-
-        Args:
-            algorithm: QCAlgorithm实例
-        """
-        self.algorithm = algorithm
-
-        # 订单记录: {order_id: order_info}
-        self.orders = {}
-
-        # 账户级别的订单列表
-        self.account_orders = {
-            'IBKR': [],     # 股票订单
-            'Kraken': [],   # 加密货币订单
-        }
-
-        # 配对交易追踪: {(crypto_symbol, stock_symbol): [trade_pairs]}
-        # trade_pairs: [{'open': [crypto_order_id, stock_order_id], 'close': [crypto_order_id, stock_order_id]}]
-        self.pair_trades = {}
-
-        # 最后已知价格: {symbol: last_price}
-        self.last_prices = {}
-
-        algorithm.debug("📊 OrderTracker initialized")
-
-    def record_fill(self, order_event: OrderEvent):
-        """
-        记录订单成交事件
-
-        Args:
-            order_event: 订单成交事件
-        """
-        if order_event.status != OrderStatus.Filled:
-            return
-
-        order_id = order_event.order_id
-        symbol = order_event.symbol
-
-        # 确定账户归属
-        account = self._determine_account(symbol)
-
-        # 创建订单记录
-        order_info = {
-            'order_id': order_id,
-            'symbol': symbol,
-            'account': account,
-            'direction': 'BUY' if order_event.direction == OrderDirection.Buy else 'SELL',
-            'quantity': abs(order_event.fill_quantity),
-            'signed_quantity': order_event.fill_quantity,  # 保留符号: BUY=正, SELL=负
-            'price': order_event.fill_price,
-            'fee': order_event.order_fee.value.amount,
-            'time': order_event.utc_time,
-            'status': 'OPEN',
-            'pnl': None,
-            'exit_price': None,
-            'exit_time': None,
-            'exit_fee': None,
-        }
-
-        # 记录到全局订单字典
-        self.orders[order_id] = order_info
-
-        # 记录到账户级别
-        self.account_orders[account].append(order_id)
-
-        # 更新最后已知价格
-        self.last_prices[symbol] = order_event.fill_price
-
-        self.algorithm.debug(
-            f"📝 OrderTracker: Recorded fill | OrderID={order_id} | "
-            f"Symbol={symbol.value} | Account={account} | "
-            f"Direction={order_info['direction']} | "
-            f"Qty={order_info['quantity']:.2f} @ ${order_info['price']:.2f} | "
-            f"Fee=${order_info['fee']:.4f}"
-        )
-
-    def _determine_account(self, symbol: Symbol) -> str:
-        """
-        根据 Symbol 确定账户归属
-
-        Args:
-            symbol: 交易标的
-
-        Returns:
-            账户名称 ('IBKR' 或 'Kraken')
-        """
-        if symbol.security_type == SecurityType.Equity and symbol.id.market == Market.USA:
-            return 'IBKR'
-        elif symbol.security_type == SecurityType.Crypto and symbol.id.market == Market.Kraken:
-            return 'Kraken'
-        else:
-            return 'Unknown'
-
-    def mark_open_positions_with_final_price(self):
-        """
-        使用最后已知价格标记所有未平仓订单的退出价格
-        """
-        for order_id, order_info in self.orders.items():
-            if order_info['status'] == 'OPEN':
-                symbol = order_info['symbol']
-                if symbol in self.last_prices:
-                    order_info['exit_price'] = self.last_prices[symbol]
-                    order_info['exit_time'] = self.algorithm.time
-                    order_info['exit_fee'] = 0.0  # 未实际平仓，无手续费
-
-                    # 计算浮动盈亏
-                    order_info['pnl'] = self._calculate_pnl(order_info)
-
-                    self.algorithm.debug(
-                        f"💰 OrderTracker: Marked open position with final price | "
-                        f"OrderID={order_id} | Symbol={symbol.value} | "
-                        f"EntryPrice=${order_info['price']:.2f} | "
-                        f"ExitPrice=${order_info['exit_price']:.2f} | "
-                        f"UnrealizedPnL=${order_info['pnl']:.2f}"
-                    )
-
-    def _calculate_pnl(self, order_info: dict) -> float:
-        """
-        计算订单的盈亏（含手续费）
-
-        Args:
-            order_info: 订单信息
-
-        Returns:
-            盈亏金额（正数=盈利，负数=亏损）
-        """
-        if order_info['exit_price'] is None:
-            return None
-
-        entry_price = order_info['price']
-        exit_price = order_info['exit_price']
-        quantity = order_info['quantity']
-        entry_fee = order_info['fee']
-        exit_fee = order_info.get('exit_fee', 0.0)
-
-        # 计算价差盈亏
-        if order_info['direction'] == 'BUY':
-            # 买入: 盈亏 = (卖出价 - 买入价) * 数量
-            price_pnl = (exit_price - entry_price) * quantity
-        else:
-            # 卖出: 盈亏 = (卖出价 - 买入价) * 数量
-            price_pnl = (entry_price - exit_price) * quantity
-
-        # 减去手续费
-        total_pnl = price_pnl - entry_fee - exit_fee
-
-        return total_pnl
-
-    def generate_report(self) -> str:
-        """
-        生成详细的订单追踪报告
-
-        Returns:
-            格式化的报告字符串
-        """
-        report = []
-        report.append("=" * 100)
-        report.append("📊 OrderTracker - 独立订单追踪报告")
-        report.append("=" * 100)
-
-        # === 1. 订单汇总 ===
-        report.append("\n【订单汇总】")
-        report.append(f"总订单数: {len(self.orders)}")
-        report.append(f"IBKR 账户订单: {len(self.account_orders['IBKR'])}")
-        report.append(f"Kraken 账户订单: {len(self.account_orders['Kraken'])}")
-
-        # === 2. 按账户分组的订单明细 ===
-        for account_name in ['IBKR', 'Kraken']:
-            report.append(f"\n{'=' * 100}")
-            report.append(f"【{account_name} 账户订单明细】")
-            report.append(f"{'=' * 100}")
-
-            order_ids = self.account_orders[account_name]
-            if not order_ids:
-                report.append("(无订单)")
-                continue
-
-            # 表头
-            report.append(
-                f"{'OrderID':<10} {'Symbol':<15} {'Dir':<5} {'Qty':<10} "
-                f"{'EntryPrice':<12} {'ExitPrice':<12} {'EntryFee':<10} {'ExitFee':<10} "
-                f"{'PnL':<12} {'Status':<8} {'Time':<20}"
-            )
-            report.append("-" * 100)
-
-            account_total_pnl = 0.0
-            account_total_fees = 0.0
-
-            for order_id in order_ids:
-                order_info = self.orders[order_id]
-
-                pnl_str = f"${order_info['pnl']:.2f}" if order_info['pnl'] is not None else "N/A"
-                exit_price_str = f"${order_info['exit_price']:.2f}" if order_info['exit_price'] is not None else "N/A"
-                exit_fee_str = f"${order_info.get('exit_fee', 0):.4f}" if order_info.get('exit_fee') is not None else "N/A"
-
-                report.append(
-                    f"{order_info['order_id']:<10} "
-                    f"{order_info['symbol'].value:<15} "
-                    f"{order_info['direction']:<5} "
-                    f"{order_info['quantity']:<10.2f} "
-                    f"${order_info['price']:<11.2f} "
-                    f"{exit_price_str:<12} "
-                    f"${order_info['fee']:<9.4f} "
-                    f"{exit_fee_str:<10} "
-                    f"{pnl_str:<12} "
-                    f"{order_info['status']:<8} "
-                    f"{str(order_info['time'])[:19]:<20}"
-                )
-
-                if order_info['pnl'] is not None:
-                    account_total_pnl += order_info['pnl']
-                account_total_fees += order_info['fee']
-                if order_info.get('exit_fee') is not None:
-                    account_total_fees += order_info['exit_fee']
-
-            report.append("-" * 100)
-            report.append(f"账户总盈亏 (PnL): ${account_total_pnl:.2f}")
-            report.append(f"账户总手续费: ${account_total_fees:.4f}")
-
-        # === 3. 全局统计 ===
-        report.append(f"\n{'=' * 100}")
-        report.append("【全局统计】")
-        report.append(f"{'=' * 100}")
-
-        total_pnl = sum(o['pnl'] for o in self.orders.values() if o['pnl'] is not None)
-        total_fees = sum(o['fee'] for o in self.orders.values())
-        total_fees += sum(o.get('exit_fee', 0) for o in self.orders.values() if o.get('exit_fee') is not None)
-
-        open_positions = [o for o in self.orders.values() if o['status'] == 'OPEN']
-        closed_positions = [o for o in self.orders.values() if o['status'] == 'CLOSED']
-
-        report.append(f"总盈亏 (PnL): ${total_pnl:.2f}")
-        report.append(f"总手续费: ${total_fees:.4f}")
-        report.append(f"净盈亏 (PnL - Fees): ${total_pnl:.2f}")  # PnL already includes fees
-        report.append(f"未平仓订单数: {len(open_positions)}")
-        report.append(f"已平仓订单数: {len(closed_positions)}")
-
-        # === 4. 未平仓订单详情 ===
-        if open_positions:
-            report.append(f"\n{'=' * 100}")
-            report.append("【未平仓订单 (使用最后价格标记)】")
-            report.append(f"{'=' * 100}")
-
-            report.append(
-                f"{'OrderID':<10} {'Symbol':<15} {'Dir':<5} {'Qty':<10} "
-                f"{'EntryPrice':<12} {'LastPrice':<12} {'UnrealizedPnL':<15}"
-            )
-            report.append("-" * 100)
-
-            for order_info in open_positions:
-                pnl_str = f"${order_info['pnl']:.2f}" if order_info['pnl'] is not None else "N/A"
-                last_price_str = f"${order_info['exit_price']:.2f}" if order_info['exit_price'] is not None else "N/A"
-
-                report.append(
-                    f"{order_info['order_id']:<10} "
-                    f"{order_info['symbol'].value:<15} "
-                    f"{order_info['direction']:<5} "
-                    f"{order_info['quantity']:<10.2f} "
-                    f"${order_info['price']:<11.2f} "
-                    f"{last_price_str:<12} "
-                    f"{pnl_str:<15}"
-                )
-
-        report.append("=" * 100)
-        report.append("✅ OrderTracker 报告生成完成")
-        report.append("=" * 100)
-
-        return "\n".join(report)
-
-
-class SimpleStrategy:
-    """
-    简单套利策略 - 市价单版本
+    简单套利策略 - 继承 BaseStrategy
 
     特点:
-    - 仅使用市价单 (Kraken + IBKR 均为市价单)
+    - 继承 BaseStrategy 的开/平仓逻辑和位置追踪
     - 开仓条件: spread <= -1% 且无持仓
     - 平仓条件: spread >= 2% 且有持仓
     - 方向限制: 仅 long crypto + short stock
@@ -344,7 +62,9 @@ class SimpleStrategy:
             exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
             position_size_pct: 仓位大小百分比 (默认25%)
         """
-        self.algorithm = algorithm
+        # 调用父类初始化 (debug=False)
+        super().__init__(algorithm, debug=False)
+
         self.spread_manager = spread_manager
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
@@ -360,22 +80,18 @@ class SimpleStrategy:
         self.open_times = {}  # {pair_symbol: open_time}
         self.holding_times = []  # 每次回转交易的持仓时间 (timedelta)
 
-        # Pending orders tracking - 防止重复开仓/平仓
-        self.pending_orders = {}  # {pair_symbol: {'type': 'OPEN'/'CLOSE', 'tickets': [...], 'time': ...}}
-
         self.algorithm.debug(
             f"SimpleStrategy initialized | "
             f"Entry: spread <= {self.entry_threshold*100:.2f}% | "
             f"Exit: spread >= {self.exit_threshold*100:.2f}% | "
             f"Position: {self.position_size_pct*100:.1f}%"
         )
-        self.debug_count = 0
 
     def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
                         spread_pct: float, crypto_quote, stock_quote,
                         crypto_bid_price: float, crypto_ask_price: float):
         """
-        处理spread更新
+        处理spread更新 - 使用 BaseStrategy 的方法判断开/平仓
 
         Args:
             crypto_symbol: Crypto Symbol
@@ -388,274 +104,69 @@ class SimpleStrategy:
         """
         pair_symbol = (crypto_symbol, stock_symbol)
 
-        # 检查是否有pending订单 - 有pending就跳过，防止重复提交
-        if pair_symbol in self.pending_orders:
-            return
+        # 使用 BaseStrategy 的方法检查是否应该开/平仓
+        can_open = self._should_open_position(crypto_symbol, stock_symbol)
+        can_close = self._should_close_position(crypto_symbol, stock_symbol)
 
-        # 检查真实持仓（使用portfolio）
-        crypto_holding = self.algorithm.portfolio[crypto_symbol].quantity
-        stock_holding = self.algorithm.portfolio[stock_symbol].quantity
-        has_position = abs(crypto_holding) > 1.0 or abs(stock_holding) > 1.0
-
-        # 开仓逻辑: spread <= entry_threshold (负数) 且无持仓
-        if not has_position and spread_pct <= self.entry_threshold:
-            self._open_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
-
-        # 平仓逻辑: spread >= exit_threshold (正数) 且有持仓
-        elif has_position and spread_pct >= self.exit_threshold:
-            self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
-
-        self.debug_count += 1
-
-    def cal_legs_and_multiple(self, pair_symbol: tuple, quantity: tuple, action: str = "TRADE"):
-        quantity_int = (int(quantity[0]), int(quantity[1]))
-        quantity_abs = (abs(quantity_int[0]), abs(quantity_int[1]))
-        gcd = math.gcd(quantity_abs[0], quantity_abs[1])
-        ratio = (quantity_int[0] // gcd, quantity_int[1] // gcd)
-
-        legs = [
-            Leg.create(pair_symbol[0], ratio[0]),
-            Leg.create(pair_symbol[1], ratio[1]),
-        ]
-
-        # Debug输出
-        self.algorithm.debug(
-            f"🔧 cal_legs_and_multiple [{action}] | "
-            f"Symbol: ({pair_symbol[0]}, {pair_symbol[1]}) | "
-            f"Input: ({quantity[0]}, {quantity[1]}) | "
-            f"GCD: {gcd} | "
-            f"Ratio: ({ratio[0]}, {ratio[1]}) | "
-            f"Result: {gcd}x({ratio[0]} {pair_symbol[0].value}, {ratio[1]} {pair_symbol[1].value})"
-        )
-
-        return legs, gcd
-
-    def _open_position(self, pair_symbol: tuple, spread_pct: float,
-                      crypto_quote, stock_quote):
-        """
-        开仓 - 使用 SpreadMarketOrder 实现市值对冲
-
-        Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            spread_pct: 当前spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-        """
-        crypto_symbol, stock_symbol = pair_symbol
-
-        # 计算仓位大小
-        portfolio_value = self.algorithm.portfolio.total_portfolio_value
-        target_value = portfolio_value * self.position_size_pct
-
-        # 获取crypto价格 (使用ask价格，因为我们要买入)
-        crypto_price = crypto_quote.ask_price
-        stock_price = stock_price = stock_quote.bid_price
-
-        if crypto_price == 0 or stock_price == 0:
-            self.algorithm.debug(f"⚠️ Invalid prices: Crypto={crypto_price}, Stock={stock_price}")
-            return
-
-        crypto_qty = int(target_value / crypto_price)
-        stock_qty = int(target_value / stock_price)
-
-        # 调试日志：显示计算的数量
-        self.algorithm.debug(
-            f"📊 Order Calculation | "
-            f"Portfolio: ${portfolio_value:,.0f} | Target: ${target_value:,.0f} ({self.position_size_pct*100}%) | "
-            f"Crypto: {crypto_qty} @ ${crypto_price:.2f} | Stock: {stock_qty} @ ${stock_price:.2f}"
-        )
-
-        if crypto_qty == 0 or stock_qty == 0:
-            self.algorithm.debug(f"⚠️ Invalid quantity: crypto_qty={crypto_qty}, stock_qty={stock_qty}")
-            return
-
-        legs, gcd = self.cal_legs_and_multiple(pair_symbol, (crypto_qty, -stock_qty), action="OPEN")
-        # 提交 SpreadMarketOrder (全局倍数 = GCD)
-        tickets = self.algorithm.spread_market_order(
-            legs,
-            gcd,
-            tag=f"OPEN Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
-        )
-
-        # 检查订单是否成功提交
-        if len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
-            # 提交失败，静默跳过（LEAN已输出Error日志）
-            return
-
-        # 记录pending订单，防止重复提交
-        self.pending_orders[pair_symbol] = {
-            'type': 'OPEN',
-            'tickets': tickets,
-            'time': self.algorithm.time
-        }
-
-        crypto_ticket = tickets[0]
-        stock_ticket = tickets[1]
-
-        # 记录交易
-        self.open_count += 1
-        self.trade_count += 1
-
-        # 记录开仓时间
-        self.open_times[pair_symbol] = self.algorithm.time
-
-        self.trade_history.append({
-            'time': self.algorithm.time,
-            'type': 'OPEN',
-            'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
-            'spread_pct': spread_pct,
-            'crypto_qty': crypto_qty,
-            'stock_qty': stock_qty,
-            'crypto_price': crypto_price,
-            'stock_price': stock_price,
-            'crypto_order_id': crypto_ticket.order_id,
-            'stock_order_id': stock_ticket.order_id
-        })
-
-        self.algorithm.debug(
-            f"📈 OPEN #{self.open_count} | {self.algorithm.time} | "
-            f"{crypto_symbol.value} <-> {stock_symbol.value} | "
-            f"Spread: {spread_pct*100:.2f}% | "
-            f"Crypto: BUY {crypto_qty} @ ${crypto_price:.2f} = ${crypto_qty * crypto_price:,.0f} | "
-            f"Stock: SELL {stock_qty} @ ${stock_price:.2f} = ${stock_qty * stock_price:,.0f}"
-        )
-
-    def _close_position(self, pair_symbol: tuple, spread_pct: float,
-                       crypto_quote, stock_quote):
-        """
-        平仓 - 使用 SpreadMarketOrder 实现市值对冲
-
-        Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            spread_pct: 当前spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-        """
-        crypto_symbol, stock_symbol = pair_symbol
-
-        # === 获取真实持仓数量 ===
-        # Crypto: 从 CashBook 获取（因为被当作"货币"处理，存储在 BaseCurrency 中）
-        # Stock: 从 Portfolio 获取（传统证券持仓）
-        crypto_security = self.algorithm.securities[crypto_symbol]
-        crypto_base_currency_symbol = crypto_security.base_currency.symbol
-
-        # 调试：打印 base currency symbol
-        self.algorithm.debug(f"🔍 [CLOSE] Base Currency Symbol: {crypto_base_currency_symbol}")
-
-        # 尝试从多账户获取
-        crypto_qty = 0
-        if hasattr(self.algorithm.portfolio, 'get_account'):
-            try:
-                # 从 Kraken 子账户获取
-                kraken_account = self.algorithm.portfolio.get_account("Kraken")
-                self.algorithm.debug(f"🔍 [CLOSE] Kraken CashBook (Count={kraken_account.cash_book.count}):")
-                try:
-                    # Python.NET: 使用 C# 的 enumerator
-                    enumerator = kraken_account.cash_book.get_enumerator()
-                    while enumerator.move_next():
-                        kvp = enumerator.current
-                        self.algorithm.debug(f"  {kvp.key}: {kvp.value.amount:.2f}")
-                except Exception as e:
-                    self.algorithm.debug(f"  Error iterating Kraken CashBook: {e}")
-
-                if kraken_account.cash_book.contains_key(crypto_base_currency_symbol):
-                    crypto_qty = kraken_account.cash_book[crypto_base_currency_symbol].amount
-                    self.algorithm.debug(f"✅ [CLOSE] Got crypto_qty from Kraken: {crypto_qty:.2f}")
-                else:
-                    self.algorithm.debug(f"⚠️ [CLOSE] {crypto_base_currency_symbol} not in Kraken CashBook")
-            except Exception as e:
-                self.algorithm.debug(f"⚠️ [CLOSE] Error accessing Kraken account: {e}")
-                # 回退到主账户
-                if self.algorithm.portfolio.cash_book.contains_key(crypto_base_currency_symbol):
-                    crypto_qty = self.algorithm.portfolio.cash_book[crypto_base_currency_symbol].amount
-                    self.algorithm.debug(f"⚠️ [CLOSE] Fallback to main CashBook: {crypto_qty:.2f}")
-                else:
-                    self.algorithm.debug(f"❌ [CLOSE] {crypto_base_currency_symbol} not in main CashBook either")
-        else:
-            # 单账户模式
-            if self.algorithm.portfolio.cash_book.contains_key(crypto_base_currency_symbol):
-                crypto_qty = self.algorithm.portfolio.cash_book[crypto_base_currency_symbol].amount
-                self.algorithm.debug(f"ℹ️ [CLOSE] Single account mode, crypto_qty: {crypto_qty:.2f}")
-            else:
-                self.algorithm.debug(f"❌ [CLOSE] {crypto_base_currency_symbol} not in CashBook")
-
-        # 获取股票数量（Holdings 是共享的）
-        stock_qty = self.algorithm.portfolio[stock_symbol].quantity
-        self.algorithm.debug(f"🔍 [CLOSE] Stock quantity: {stock_qty:.2f}")
-
-        # 检查是否有足够的仓位可以平仓
-        # 如果任何一条腿的数量为0或接近0，则无法计算GCD，跳过平仓
-        if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
-            self.algorithm.debug(
-                f"⚠️ Cannot close position - one or both legs have zero quantity | "
-                f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
+        # 开仓逻辑: spread <= entry_threshold (负数) 且可以开仓
+        if can_open and spread_pct <= self.entry_threshold:
+            tickets = self._open_position(
+                pair_symbol, spread_pct, crypto_quote, stock_quote,
+                self.position_size_pct
             )
-            return
+            if tickets:
+                self.open_count += 1
+                self.trade_count += 1
+                self.open_times[pair_symbol] = self.algorithm.time
 
-        legs, gcd = self.cal_legs_and_multiple(pair_symbol, (-crypto_qty, -stock_qty), action="CLOSE")
-        # 提交 SpreadMarketOrder (全局倍数 = GCD)
-        tickets = self.algorithm.spread_market_order(
-            legs,
-            gcd,  # 全局倍数 = GCD (e.g., 75)
-            tag=f"CLOSE Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
-        )
+                # 记录交易历史
+                crypto_price = crypto_quote.ask_price
+                stock_price = stock_quote.bid_price
+                crypto_qty = tickets[0].quantity
+                stock_qty = tickets[1].quantity
 
-        # 检查订单是否成功提交
-        if len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
-            # 提交失败，静默跳过（LEAN已输出Error日志）
-            return
+                self.trade_history.append({
+                    'time': self.algorithm.time,
+                    'type': 'OPEN',
+                    'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
+                    'spread_pct': spread_pct,
+                    'crypto_qty': crypto_qty,
+                    'stock_qty': stock_qty,
+                    'crypto_price': crypto_price,
+                    'stock_price': stock_price,
+                    'crypto_order_id': tickets[0].order_id,
+                    'stock_order_id': tickets[1].order_id
+                })
 
-        # 记录pending订单，防止重复提交
-        self.pending_orders[pair_symbol] = {
-            'type': 'CLOSE',
-            'tickets': tickets,
-            'time': self.algorithm.time
-        }
+        # 平仓逻辑: spread >= exit_threshold (正数) 且可以平仓
+        elif can_close and spread_pct >= self.exit_threshold:
+            tickets = self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
+            if tickets:
+                self.close_count += 1
+                self.trade_count += 1
 
-        crypto_ticket = tickets[0]
-        stock_ticket = tickets[1]
+                # 计算持仓时间
+                if pair_symbol in self.open_times:
+                    holding_time = self.algorithm.time - self.open_times[pair_symbol]
+                    self.holding_times.append(holding_time)
+                    del self.open_times[pair_symbol]
 
-        # 记录交易
-        self.close_count += 1
-        self.trade_count += 1
+                # 记录交易历史
+                crypto_price = crypto_quote.bid_price
+                stock_price = stock_quote.ask_price
+                crypto_qty = abs(tickets[0].quantity)
+                stock_qty = abs(tickets[1].quantity)
 
-        # 计算持仓时间
-        if pair_symbol in self.open_times:
-            holding_time = self.algorithm.time - self.open_times[pair_symbol]
-            self.holding_times.append(holding_time)
-            del self.open_times[pair_symbol]
-
-        self.trade_history.append({
-            'time': self.algorithm.time,
-            'type': 'CLOSE',
-            'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
-            'spread_pct': spread_pct,
-            'crypto_qty': crypto_qty,
-            'stock_qty': stock_qty,
-            'crypto_order_id': crypto_ticket.order_id,
-            'stock_order_id': stock_ticket.order_id
-        })
-
-        # Get prices from quote data (use BID for selling crypto, ASK for buying stock)
-        crypto_price = crypto_quote.bid_price  # Selling crypto at bid
-        stock_price = stock_quote.ask_price    # Buying stock at ask
-        crypto_qty_abs = abs(crypto_qty)
-        stock_qty_abs = abs(stock_qty)
-
-        self.algorithm.debug(
-            f"📉 CLOSE #{self.close_count} | {self.algorithm.time} | "
-            f"{crypto_symbol.value} <-> {stock_symbol.value} | "
-            f"Spread: {spread_pct*100:.2f}% | "
-            f"Crypto: SELL {crypto_qty_abs} @ ${crypto_price:.2f} = ${crypto_qty_abs * crypto_price:,.0f} | "
-            f"Stock: BUY {stock_qty_abs} @ ${stock_price:.2f} = ${stock_qty_abs * stock_price:,.0f}"
-        )
-
-        # 立即设置仓位为0，防止重复平仓
-        # on_order_event 会在订单成交时进一步更新（累加负数），但由于已经是0，结果仍接近0
-        self.spread_manager.positions[pair_symbol] = {
-            'token_qty': 0.0,
-            'stock_qty': 0.0
-        }
+                self.trade_history.append({
+                    'time': self.algorithm.time,
+                    'type': 'CLOSE',
+                    'pair': f"{crypto_symbol.value} <-> {stock_symbol.value}",
+                    'spread_pct': spread_pct,
+                    'crypto_qty': crypto_qty,
+                    'stock_qty': stock_qty,
+                    'crypto_order_id': tickets[0].order_id,
+                    'stock_order_id': tickets[1].order_id
+                })
 
 
 class MultiAccountTest(TestableAlgorithm):
@@ -667,7 +178,7 @@ class MultiAccountTest(TestableAlgorithm):
 
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 27)
+        self.set_end_date(2025, 9, 5)
 
         # 注意: 不在这里设置现金，因为多账户配置会覆盖
         # 多账户配置在 config.json 中设置:
@@ -727,9 +238,9 @@ class MultiAccountTest(TestableAlgorithm):
                 self.debug(f"📊 Total Portfolio Cash: ${self.portfolio.Cash:,.2f}")
 
                 # 验证账户配置
-                self.assert_equal(ibkr_account.Cash, 100000, "IBKR账户初始现金应为$100,000")
-                self.assert_equal(kraken_account.Cash, 200000, "Kraken账户初始现金应为$200,000")
-                self.assert_equal(self.portfolio.Cash, 300000, "总现金应为$300,000")
+                self.assert_equal(ibkr_account.Cash, 50000, "IBKR账户初始现金应为$50,000")
+                self.assert_equal(kraken_account.Cash, 50000, "Kraken账户初始现金应为$50,000")
+                self.assert_equal(self.portfolio.Cash, 100000, "总现金应为$100,000")
 
             except Exception as e:
                 self.debug(f"❌ Error accessing multi-account: {e}")
@@ -756,7 +267,7 @@ class MultiAccountTest(TestableAlgorithm):
             spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
-            position_size_pct=0.4  # 10% (更保守，因为有两个账户)
+            position_size_pct=0.23  # 10% (更保守，因为有两个账户)
         )
 
         # 链接策略到 SpreadManager
@@ -778,9 +289,9 @@ class MultiAccountTest(TestableAlgorithm):
             'Unknown': []
         }
 
-        # === 10. 初始化独立的订单追踪器 ===
-        self.debug("📊 Initializing OrderTracker for independent order verification...")
-        self.order_tracker = OrderTracker(self)
+        # === 10. 初始化独立的订单追踪器 (Enhanced Version) ===
+        self.debug("📊 Initializing EnhancedOrderTracker for independent order verification...")
+        self.order_tracker = EnhancedOrderTracker(self, self.strategy)
 
         # === 断言验证 ===
         self.assert_not_none(self.tsla_stock, "TSLA Stock Symbol 应该存在")
@@ -832,8 +343,8 @@ class MultiAccountTest(TestableAlgorithm):
         # 记录到对应账户
         self.account_order_events[expected_account].append(order_event)
 
-        # === 记录订单填充到独立追踪器 ===
-        self.order_tracker.record_fill(order_event)
+        # === 记录订单填充到独立追踪器 (使用新的 record_order_fill 方法) ===
+        self.order_tracker.record_order_fill(order_event)
 
         if order_event.status == OrderStatus.Filled:
             self.debug(
@@ -842,6 +353,7 @@ class MultiAccountTest(TestableAlgorithm):
                 f"Expected Account: {expected_account}"
             )
 
+            self.debug("="*50)
             # === 验证多账户状态 ===
             if hasattr(self.portfolio, 'get_account') and order_event.symbol.security_type == SecurityType.Crypto:
                 self.debug(f"💰 Multi-Account Status After Fill:")
@@ -884,6 +396,7 @@ class MultiAccountTest(TestableAlgorithm):
 
             # === 打印持仓信息（按账户归属分类显示）===
             if order_event.symbol.security_type == SecurityType.Crypto:
+                self.debug("="*50)
                 self.debug(f"📦 Portfolio Holdings (classified by market):")
 
                 # 按市场分类持仓
@@ -937,54 +450,54 @@ class MultiAccountTest(TestableAlgorithm):
                             f"Qty={holding.quantity:.2f}, MarketValue=${holding.holdings_value:,.2f}"
                         )
 
-            # 更新仓位到SpreadManager
-            # 查找对应的pair
-            pair_symbol = None
-            for crypto_sym, stock_sym in self.spread_manager.get_all_pairs():
-                if order_event.symbol == crypto_sym or order_event.symbol == stock_sym:
-                    pair_symbol = (crypto_sym, stock_sym)
-                    break
-
-            if pair_symbol:
-                if pair_symbol not in self.spread_manager.positions:
-                    self.spread_manager.positions[pair_symbol] = {
-                        'token_qty': 0.0,
-                        'stock_qty': 0.0
-                    }
-
-                # 更新仓位
-                if order_event.symbol.security_type == SecurityType.Crypto:
-                    self.spread_manager.positions[pair_symbol]['token_qty'] += order_event.fill_quantity
-                elif order_event.symbol.security_type == SecurityType.Equity:
-                    self.spread_manager.positions[pair_symbol]['stock_qty'] += order_event.fill_quantity
-
-        # 检查并清除已完成的pending订单
-        for pair_symbol, pending in list(self.strategy.pending_orders.items()):
-            all_done = all(
-                self.transactions.get_order_by_id(ticket.order_id).status in [
-                    OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid
-                ]
-                for ticket in pending['tickets']
-            )
-            if all_done:
-                del self.strategy.pending_orders[pair_symbol]
+        # 委托给 Strategy 的 on_order_event 处理订单事件
+        # BaseStrategy 负责仓位追踪
+        self.strategy.on_order_event(order_event)
 
     def on_end_of_algorithm(self):
         """算法结束 - 输出统计信息和验证多账户行为"""
         self.begin_test_phase("final_validation")
 
-        # === 使用最后价格标记未平仓订单 ===
-        self.debug("💰 Marking open positions with final prices...")
-        self.order_tracker.mark_open_positions_with_final_price()
+        # === Finalize Open Round Trips (计算未实现盈亏) ===
+        self.debug("=" * 60)
+        self.debug("📊 Finalizing Open Round Trips")
+        self.debug("=" * 60)
+        try:
+            self.order_tracker.finalize_open_round_trips()
+        except Exception as e:
+            self.debug(f"❌ Error finalizing open round trips: {e}")
+            import traceback
+            self.debug(traceback.format_exc())
 
-        # === 生成独立订单追踪报告 ===
-        self.debug("")
-        self.debug("")
-        report = self.order_tracker.generate_report()
-        for line in report.split('\n'):
-            self.debug(line)
-        self.debug("")
-        self.debug("")
+        # === 导出 JSON 数据 (Enhanced OrderTracker) ===
+        self.debug("=" * 60)
+        self.debug("📊 Exporting Enhanced OrderTracker Data")
+        self.debug("=" * 60)
+
+        try:
+            # 导出 JSON 数据
+            json_filepath = "order_tracker_data.json"
+            self.order_tracker.export_json(json_filepath)
+            self.debug(f"✅ JSON data exported to: {json_filepath}")
+
+            # 生成 HTML 可视化报告
+            from visualization.html_generator import generate_html_report
+            html_filepath = "order_tracker_report.html"
+            generate_html_report(json_filepath, html_filepath)
+            self.debug(f"✅ HTML report generated: {html_filepath}")
+
+            # 显示摘要信息
+            self.debug("")
+            self.debug("📈 Report Summary:")
+            self.debug(f"  Total Snapshots: {len(self.order_tracker.snapshots)}")
+            self.debug(f"  Total Orders Tracked: {len(self.order_tracker.orders)}")
+            self.debug(f"  Realized PnL: ${self.order_tracker.realized_pnl:.2f}")
+            self.debug("")
+
+        except Exception as e:
+            self.debug(f"❌ Error generating reports: {e}")
+            import traceback
+            self.debug(traceback.format_exc())
 
         # === 验证数据完整性 ===
         self.assert_greater(self.tick_count, 0, "应该接收到tick数据")
@@ -1112,15 +625,16 @@ class MultiAccountTest(TestableAlgorithm):
                     f"Spread: {trade['spread_pct']*100:.2f}%"
                 )
 
-        # === 输出最终仓位 ===
+        # === 输出最终仓位 (从 BaseStrategy 追踪的仓位) ===
         self.debug("" + "="*60)
-        self.debug("📦 最终仓位")
+        self.debug("📦 最终仓位 (BaseStrategy tracked positions)")
         self.debug("="*60)
-        for pair_symbol, position in self.spread_manager.positions.items():
+        for pair_symbol, position in self.strategy.positions.items():
             crypto_sym, stock_sym = pair_symbol
+            crypto_qty, stock_qty = position  # Tuple unpacking
             self.debug(
                 f"{crypto_sym.value} <-> {stock_sym.value} | "
-                f"Crypto: {position['token_qty']:.2f} | Stock: {position['stock_qty']:.2f}"
+                f"Crypto: {crypto_qty:.2f} | Stock: {stock_qty:.2f}"
             )
 
         # 验证 checkpoint
