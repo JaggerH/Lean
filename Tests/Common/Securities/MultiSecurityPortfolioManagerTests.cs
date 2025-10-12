@@ -949,6 +949,313 @@ namespace QuantConnect.Tests.Common.Securities
                 "Should throw ArgumentException for non-existent account");
         }
 
+        [Test]
+        public void CashBookPropertyReturnsRoutingCashBook()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m },
+                { "AccountB", 20000m }
+            };
+            var router = new TestRouter("AccountA");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            // Act
+            var cashBook = portfolio.CashBook;
+
+            // Assert
+            Assert.IsNotNull(cashBook);
+            Assert.IsInstanceOf<RoutingCashBook>(cashBook,
+                "CashBook should return RoutingCashBook instance");
+        }
+
+        [Test]
+        public void FindAccountForSymbolReturnsCorrectAccount()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m },
+                { "AccountB", 20000m }
+            };
+
+            var symbolMappings = new Dictionary<Symbol, string>
+            {
+                { SPY, "AccountA" },
+                { BTCUSD, "AccountB" }
+            };
+            var router = new SymbolBasedRouter(symbolMappings, "AccountA");
+
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            AddSecurity(securities, SPY, 100m);
+            AddSecurity(securities, BTCUSD, 50000m);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            // Act
+            var spyAccount = portfolio.FindAccountForSymbol(SPY);
+            var btcAccount = portfolio.FindAccountForSymbol(BTCUSD);
+            var unmappedSymbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA);
+            var unmappedAccount = portfolio.FindAccountForSymbol(unmappedSymbol);
+
+            // Assert
+            Assert.AreEqual("AccountA", spyAccount, "SPY should be in AccountA");
+            Assert.AreEqual("AccountB", btcAccount, "BTCUSD should be in AccountB");
+            Assert.IsNull(unmappedAccount, "Unmapped symbol should return null");
+        }
+
+        [Test]
+        public void GetSubAccountSecuritiesSummaryReturnsCorrectInformation()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m },
+                { "AccountB", 20000m }
+            };
+
+            var symbolMappings = new Dictionary<Symbol, string>
+            {
+                { SPY, "AccountA" },
+                { BTCUSD, "AccountB" }
+            };
+            var router = new SymbolBasedRouter(symbolMappings, "AccountA");
+
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            AddSecurity(securities, SPY, 100m);
+            AddSecurity(securities, BTCUSD, 50000m);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            // Act
+            var summary = portfolio.GetSubAccountSecuritiesSummary();
+
+            // Assert
+            Assert.IsNotNull(summary);
+            Assert.IsTrue(summary.Contains("AccountA"), "Summary should contain AccountA");
+            Assert.IsTrue(summary.Contains("AccountB"), "Summary should contain AccountB");
+            Assert.IsTrue(summary.Contains("SPY") || summary.Contains("Security Count"),
+                "Summary should contain security information");
+        }
+
+        [Test]
+        public void TotalMarginUsedAggregatesAllAccounts()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 100000m },
+                { "AccountB", 200000m }
+            };
+
+            var symbolMappings = new Dictionary<Symbol, string>
+            {
+                { SPY, "AccountA" },
+                { BTCUSD, "AccountB" }
+            };
+            var router = new SymbolBasedRouter(symbolMappings, "AccountA");
+
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            AddSecurity(securities, SPY, 100m);
+            AddSecurity(securities, BTCUSD, 50000m);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            // Execute fills to generate margin usage
+            var spyOrder = new MarketOrder(SPY, 500, DateTime.UtcNow) { Id = 1 };
+            var btcOrder = new MarketOrder(BTCUSD, 1m, DateTime.UtcNow) { Id = 2 };
+
+            portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { spyOrder });
+            portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { btcOrder });
+
+            var spyFill = new OrderEvent(1, SPY, DateTime.UtcNow, OrderStatus.Filled,
+                OrderDirection.Buy, 100m, 500, OrderFee.Zero);
+            var btcFill = new OrderEvent(2, BTCUSD, DateTime.UtcNow, OrderStatus.Filled,
+                OrderDirection.Buy, 50000m, 1m, OrderFee.Zero);
+
+            portfolio.ProcessFills(new List<OrderEvent> { spyFill, btcFill });
+
+            // Act
+            var totalMarginUsed = portfolio.TotalMarginUsed;
+            var accountAMargin = portfolio.GetAccount("AccountA").TotalMarginUsed;
+            var accountBMargin = portfolio.GetAccount("AccountB").TotalMarginUsed;
+
+            // Assert
+            Assert.AreEqual(accountAMargin + accountBMargin, totalMarginUsed,
+                "Total margin should equal sum of all sub-accounts");
+            Assert.Greater(totalMarginUsed, 0m, "Total margin should be positive after fills");
+        }
+
+        [Test]
+        public void HasSufficientBuyingPowerReturnsFalseForUnknownAccount()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m }
+            };
+
+            // Router that returns non-existent account
+            var router = new TestRouter("NonExistentAccount");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            AddSecurity(securities, SPY, 100m);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+
+            // Act
+            var result = portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
+
+            // Assert
+            Assert.IsFalse(result.IsSufficient, "Should return false for unknown account");
+            Assert.IsTrue(result.Reason.Contains("not found"),
+                "Reason should indicate account not found");
+        }
+
+        [Test]
+        public void HasSufficientBuyingPowerHandlesEmptyOrderList()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m }
+            };
+            var router = new TestRouter("AccountA");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            // Act
+            var resultNull = portfolio.HasSufficientBuyingPowerForOrder(null);
+            var resultEmpty = portfolio.HasSufficientBuyingPowerForOrder(new List<Order>());
+
+            // Assert
+            Assert.IsTrue(resultNull.IsSufficient, "Null order list should return true");
+            Assert.IsTrue(resultEmpty.IsSufficient, "Empty order list should return true");
+        }
+
+        [Test]
+        public void ThrowsOnNullTimeKeeper()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 100000m }
+            };
+            var router = new TestRouter("AccountA");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() =>
+            {
+                new MultiSecurityPortfolioManager(
+                    accountConfigs,
+                    router,
+                    securities,
+                    transactions,
+                    new AlgorithmSettings(),
+                    null,
+                    null  // null TimeKeeper
+                );
+            });
+        }
+
+        [Test]
+        public void ProcessFillsHandlesNullAndEmptyFills()
+        {
+            // Arrange
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "AccountA", 10000m }
+            };
+            var router = new TestRouter("AccountA");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper
+            );
+
+            var initialCash = portfolio.GetAccountCash("AccountA");
+
+            // Act
+            portfolio.ProcessFills(null);
+            portfolio.ProcessFills(new List<OrderEvent>());
+
+            // Assert
+            Assert.AreEqual(initialCash, portfolio.GetAccountCash("AccountA"),
+                "Cash should remain unchanged after processing null/empty fills");
+        }
+
         // Helper Methods
 
         private static SecurityManager CreateSecurityManager()

@@ -180,33 +180,23 @@ namespace QuantConnect.Securities
         {
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add)
             {
-                Log.Trace($"MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: Event triggered with {e.NewItems?.Count ?? 0} items");
-
                 if (e.NewItems == null || e.NewItems.Count == 0)
                 {
-                    Log.Trace("MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: No items to process");
                     return;
                 }
 
                 // Route each Security to its designated sub-account
                 foreach (var item in e.NewItems)
                 {
-                    // Debug: Log the actual type of the item
-                    Log.Trace($"MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: Item type = {item?.GetType().Name ?? "null"}");
-
                     // FIXED: SecurityManager.Add() passes Security object, not KeyValuePair
                     if (item is Security security)
                     {
                         var symbol = security.Symbol;
 
-                        Log.Trace($"MultiSecurityPortfolioManager: Processing Security {symbol} (Type: {symbol.SecurityType}, Market: {symbol.ID.Market})");
-
                         // Create a temporary order to determine routing target
                         // Using MarketOrder with quantity 0 as a routing probe
                         var tempOrder = new MarketOrder(symbol, 0, DateTime.UtcNow);
                         var targetAccount = _router.Route(tempOrder);
-
-                        Log.Trace($"MultiSecurityPortfolioManager: Router determined target account '{targetAccount}' for {symbol}");
 
                         // Add the Security only to the target sub-account's SecurityManager
                         // This ensures independent Holdings: IBKR gets AAPL (stock), Kraken gets AAPLUSD (crypto)
@@ -215,8 +205,6 @@ namespace QuantConnect.Securities
                             if (!subSecurityManager.ContainsKey(symbol))
                             {
                                 subSecurityManager.Add(symbol, security);
-                                Log.Trace($"MultiSecurityPortfolioManager: ✅ Successfully added {symbol} to account '{targetAccount}' SecurityManager");
-                                Log.Trace($"MultiSecurityPortfolioManager: Account '{targetAccount}' now contains {subSecurityManager.Count} securities: [{string.Join(", ", subSecurityManager.Keys)}]");
 
                                 // Synchronize Cash entries for Crypto/Forex securities (IBaseCurrencySymbol)
                                 // This ensures sub-account CashBooks contain all necessary currencies for order fills
@@ -224,8 +212,6 @@ namespace QuantConnect.Securities
                                 {
                                     var subAccount = _subAccounts[targetAccount];
                                     var subAccountCashBook = subAccount.CashBook;
-
-                                    Log.Trace($"MultiSecurityPortfolioManager: Synchronizing Cash entries for {symbol} (IBaseCurrencySymbol)");
 
                                     // ⚠️ DO NOT sync BaseCurrency here - it will be synced later via OnMainCashBookUpdated event
                                     // Reason: At this point, CurrencyConversion has not been initialized yet (ConversionRate = 0)
@@ -257,21 +243,9 @@ namespace QuantConnect.Securities
                                             }
 
                                             subAccountCashBook.Add(quoteCurrencySymbolStr, independentQuoteCash);
-                                            Log.Trace($"MultiSecurityPortfolioManager: ✅ Created independent Cash for {quoteCurrencySymbolStr} in account '{targetAccount}' (Amount: {subAccountInitialCash}, Rate: {independentQuoteCash.ConversionRate})");
-                                        }
-                                        else
-                                        {
-                                            Log.Trace($"MultiSecurityPortfolioManager: ⚠️ QuoteCurrency {quoteCurrencySymbolStr} not found in main CashBook");
                                         }
                                     }
-
-                                    // Log final CashBook state for this sub-account
-                                    Log.Trace($"MultiSecurityPortfolioManager: Account '{targetAccount}' CashBook now contains: [{string.Join(", ", subAccountCashBook.Keys)}]");
                                 }
-                            }
-                            else
-                            {
-                                Log.Trace($"MultiSecurityPortfolioManager: Security {symbol} already exists in account '{targetAccount}', skipping");
                             }
                         }
                         else
@@ -285,14 +259,6 @@ namespace QuantConnect.Securities
                         Log.Error($"MultiSecurityPortfolioManager: ❌ Unexpected item type in CollectionChanged event: {item?.GetType().FullName ?? "null"}");
                     }
                 }
-
-                // Log final state of all sub-accounts
-                Log.Trace("MultiSecurityPortfolioManager: === Sub-Account Securities Summary ===");
-                foreach (var kvp in _subAccountSecurityManagers)
-                {
-                    Log.Trace($"  Account '{kvp.Key}': {kvp.Value.Count} securities [{string.Join(", ", kvp.Value.Keys)}]");
-                }
-                Log.Trace("MultiSecurityPortfolioManager: ======================================");
             }
         }
 
@@ -424,13 +390,9 @@ namespace QuantConnect.Securities
                 return;
             }
 
-            Log.Trace($"MultiSecurityPortfolioManager.ProcessFills: Processing {fills.Count} fill(s)");
-
             // Route fills to appropriate sub-accounts
             foreach (var fill in fills)
             {
-                Log.Trace($"MultiSecurityPortfolioManager.ProcessFills: Fill - OrderId: {fill.OrderId}, Symbol: {fill.Symbol}, Quantity: {fill.FillQuantity}, Price: {fill.FillPrice}");
-
                 // Route order directly using the router
                 var order = Transactions.GetOrderById(fill.OrderId);
                 if (order == null)
@@ -440,7 +402,6 @@ namespace QuantConnect.Securities
                 }
 
                 var accountName = _router.Route(order);
-                Log.Trace($"MultiSecurityPortfolioManager.ProcessFills: Routed order {fill.OrderId} to account '{accountName}'");
 
                 // Check if symbol exists in sub-account SecurityManager
                 var accountForSymbol = FindAccountForSymbol(fill.Symbol);
@@ -458,12 +419,9 @@ namespace QuantConnect.Securities
 
                 if (_subAccounts.TryGetValue(accountName, out var subAccount))
                 {
-                    Log.Trace($"MultiSecurityPortfolioManager.ProcessFills: Calling subAccount.ProcessFills() for account '{accountName}'");
-
                     try
                     {
                         subAccount.ProcessFills(new List<OrderEvent> { fill });
-                        Log.Trace($"MultiSecurityPortfolioManager: ✅ Successfully processed fill for order {fill.OrderId} (Symbol: {fill.Symbol}) in account '{accountName}'");
                     }
                     catch (Exception ex)
                     {

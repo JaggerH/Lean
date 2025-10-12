@@ -108,7 +108,6 @@ namespace QuantConnect.Securities
                         baseCurrencySymbol.BaseCurrency.Symbol == currencySymbol)
                     {
                         // Found it! Return this sub-account's CashBook
-                        Log.Trace($"RoutingCashBook: Routing currency '{currencySymbol}' to account '{accountName}'");
                         return _subAccounts[accountName].CashBook;
                     }
                 }

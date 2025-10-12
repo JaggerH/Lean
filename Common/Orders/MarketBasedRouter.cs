@@ -58,11 +58,9 @@ namespace QuantConnect.Orders
 
             if (_marketToAccount.TryGetValue(market, out var accountName))
             {
-                Log.Trace($"MarketBasedRouter: Routing order {order.Id} ({order.Symbol}, Market: {market}) to account '{accountName}'");
                 return accountName;
             }
 
-            Log.Trace($"MarketBasedRouter: No mapping for market '{market}', using default account '{_defaultAccount}'");
             return _defaultAccount;
         }
 
