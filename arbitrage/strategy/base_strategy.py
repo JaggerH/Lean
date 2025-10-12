@@ -76,10 +76,10 @@ class BaseStrategy:
         # Invested = abs(Quantity) >= LotSize
         # Lean 已经处理了残留持仓问题（如 0.02 < 0.01 LotSize）
         if self.algorithm.portfolio[crypto_symbol].invested:
-            self._debug(
-                f"⚠️ Cannot open - crypto already invested | "
-                f"{crypto_symbol.value}: {self.algorithm.portfolio[crypto_symbol].quantity:.4f}"
-            )
+            # self._debug(
+            #     f"⚠️ Cannot open - crypto already invested | "
+            #     f"{crypto_symbol.value}: {self.algorithm.portfolio[crypto_symbol].quantity:.4f}"
+            # )
             return False
 
         # 2. 检查 crypto 是否有未完成订单
@@ -111,7 +111,7 @@ class BaseStrategy:
         """
         # 1. 检查 crypto 是否有持仓
         if not self.algorithm.portfolio[crypto_symbol].invested:
-            self._debug(f"⚠️ Cannot close - no crypto position | {crypto_symbol.value}")
+            # self._debug(f"⚠️ Cannot close - no crypto position | {crypto_symbol.value}")
             return False
 
         # 2. 检查 crypto 是否有未完成订单（避免重复平仓）
@@ -195,7 +195,7 @@ class BaseStrategy:
         # ✅ 注册订单 (用于 on_order_event 路由)
         self.register_orders(tickets, pair_symbol)
 
-        self._debug(
+        self.algorithm.debug(
             f"📈 OPEN | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
             f"Spread: {spread_pct*100:.2f}%"
@@ -233,20 +233,20 @@ class BaseStrategy:
             self._debug(f"⚠️ No tracked position for {crypto_symbol.value} <-> {stock_symbol.value}")
             return None
 
-        _, stock_qty = pair_position
+        crypto_qty, stock_qty = pair_position
 
         # ✅ 获取 crypto 实际持仓（从 CashBook）
         # 使用 Lean 官方方法: Security.BaseCurrency.Symbol
-        crypto_security = self.algorithm.securities[crypto_symbol]
-        crypto_asset = crypto_security.base_currency.symbol
-        crypto_qty = self.algorithm.portfolio.cash_book[crypto_asset].amount
+        # crypto_security = self.algorithm.securities[crypto_symbol]
+        # crypto_asset = crypto_security.base_currency.symbol
+        # crypto_qty = self.algorithm.portfolio.cash_book[crypto_asset].amount
 
         # 检查是否有足够的仓位可以平仓
         if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
-            self._debug(
-                f"⚠️ Position too small to close | "
-                f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
-            )
+            # self._debug(
+            #     f"⚠️ Position too small to close | "
+            #     f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
+            # )
             return None
 
         # 构建平仓订单对 (使用实际数量,取反平仓)
@@ -268,7 +268,7 @@ class BaseStrategy:
         # ✅ 注册订单 (用于 on_order_event 路由)
         self.register_orders(tickets, pair_symbol)
 
-        self._debug(
+        self.algorithm.debug(
             f"📉 CLOSE | {self.algorithm.time} | "
             f"{crypto_symbol.value} <-> {stock_symbol.value} | "
             f"Spread: {spread_pct*100:.2f}%"
