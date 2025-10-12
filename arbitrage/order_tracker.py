@@ -23,16 +23,18 @@ class OrderTracker:
     与 BaseStrategy 集成,利用其 order_to_pair 映射来追踪交易对的开平仓。
     """
 
-    def __init__(self, algorithm: QCAlgorithm, strategy=None):
+    def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False):
         """
         初始化 OrderTracker
 
         Args:
             algorithm: QCAlgorithm 实例
             strategy: BaseStrategy 实例 (用于访问 order_to_pair 和 positions)
+            debug: 是否启用调试日志输出，默认 False
         """
         self.algorithm = algorithm
         self.strategy = strategy
+        self.debug_enabled = debug
 
         # ============ 数据存储 ============
 
@@ -75,7 +77,19 @@ class OrderTracker:
         # 已实现盈亏 (基于平仓订单)
         self.realized_pnl: float = 0.0
 
-        algorithm.debug("📊 OrderTracker initialized (enhanced version with round trip tracking)")
+        self.debug("📊 OrderTracker initialized (enhanced version with round trip tracking)")
+
+    def debug(self, message: str):
+        """
+        调试日志输出方法
+
+        只有当 debug_enabled=True 时才会输出日志
+
+        Args:
+            message: 日志消息
+        """
+        if self.debug_enabled:
+            self.debug(message)
 
     def record_order_fill(self, order_event: OrderEvent):
         """
@@ -124,7 +138,7 @@ class OrderTracker:
         self.last_prices[symbol] = float(order_event.fill_price)
 
         # 🔍 DEBUG: 记录手续费（显示原始费用和转换后费用）
-        self.algorithm.debug(
+        self.debug(
             f"💳 Fee Recorded | Order={order_id} | Symbol={symbol.value} | "
             f"Fee(Original)={order_info['fee_amount_original']:.4f} {order_info['fee_currency']} | "
             f"Fee(USD)=${order_info['fee']:.4f}"
@@ -137,7 +151,7 @@ class OrderTracker:
         # ========== 核心：捕获 Portfolio 快照 ==========
         self.capture_snapshot(order_event)
 
-        self.algorithm.debug(
+        self.debug(
             f"📝 OrderTracker: Recorded fill | OrderID={order_id} | "
             f"Symbol={symbol.value} | Account={account} | "
             f"Direction={order_info['direction']} | "
@@ -178,7 +192,7 @@ class OrderTracker:
         # 添加到快照历史
         self.snapshots.append(snapshot)
 
-        self.algorithm.debug(
+        self.debug(
             f"📸 Snapshot captured | Total snapshots: {len(self.snapshots)} | "
             f"Lean PnL: ${snapshot['lean_pnl']['total_unrealized']:.2f} | "
             f"Tracker PnL: ${snapshot['tracker_pnl']['total_unrealized']:.2f}"
@@ -201,7 +215,7 @@ class OrderTracker:
                     account = self.algorithm.portfolio.GetAccount(account_name)
                     accounts_state[account_name] = self._capture_single_account(account, account_name)
                 except Exception as e:
-                    self.algorithm.debug(f"⚠️ Error capturing {account_name} account: {e}")
+                    self.debug(f"⚠️ Error capturing {account_name} account: {e}")
         else:
             # 单账户模式
             accounts_state['Main'] = self._capture_single_account(self.algorithm.portfolio, 'Main')
@@ -238,7 +252,7 @@ class OrderTracker:
                     'value_in_account_currency': float(cash_obj.ValueInAccountCurrency),
                 }
         except Exception as e:
-            self.algorithm.debug(f"⚠️ Error capturing CashBook for {account_name}: {e}")
+            self.debug(f"⚠️ Error capturing CashBook for {account_name}: {e}")
 
         # 捕获 Holdings (注意：多账户模式下 Holdings 是共享的)
         try:
@@ -253,7 +267,7 @@ class OrderTracker:
                         'unrealized_pnl': float(holding.unrealized_profit),
                     }
         except Exception as e:
-            self.algorithm.debug(f"⚠️ Error capturing Holdings for {account_name}: {e}")
+            self.debug(f"⚠️ Error capturing Holdings for {account_name}: {e}")
 
         return account_state
 
@@ -288,7 +302,7 @@ class OrderTracker:
             lean_pnl['total_realized'] = self.realized_pnl
 
         except Exception as e:
-            self.algorithm.debug(f"⚠️ Error capturing Lean PnL: {e}")
+            self.debug(f"⚠️ Error capturing Lean PnL: {e}")
 
         return lean_pnl
 
@@ -394,7 +408,7 @@ class OrderTracker:
                     })
 
         except Exception as e:
-            self.algorithm.debug(f"⚠️ Error calculating Tracker PnL: {e}")
+            self.debug(f"⚠️ Error calculating Tracker PnL: {e}")
 
         return tracker_pnl
 
@@ -455,7 +469,7 @@ class OrderTracker:
         crypto_symbol, stock_symbol = pair_symbol
         symbol = order_info['symbol_obj']
 
-        self.algorithm.debug(
+        self.debug(
             f"🔍 Round Trip Tracking | Order {order_id} | Pair: {crypto_symbol.value} <-> {stock_symbol.value}"
         )
 
@@ -486,7 +500,7 @@ class OrderTracker:
                 'close_revenue': 0.0,
             }
             self.active_round_trips[pair_symbol] = active_trip
-            self.algorithm.debug(
+            self.debug(
                 f"🆕 Round Trip #{active_trip['round_trip_id']}: Created for {active_trip['pair']}"
             )
 
@@ -496,7 +510,7 @@ class OrderTracker:
 
         order_count = len(active_trip['orders'])
 
-        self.algorithm.debug(
+        self.debug(
             f"📊 Round Trip #{active_trip['round_trip_id']}: Added order {order_count}/4 | "
             f"Symbol: {symbol.value} | Direction: {order_info['direction']} | "
             f"Price: ${order_info['price']:.2f} | Qty: {order_info['quantity']:.2f} | Fee: ${order_info['fee']:.2f}"
@@ -509,7 +523,7 @@ class OrderTracker:
             active_trip['close_time'] = order_info['time_obj']
 
             # 🔍 DEBUG: 打印要计算的订单列表
-            self.algorithm.debug(
+            self.debug(
                 f"🔍 Calculating PnL for Round Trip #{active_trip['round_trip_id']} | Orders: {active_trip['orders']}"
             )
 
@@ -522,7 +536,7 @@ class OrderTracker:
             active_trip['stock_pnl'] = pnl_result['stock_pnl']
             active_trip['total_fees'] = pnl_result['total_fees']
 
-            self.algorithm.debug(
+            self.debug(
                 f"✅ Round Trip #{active_trip['round_trip_id']}: CLOSED | "
                 f"Crypto PnL: ${pnl_result['crypto_pnl']:.2f} | "
                 f"Stock PnL: ${pnl_result['stock_pnl']:.2f} | "
@@ -583,12 +597,12 @@ class OrderTracker:
         crypto_orders = []
         stock_orders = []
 
-        self.algorithm.debug(f"🔍 Processing {len(order_ids)} orders for PnL calculation")
+        self.debug(f"🔍 Processing {len(order_ids)} orders for PnL calculation")
 
         for order_id in order_ids:
             order = self.orders.get(order_id)
             if not order:
-                self.algorithm.debug(f"⚠️ Order {order_id} not found in tracker")
+                self.debug(f"⚠️ Order {order_id} not found in tracker")
                 continue
 
             if order['symbol_obj'] == crypto_symbol:
@@ -600,7 +614,7 @@ class OrderTracker:
             result['total_fees'] += order['fee']
 
             # 🔍 DEBUG: 打印每个订单的手续费
-            self.algorithm.debug(
+            self.debug(
                 f"  📝 Order {order_id}: {order['symbol']} | Direction={order['direction']} | "
                 f"Qty={order['quantity']:.2f} | Price=${order['price']:.2f} | "
                 f"Fee=${order['fee']:.4f} | Total Fees So Far=${result['total_fees']:.4f}"
@@ -608,7 +622,7 @@ class OrderTracker:
 
         # 验证订单数量
         if len(crypto_orders) != 2 or len(stock_orders) != 2:
-            self.algorithm.debug(
+            self.debug(
                 f"⚠️ Invalid order count: crypto={len(crypto_orders)}, stock={len(stock_orders)} (expected 2 each)"
             )
             return result
@@ -619,12 +633,12 @@ class OrderTracker:
 
         if crypto_buy and crypto_sell:
             result['crypto_pnl'] = (crypto_sell['price'] - crypto_buy['price']) * crypto_sell['quantity']
-            self.algorithm.debug(
+            self.debug(
                 f"💰 Crypto PnL: ({crypto_sell['price']:.2f} - {crypto_buy['price']:.2f}) × {crypto_sell['quantity']:.2f} "
                 f"= ${result['crypto_pnl']:.2f}"
             )
         else:
-            self.algorithm.debug(f"⚠️ Crypto BUY/SELL pair incomplete")
+            self.debug(f"⚠️ Crypto BUY/SELL pair incomplete")
 
         # ========== 2. 计算 Stock PnL（纯价差，不含手续费）==========
         stock_buy = next((o for o in stock_orders if o['direction'] == 'BUY'), None)
@@ -633,17 +647,17 @@ class OrderTracker:
         if stock_buy and stock_sell:
             # 对于做空策略: PnL = (sell_price - buy_price) × quantity
             result['stock_pnl'] = (stock_sell['price'] - stock_buy['price']) * stock_buy['quantity']
-            self.algorithm.debug(
+            self.debug(
                 f"💰 Stock PnL: ({stock_sell['price']:.2f} - {stock_buy['price']:.2f}) × {stock_buy['quantity']:.2f} "
                 f"= ${result['stock_pnl']:.2f}"
             )
         else:
-            self.algorithm.debug(f"⚠️ Stock BUY/SELL pair incomplete")
+            self.debug(f"⚠️ Stock BUY/SELL pair incomplete")
 
         # ========== 3. 计算净盈亏（价差 - 手续费）==========
         result['net_pnl'] = result['crypto_pnl'] + result['stock_pnl'] - result['total_fees']
 
-        self.algorithm.debug(
+        self.debug(
             f"📊 Round Trip PnL Summary | Crypto: ${result['crypto_pnl']:.2f} | "
             f"Stock: ${result['stock_pnl']:.2f} | Total Fees: ${result['total_fees']:.2f} | "
             f"Net PnL: ${result['net_pnl']:.2f}"
@@ -660,7 +674,7 @@ class OrderTracker:
         if not self.strategy:
             return
 
-        self.algorithm.debug("🔚 Finalizing Open Round Trips...")
+        self.debug("🔚 Finalizing Open Round Trips...")
 
         for pair_symbol, rt in self.active_round_trips.items():
             crypto_symbol, stock_symbol = pair_symbol
@@ -689,17 +703,17 @@ class OrderTracker:
                 # 总的未实现盈亏 = crypto + stock (Lean已经包含了手续费估算)
                 rt['unrealized_pnl'] = crypto_unrealized + stock_unrealized
 
-                self.algorithm.debug(
+                self.debug(
                     f"📊 Round Trip #{rt['round_trip_id']} | {rt['pair']} | "
                     f"Unrealized PnL: ${rt['unrealized_pnl']:.2f} "
                     f"(Crypto: ${crypto_unrealized:.2f}, Stock: ${stock_unrealized:.2f})"
                 )
 
             except Exception as e:
-                self.algorithm.debug(f"⚠️ Error calculating unrealized PnL for RT #{rt['round_trip_id']}: {e}")
+                self.debug(f"⚠️ Error calculating unrealized PnL for RT #{rt['round_trip_id']}: {e}")
                 rt['unrealized_pnl'] = 0.0
 
-        self.algorithm.debug(f"✅ Finalized {len(self.active_round_trips)} Open Round Trips")
+        self.debug(f"✅ Finalized {len(self.active_round_trips)} Open Round Trips")
 
     def _calculate_round_trip_pnl(self, round_trip: Dict) -> float:
         """
@@ -838,10 +852,10 @@ class OrderTracker:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(export_data_clean, f, indent=2, ensure_ascii=False)
 
-            self.algorithm.debug(f"✅ Data exported to {filepath}")
+            self.debug(f"✅ Data exported to {filepath}")
 
         except Exception as e:
-            self.algorithm.debug(f"❌ Error exporting JSON: {e}")
+            self.debug(f"❌ Error exporting JSON: {e}")
 
     def _clean_for_json(self, obj):
         """

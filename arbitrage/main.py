@@ -5,41 +5,96 @@ import os
 sys.path.append(os.path.dirname(__file__))
 from data_source import KrakenSymbolManager
 from SpreadManager import SpreadManager
+from strategy.long_crypto_strategy import LongCryptoStrategy
+from order_tracker import OrderTracker as EnhancedOrderTracker
 # endregion
 
 class Arbitrage(QCAlgorithm):
     """
     Arbitrage algorithm for trading crypto stock tokens vs underlying stocks
 
-    Strategy: Monitor spread between Kraken xStocks and IBKR stocks
-    Phase 1: Subscription and data monitoring only (no trading)
-    Phase 2: Trading logic based on spread thresholds
+    多账户Margin模式生产环境版本:
+    - 数据源: 动态获取 Kraken tokenized stocks + 对应的 USA stocks
+    - 账户配置:
+      * IBKR账户: 交易股票 (USA market) - Margin模式 2x杠杆
+      * Kraken账户: 交易加密货币 (Kraken market) - Margin模式 5x杠杆
+    - 路由策略: Market-based routing (基于Symbol.ID.Market)
+    - 策略: LongCryptoStrategy (long crypto + short stock)
     """
 
     def initialize(self):
-        """Initialize algorithm with dual brokerage (Kraken + IBKR) settings"""
+        """Initialize algorithm with multi-account Margin mode settings"""
         # Set start date for live trading
         self.set_start_date(2025, 1, 1)
-        self.set_cash(100000)
+        # Note: Cash will be set per account via multi-account-config in config.json
 
-        # Initialize data sources
+        # 设置时区为UTC
+        self.set_time_zone("UTC")
+
+        # === 杠杆配置 ===
+        self.leverage_config = {
+            'stock': 2.0,   # 股票2x杠杆
+            'crypto': 5.0   # 加密货币5x杠杆
+        }
+
+        # === 1. 初始化数据源 ===
+        self.debug("📊 Initializing data sources...")
         self.sources = {
             "kraken": KrakenSymbolManager()
         }
 
-        # Initialize SpreadManager for managing crypto-stock pairs
-        self.spread_manager = SpreadManager(self)
+        # === 2. 动态订阅交易对 ===
+        self.debug("🔗 Fetching and subscribing to trading pairs...")
+        self._subscribe_trading_pairs()
 
-        # Data storage for monitoring
-        self.orderbook_data = {}
+        # === 3. 验证多账户配置 ===
+        self._verify_multi_account_config()
+
+        # === 4. 验证Margin模式 ===
+        self._verify_margin_mode()
+
+        # === 5. 初始化 SpreadManager ===
+        self.debug("📊 Initializing SpreadManager...")
+        self.spread_manager = SpreadManager(
+            algorithm=self,
+            strategy=None,  # Will set later
+            aggression=0.6
+        )
+
+        # === 6. 初始化做多加密货币策略 ===
+        self.debug("📋 Initializing LongCryptoStrategy...")
+        self.strategy = LongCryptoStrategy(
+            algorithm=self,
+            spread_manager=self.spread_manager,
+            entry_threshold=-0.01,  # -1%
+            exit_threshold=0.02,    # 2%
+            position_size_pct=0.80  # 80% (考虑杠杆和费用)
+        )
+
+        # 链接策略到 SpreadManager
+        self.spread_manager.strategy = self.strategy
+
+        # === 7. 数据追踪 ===
         self.tick_count = 0
+        self.order_events = []
 
-        # Cache for latest quotes (to handle asynchronous tick arrivals)
-        self.latest_quotes = {}
+        # 多账户追踪
+        self.account_order_events = {
+            'IBKR': [],
+            'Kraken': [],
+            'Unknown': []
+        }
 
-        # Fetch and subscribe to trading pairs from all data sources
-        self.debug("Initializing data sources and fetching trading pairs...")
+        # === 8. 初始化独立的订单追踪器 (Enhanced Version) ===
+        self.debug("📊 Initializing EnhancedOrderTracker...")
+        self.order_tracker = EnhancedOrderTracker(self, self.strategy)
 
+        self.debug("✅ Initialization complete!")
+        self.debug(f"📈 Subscribed to {len(self.spread_manager.pairs)} crypto-stock pairs")
+        self.debug("="*60)
+
+    def _subscribe_trading_pairs(self):
+        """动态订阅交易对 - 使用与测试一致的初始化方法"""
         for exchange, manager in self.sources.items():
             try:
                 # Fetch tokenized stocks from exchange
@@ -53,157 +108,245 @@ class Arbitrage(QCAlgorithm):
                 # Subscribe to each pair (limit to 5 for testing)
                 for crypto_symbol, equity_symbol in trade_pairs[:5]:
                     try:
-                        # Subscribe to Tick resolution to get orderbook (bid/ask) data
+                        # === 添加加密货币数据 (Kraken) - 应路由到 Kraken 账户 ===
                         crypto_security = self.add_crypto(
                             crypto_symbol.value,
-                            Resolution.Tick,
+                            Resolution.TICK,
                             Market.Kraken
                         )
+                        crypto_security.data_normalization_mode = DataNormalizationMode.RAW
 
+                        # 为加密货币设置Margin模式 (5x杠杆)
+                        self._set_margin_mode(crypto_security, 'crypto')
+
+                        # 为加密货币设置 Kraken Fee Model
+                        from QuantConnect.Orders.Fees import KrakenFeeModel
+                        crypto_security.fee_model = KrakenFeeModel()
+
+                        # === 添加股票数据 (Databento/IBKR) - 应路由到 IBKR 账户 ===
                         # Check if stock is already subscribed
                         if equity_symbol in self.securities:
                             equity_security = self.securities[equity_symbol]
                         else:
                             equity_security = self.add_equity(
                                 equity_symbol.value,
-                                Resolution.Tick,
+                                Resolution.TICK,
                                 Market.USA,
-                                extended_market_hours=True
+                                extended_market_hours=False  # 保持与测试一致
                             )
+                            equity_security.data_normalization_mode = DataNormalizationMode.RAW
+
+                            # 为股票设置Margin模式 (2x杠杆)
+                            self._set_margin_mode(equity_security, 'stock')
+
+                            # 为股票设置 IBKR Fee Model
+                            from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel
+                            equity_security.fee_model = InteractiveBrokersFeeModel()
 
                         # Register the pair in SpreadManager
                         self.spread_manager.add_pair(crypto_security, equity_security)
+
+                        self.debug(f"✅ Subscribed: {crypto_symbol.value} <-> {equity_symbol.value}")
+
                     except Exception as e:
-                        self.debug(f"Failed to subscribe to {crypto_symbol.value}/{equity_symbol.value}: {str(e)}")
+                        self.debug(f"❌ Failed to subscribe to {crypto_symbol.value}/{equity_symbol.value}: {str(e)}")
 
             except Exception as e:
-                self.debug(f"Error initializing {exchange} data source: {str(e)}")
+                self.debug(f"❌ Error initializing {exchange} data source: {str(e)}")
 
-        self.debug(f"Successfully subscribed to {len(self.spread_manager.pairs)} crypto-stock pairs")
-        self.debug(f"  Crypto tokens: {len(self.spread_manager.cryptos)}")
-        self.debug(f"  Underlying stocks: {len(self.spread_manager.stocks)}")
+    def _set_margin_mode(self, security, asset_type):
+        """为Security设置Margin模式的BuyingPowerModel"""
+        from QuantConnect.Securities import SecurityMarginModel
+
+        leverage = self.leverage_config.get(asset_type, 1.0)
+        security.set_buying_power_model(SecurityMarginModel(leverage))
+
+        self.debug(f"✅ Set {security.symbol.value} to Margin mode with {leverage}x leverage")
+
+    def _verify_multi_account_config(self):
+        """验证多账户配置"""
+        self.debug("="*60)
+        self.debug("🔍 Verifying Multi-Account Configuration")
+        self.debug("="*60)
+
+        # 检查是否使用了多账户 Portfolio
+        if hasattr(self.portfolio, 'GetAccount'):
+            self.debug("✅ Multi-Account Portfolio Detected!")
+
+            # 显示子账户信息
+            try:
+                ibkr_account = self.portfolio.GetAccount("IBKR")
+                kraken_account = self.portfolio.GetAccount("Kraken")
+
+                self.debug(f"📊 IBKR Account Cash: ${ibkr_account.Cash:,.2f}")
+                self.debug(f"📊 Kraken Account Cash: ${kraken_account.Cash:,.2f}")
+                self.debug(f"📊 Total Portfolio Cash: ${self.portfolio.Cash:,.2f}")
+
+            except Exception as e:
+                self.debug(f"❌ Error accessing multi-account: {e}")
+        else:
+            self.debug("❌ Multi-Account Portfolio NOT detected!")
+            self.debug("⚠️ Please check config.json has correct multi-account-config")
+
+        self.debug("="*60)
+
+    def _verify_margin_mode(self):
+        """验证所有Security都使用了Margin模式"""
+        self.debug("="*60)
+        self.debug("🔍 Verifying Margin Mode Configuration")
+        self.debug("="*60)
+
+        for symbol, security in self.securities.items():
+            buying_power_model = security.buying_power_model
+            model_type = type(buying_power_model).__name__
+
+            # 确定资产类型
+            if symbol.security_type == SecurityType.Crypto:
+                asset_type = 'crypto'
+            elif symbol.security_type == SecurityType.Equity:
+                asset_type = 'stock'
+            else:
+                continue
+
+            self.debug(f"{symbol.value}: BuyingPowerModel = {model_type}")
+
+            # 检查杠杆倍数
+            if hasattr(buying_power_model, 'GetLeverage'):
+                leverage = buying_power_model.GetLeverage(security)
+                expected_leverage = self.leverage_config.get(asset_type, 1.0)
+                self.debug(f"  Leverage: {leverage}x (Expected: {expected_leverage}x)")
+
+        self.debug("="*60)
 
     def on_data(self, data: Slice):
-        """
-        Process incoming tick data and calculate bidirectional spreads
-
-        Phase 1: Monitor and log spread data only (no trading)
-        Phase 2: Execute trades based on spread thresholds
-
-        Args:
-            data: Slice object containing tick data for both crypto and stocks
-        """
-        # Check if we have tick data
-        if not data.Ticks or len(data.Ticks) == 0:
+        """处理数据 - 委托给SpreadManager处理"""
+        if not data.ticks or len(data.ticks) == 0:
             return
 
         self.tick_count += 1
 
-        # Debug: Log incoming tick symbols every 50 ticks
-        if self.tick_count % 50 == 0:
-            tick_symbols = [str(symbol.Value) for symbol in data.Ticks.Keys]
-            self.debug(f"Tick #{self.tick_count} - Received ticks from: {', '.join(tick_symbols)}")
+        # 委托给SpreadManager处理数据并监控价差
+        self.spread_manager.on_data(data)
 
-            # Log registered pairs
-            pairs_str = [f"{c.Value}<->{s.Value}" for c, s in self.spread_manager.get_all_pairs()]
-            self.debug(f"Registered pairs: {', '.join(pairs_str)}")
+    def on_order_event(self, order_event: OrderEvent):
+        """处理订单事件 - 验证多账户路由"""
+        self.order_events.append(order_event)
 
-        # First, update cache with incoming quotes
-        for symbol in data.Ticks.Keys:
-            ticks = data.Ticks[symbol]
-            for tick in ticks:
-                if tick.TickType == TickType.Quote:
-                    # Cache the latest quote for this symbol
-                    self.latest_quotes[symbol] = tick
+        # 确定订单应该路由到哪个账户
+        symbol = order_event.symbol
+        expected_account = None
 
-        # Iterate through all crypto-stock pairs
-        for crypto_symbol, stock_symbol in self.spread_manager.get_all_pairs():
-            # Get quotes from cache (not from current data slice)
-            crypto_quote = self.latest_quotes.get(crypto_symbol)
-            stock_quote = self.latest_quotes.get(stock_symbol)
+        if symbol.security_type == SecurityType.Equity and symbol.id.market == Market.USA:
+            expected_account = "IBKR"
+        elif symbol.security_type == SecurityType.Crypto and symbol.id.market == Market.Kraken:
+            expected_account = "Kraken"
+        else:
+            expected_account = "Unknown"
 
-            # Skip if we don't have both quotes cached yet
-            if not crypto_quote or not stock_quote:
-                # Debug: Log first 30 times when we skip due to missing quotes
-                if self.tick_count <= 30:
-                    has_crypto = crypto_quote is not None
-                    has_stock = stock_quote is not None
-                    self.debug(f"Tick #{self.tick_count}: Skipping {crypto_symbol.Value}<->{stock_symbol.Value} - Cached quotes: crypto={has_crypto}, stock={has_stock}")
-                continue
+        # 记录到对应账户
+        self.account_order_events[expected_account].append(order_event)
 
-            # Debug: Log first successful spread calculation
-            if self.tick_count <= 5:
-                self.debug(f"✅ Tick #{self.tick_count}: SUCCESS! {crypto_symbol.Value}<->{stock_symbol.Value} - Both quotes available in cache")
+        # === 记录订单填充到独立追踪器 ===
+        self.order_tracker.record_order_fill(order_event)
 
-            # Calculate bidirectional spread (4 prices: bid/ask for both)
-            spread_pct = self.spread_manager.calculate_spread_pct(
-                crypto_quote.BidPrice,  # token_bid
-                crypto_quote.AskPrice,  # token_ask
-                stock_quote.BidPrice,   # stock_bid
-                stock_quote.AskPrice    # stock_ask
+        if order_event.status == OrderStatus.Filled:
+            self.debug(
+                f"✅ Order Filled | {order_event.symbol.value} | "
+                f"Time: {self.time} | "
+                f"Qty: {order_event.fill_quantity} @ ${order_event.fill_price:.2f} | "
+                f"Expected Account: {expected_account}"
             )
 
-            # Determine arbitrage direction
-            direction = "SHORT_TOKEN" if spread_pct > 0 else "LONG_TOKEN"
-
-            # Debug: Log first 3 successful spread calculations immediately
-            if self.tick_count <= 3:
-                self.debug("=" * 60)
-                self.debug(f"🎯 SPREAD CALCULATED! Tick #{self.tick_count}")
-                self.debug(f"Pair: {crypto_symbol.Value} <-> {stock_symbol.Value}")
-                self.debug(f"Time: {self.Time}")
-                self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
-                self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
-                self.debug(f"Spread: {spread_pct*100:.4f}% ({direction})")
-                self.debug("=" * 60)
-
-            # Store monitoring data
-            pair_key = f"{crypto_symbol.Value}_{stock_symbol.Value}"
-            self.orderbook_data[pair_key] = {
-                'time': self.Time,
-                'crypto_symbol': crypto_symbol.Value,
-                'stock_symbol': stock_symbol.Value,
-                'crypto_bid': crypto_quote.BidPrice,
-                'crypto_ask': crypto_quote.AskPrice,
-                'stock_bid': stock_quote.BidPrice,
-                'stock_ask': stock_quote.AskPrice,
-                'spread_pct': spread_pct,
-                'direction': direction
-            }
-
-            # Log every 100 ticks
-            if self.tick_count % 100 == 0:
-                self.debug("=" * 60)
-                self.debug(f"[{crypto_symbol.Value} <-> {stock_symbol.Value}] Tick #{self.tick_count}")
-                self.debug(f"Time: {self.Time}")
-                self.debug(f"Crypto: Bid=${crypto_quote.BidPrice:.4f}, Ask=${crypto_quote.AskPrice:.4f}")
-                self.debug(f"Stock:  Bid=${stock_quote.BidPrice:.4f}, Ask=${stock_quote.AskPrice:.4f}")
-                self.debug(f"Spread: {spread_pct*100:.4f}% ({direction})")
-
-                # Phase 2: Trading logic would go here
-                # if spread_pct > threshold:
-                #     # Open position based on direction
-                # elif spread_pct < -threshold:
-                #     # Close position
+        # 委托给 Strategy 的 on_order_event 处理订单事件
+        self.strategy.on_order_event(order_event)
 
     def on_end_of_algorithm(self):
-        """Display detailed arbitrage monitoring summary"""
+        """算法结束 - 输出统计信息和验证多账户Margin模式行为"""
+        # === Finalize Open Round Trips ===
         self.debug("=" * 60)
-        self.debug("ARBITRAGE ALGORITHM SUMMARY")
+        self.debug("📊 Finalizing Open Round Trips")
         self.debug("=" * 60)
-        self.debug(f"Total ticks received: {self.tick_count}")
-        self.debug(f"Crypto-Stock pairs: {len(self.spread_manager.pairs)}")
-        self.debug(f"Crypto tokens: {len(self.spread_manager.cryptos)}")
-        self.debug(f"Underlying stocks: {len(self.spread_manager.stocks)}")
+        try:
+            self.order_tracker.finalize_open_round_trips()
+        except Exception as e:
+            self.debug(f"❌ Error finalizing open round trips: {e}")
+            import traceback
+            self.debug(traceback.format_exc())
 
-        # Display final spreads with orderbook data
-        if self.orderbook_data:
-            self.debug("\nFinal Spreads (with Orderbook):")
-            for pair_key, d in self.orderbook_data.items():
-                self.debug(f"\n{d['crypto_symbol']} <-> {d['stock_symbol']}:")
-                self.debug(f"  Time: {d['time']}")
-                self.debug(f"  Crypto: Bid=${d['crypto_bid']:.4f}, Ask=${d['crypto_ask']:.4f}")
-                self.debug(f"  Stock:  Bid=${d['stock_bid']:.4f}, Ask=${d['stock_ask']:.4f}")
-                self.debug(f"  Spread: {d['spread_pct']:.4f}% ({d['direction']})")
-
+        # === 导出 JSON 数据 (Enhanced OrderTracker) ===
         self.debug("=" * 60)
+        self.debug("📊 Exporting Enhanced OrderTracker Data")
+        self.debug("=" * 60)
+
+        try:
+            # 导出 JSON 数据
+            json_filepath = "order_tracker_data_live.json"
+            self.order_tracker.export_json(json_filepath)
+            self.debug(f"✅ JSON data exported to: {json_filepath}")
+
+            # 生成 HTML 可视化报告
+            from visualization.html_generator import generate_html_report
+            html_filepath = "order_tracker_report_live.html"
+            generate_html_report(json_filepath, html_filepath)
+            self.debug(f"✅ HTML report generated: {html_filepath}")
+
+            # 显示摘要信息
+            self.debug("")
+            self.debug("📈 Report Summary:")
+            self.debug(f"  Total Snapshots: {len(self.order_tracker.snapshots)}")
+            self.debug(f"  Total Orders Tracked: {len(self.order_tracker.orders)}")
+            self.debug(f"  Realized PnL: ${self.order_tracker.realized_pnl:.2f}")
+            self.debug("")
+
+        except Exception as e:
+            self.debug(f"❌ Error generating reports: {e}")
+            import traceback
+            self.debug(traceback.format_exc())
+
+        # === 输出交易统计 ===
+        self.debug("" + "="*60)
+        self.debug("📊 交易统计 (Margin Mode - Live)")
+        self.debug("="*60)
+        self.debug(f"总Tick数: {self.tick_count:,}")
+        self.debug(f"订单事件数: {len(self.order_events)}")
+        self.debug(f"已实现盈亏: ${self.order_tracker.realized_pnl:.2f}")
+
+        # === 输出多账户订单分布 ===
+        self.debug("" + "="*60)
+        self.debug("🔀 多账户订单路由统计")
+        self.debug("="*60)
+        self.debug(f"IBKR账户订单: {len(self.account_order_events['IBKR'])} 个")
+        self.debug(f"Kraken账户订单: {len(self.account_order_events['Kraken'])} 个")
+        self.debug(f"未知路由订单: {len(self.account_order_events['Unknown'])} 个")
+
+        # === 输出最终多账户状态 ===
+        if hasattr(self.portfolio, 'GetAccount'):
+            self.debug("" + "="*60)
+            self.debug("💰 最终多账户状态 (Margin Mode - Live)")
+            self.debug("="*60)
+
+            try:
+                ibkr_account = self.portfolio.GetAccount("IBKR")
+                kraken_account = self.portfolio.GetAccount("Kraken")
+
+                self.debug(f"IBKR账户 (2x Leverage):")
+                self.debug(f"  现金: ${ibkr_account.Cash:,.2f}")
+                self.debug(f"  Margin Used: ${ibkr_account.TotalMarginUsed:,.2f}")
+                self.debug(f"  总价值: ${ibkr_account.TotalPortfolioValue:,.2f}")
+
+                self.debug(f"Kraken账户 (5x Leverage):")
+                self.debug(f"  现金: ${kraken_account.Cash:,.2f}")
+                self.debug(f"  Margin Used: ${kraken_account.TotalMarginUsed:,.2f}")
+                self.debug(f"  总价值: ${kraken_account.TotalPortfolioValue:,.2f}")
+
+                self.debug(f"聚合Portfolio:")
+                self.debug(f"  总现金: ${self.portfolio.Cash:,.2f}")
+                self.debug(f"  总Margin Used: ${self.portfolio.TotalMarginUsed:,.2f}")
+                self.debug(f"  总价值: ${self.portfolio.TotalPortfolioValue:,.2f}")
+
+            except Exception as e:
+                self.debug(f"无法访问多账户信息: {e}")
+
+        self.debug("" + "="*60)
+        self.debug("✅ 多账户Margin模式套利算法完成")
+        self.debug("="*60)
