@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using QuantConnect.Securities;
+using QuantConnect.Securities.Volatility;
 using QuantConnect.Orders.Fills;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Orders.Slippage;
@@ -352,7 +353,7 @@ namespace QuantConnect.Tests.Common.Securities
                     new SecurityPriceVariationModel(),
                     currencyConverter,
                     registeredTypes,
-                    new NullMarginInterestRateModel())
+                    QuantConnect.Securities.MarginInterestRateModel.Null)
             {
                 BaseCurrency = baseCurrency;
             }
