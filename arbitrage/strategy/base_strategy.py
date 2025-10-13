@@ -367,36 +367,45 @@ class BaseStrategy:
             return
 
         # 只在成交时更新仓位
-        if order_event.status not in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
-            return
+        if order_event.status in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
+            crypto_symbol, stock_symbol = pair_symbol
+            fill_qty = order_event.fill_quantity
 
-        crypto_symbol, stock_symbol = pair_symbol
-        fill_qty = order_event.fill_quantity
+            # 根据 symbol 判断是 crypto 还是 stock 的订单
+            if order_event.symbol == crypto_symbol:
+                # 更新 crypto 仓位
+                self.update_pair_position(
+                    pair_symbol,
+                    crypto_qty=fill_qty,
+                    stock_qty=0.0
+                )
+                self._debug(
+                    f"📊 Crypto filled: {crypto_symbol.value} "
+                    f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
+                )
 
-        # 根据 symbol 判断是 crypto 还是 stock 的订单
-        if order_event.symbol == crypto_symbol:
-            # 更新 crypto 仓位
-            self.update_pair_position(
-                pair_symbol,
-                crypto_qty=fill_qty,
-                stock_qty=0.0
-            )
-            self._debug(
-                f"📊 Crypto filled: {crypto_symbol.value} "
-                f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
-            )
+            elif order_event.symbol == stock_symbol:
+                # 更新 stock 仓位
+                self.update_pair_position(
+                    pair_symbol,
+                    crypto_qty=0.0,
+                    stock_qty=fill_qty
+                )
+                self._debug(
+                    f"📊 Stock filled: {stock_symbol.value} "
+                    f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
+                )
 
-        elif order_event.symbol == stock_symbol:
-            # 更新 stock 仓位
-            self.update_pair_position(
-                pair_symbol,
-                crypto_qty=0.0,
-                stock_qty=fill_qty
-            )
-            self._debug(
-                f"📊 Stock filled: {stock_symbol.value} "
-                f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
-            )
+        # 清理已完成的订单（终态状态）
+        # 使用 LEAN 官方方法判断订单是否已关闭
+        # is_open() = False 表示订单处于终态: Filled, Canceled, 或 Invalid
+        if not order_event.status.is_open():
+            if order_event.order_id in self.order_to_pair:
+                del self.order_to_pair[order_event.order_id]
+                self._debug(
+                    f"🗑️ Cleaned order {order_event.order_id} "
+                    f"(status: {order_event.status}) from order_to_pair"
+                )
 
     def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
                         spread_pct: float, crypto_quote, stock_quote,
