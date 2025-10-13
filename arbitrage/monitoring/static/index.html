@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LEAN交易监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .status .dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #4ade80;
+            margin-right: 5px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #2a2a3e;
+        }
+
+        .card h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #a0a0ff;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #2a2a3e;
+        }
+
+        .stat-label {
+            color: #b0b0b0;
+        }
+
+        .stat-value {
+            font-weight: bold;
+            color: #e0e0e0;
+        }
+
+        .positive {
+            color: #4ade80;
+        }
+
+        .negative {
+            color: #f87171;
+        }
+
+        .spread-item {
+            padding: 12px;
+            background: #16213e;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .spread-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .spread-value {
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .order-item {
+            padding: 10px;
+            background: #16213e;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 13px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .order-buy {
+            border-left: 4px solid #4ade80;
+        }
+
+        .order-sell {
+            border-left: 4px solid #f87171;
+        }
+
+        .timestamp {
+            color: #888;
+            font-size: 11px;
+        }
+
+        .account-card {
+            background: linear-gradient(135deg, #2e3440 0%, #1a1a2e 100%);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #2a2a3e;
+        }
+
+        th {
+            background: #16213e;
+            color: #a0a0ff;
+            font-weight: 600;
+        }
+
+        .loader {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+        }
+
+        .error {
+            background: #4c1d1d;
+            color: #f87171;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border-left: 4px solid #f87171;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 LEAN交易实时监控</h1>
+            <div class="status">
+                <span class="dot"></span>
+                <span id="connection-status">连接中...</span>
+                <span style="margin-left: 20px;">⏰ 最后更新: <span id="last-update">-</span></span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <!-- PnL卡片 -->
+            <div class="card">
+                <h2>📊 盈亏统计</h2>
+                <div class="stat-row">
+                    <span class="stat-label">已实现盈亏</span>
+                    <span class="stat-value" id="realized-pnl">$0.00</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">未实现盈亏</span>
+                    <span class="stat-value" id="unrealized-pnl">$0.00</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">总盈亏</span>
+                    <span class="stat-value" id="total-pnl">$0.00</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">订单总数</span>
+                    <span class="stat-value" id="order-count">0</span>
+                </div>
+            </div>
+
+            <!-- 账户卡片 -->
+            <div class="card account-card">
+                <h2>💰 账户状态</h2>
+                <div id="accounts-container" class="loader">加载中...</div>
+            </div>
+
+            <!-- 持仓卡片 -->
+            <div class="card">
+                <h2>📦 当前持仓</h2>
+                <div id="positions-container" class="loader">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 价差卡片 -->
+        <div class="card" style="margin-bottom: 20px;">
+            <h2>📈 交易对价差</h2>
+            <div id="spreads-container" class="loader">加载中...</div>
+        </div>
+
+        <!-- 订单卡片 -->
+        <div class="card">
+            <h2>📝 最近订单 (最新10条)</h2>
+            <div id="orders-container" class="loader">加载中...</div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
