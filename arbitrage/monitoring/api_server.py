@@ -128,6 +128,135 @@ async def get_round_trips():
         return {"error": str(e)}
 
 
+@app.get("/api/positions")
+async def get_positions():
+    """
+    获取按交易对配对的持仓数据
+
+    使用 trading:pair_mappings 中的配对关系（在 SpreadManager.add_pair() 时写入）
+    来正确配对两个账户的持仓数据。
+
+    返回格式:
+    [
+        {
+            "pair": "AAPLUSDx<->AAPL",
+            "crypto": {
+                "symbol": "AAPLUSDx",
+                "market": "kraken",
+                "account": "Kraken",
+                "quantity": 10.0,
+                "average_price": 248.50,
+                "market_price": 249.80,
+                "unrealized_pnl": 13.00
+            },
+            "stock": {
+                "symbol": "AAPL",
+                "market": "usa",
+                "account": "IBKR",
+                "quantity": -1000.0,
+                "average_price": 248.00,
+                "market_price": 249.30,
+                "unrealized_pnl": -1300.00
+            },
+            "total_pnl": -1287.00,
+            "open_time": "2025-10-13T08:00:00",
+            "hold_duration_seconds": 8100
+        }
+    ]
+    """
+    try:
+        # 1. 获取配对映射（在 LEAN subscribe 时写入）
+        pair_mappings_raw = redis_client.hgetall("trading:pair_mappings")
+        if not pair_mappings_raw:
+            # 如果没有配对映射，返回空列表（说明 LEAN 还未启动或未订阅交易对）
+            return []
+
+        pair_mappings = {k: json.loads(v) for k, v in pair_mappings_raw.items()}
+
+        # 2. 获取持仓快照
+        snapshot_data = redis_client.get("trading:snapshot")
+        if not snapshot_data:
+            return []
+
+        snapshot = json.loads(snapshot_data)
+        accounts = snapshot.get('accounts', {})
+
+        # 3. 根据配对映射构建持仓数据
+        positions = []
+
+        for pair_key, mapping in pair_mappings.items():
+            crypto_info = mapping['crypto']
+            stock_info = mapping['stock']
+
+            # 根据配对映射中的账户信息查找持仓
+            crypto_account_name = crypto_info['account']
+            stock_account_name = stock_info['account']
+
+            crypto_account = accounts.get(crypto_account_name, {})
+            stock_account = accounts.get(stock_account_name, {})
+
+            crypto_symbol = crypto_info['symbol']
+            stock_symbol = stock_info['symbol']
+
+            crypto_holding = crypto_account.get('holdings', {}).get(crypto_symbol)
+            stock_holding = stock_account.get('holdings', {}).get(stock_symbol)
+
+            # 如果任一端没有持仓，跳过（可能还未开仓）
+            if not crypto_holding or not stock_holding:
+                continue
+
+            # 计算持仓时长
+            hold_duration_seconds = 0
+            open_time = crypto_holding.get('open_time', '')  # 使用 crypto 端的 open_time
+            if open_time:
+                try:
+                    from datetime import datetime
+                    open_dt = datetime.fromisoformat(open_time)
+                    now = datetime.now()
+                    hold_duration_seconds = int((now - open_dt).total_seconds())
+                except:
+                    pass
+
+            # 构建配对持仓数据
+            crypto_pnl = float(crypto_holding.get('unrealized_pnl', 0))
+            stock_pnl = float(stock_holding.get('unrealized_pnl', 0))
+
+            position = {
+                'pair': pair_key,
+                'crypto': {
+                    'symbol': crypto_symbol,
+                    'market': crypto_info['market'],
+                    'account': crypto_account_name,
+                    'quantity': float(crypto_holding.get('quantity', 0)),
+                    'average_price': float(crypto_holding.get('average_price', 0)),
+                    'market_price': float(crypto_holding.get('market_price', 0)),
+                    'unrealized_pnl': crypto_pnl,
+                },
+                'stock': {
+                    'symbol': stock_symbol,
+                    'market': stock_info['market'],
+                    'account': stock_account_name,
+                    'quantity': float(stock_holding.get('quantity', 0)),
+                    'average_price': float(stock_holding.get('average_price', 0)),
+                    'market_price': float(stock_holding.get('market_price', 0)),
+                    'unrealized_pnl': stock_pnl,
+                },
+                'total_pnl': crypto_pnl + stock_pnl,
+                'open_time': open_time,
+                'hold_duration_seconds': hold_duration_seconds,
+            }
+
+            positions.append(position)
+
+        return positions
+
+    except Exception as e:
+        print(f"[ERROR] /api/positions failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
 # === WebSocket实时推送 ===
 
 @app.websocket("/ws")

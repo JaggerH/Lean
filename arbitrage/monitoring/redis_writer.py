@@ -365,6 +365,40 @@ class TradingRedis:
             lambda: self.client.set("trading:round_trips", json.dumps(data))
         )
 
+    # === 交易对配对映射 ===
+
+    def set_pair_mapping(self, pair_key: str, mapping_data: Dict):
+        """
+        写入交易对配对映射（在 subscribe 时写入，持久化配对关系）
+
+        Args:
+            pair_key: 交易对标识 (如 "AAPLUSDx<->AAPL")
+            mapping_data: 配对数据字典，包含:
+                - pair: 交易对完整名称
+                - crypto: {symbol, market, account}
+                - stock: {symbol, market, account}
+
+        Example:
+            >>> mapping = {
+            ...     'pair': 'AAPLUSDx<->AAPL',
+            ...     'crypto': {'symbol': 'AAPLUSDx', 'market': 'kraken', 'account': 'Kraken'},
+            ...     'stock': {'symbol': 'AAPL', 'market': 'usa', 'account': 'IBKR'}
+            ... }
+            >>> redis.set_pair_mapping('AAPLUSDx<->AAPL', mapping)
+        """
+        # 首次写入日志标记
+        if not hasattr(self, '_pair_mapping_write_logged'):
+            self._pair_mapping_write_logged = set()
+
+        result = self._safe_execute(
+            lambda: self.client.hset("trading:pair_mappings", pair_key, json.dumps(mapping_data))
+        )
+
+        # 调试日志：每个交易对只记录首次成功写入
+        if result is not None and pair_key not in self._pair_mapping_write_logged:
+            self._pair_mapping_write_logged.add(pair_key)
+            print(f"[OK] Redis: 首次写入配对映射 [{pair_key}]")
+
     # === Pub/Sub事件通知 ===
 
     def _notify(self, event_type: str, data: Any = None):

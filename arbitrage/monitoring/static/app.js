@@ -12,7 +12,43 @@ class TradingMonitor {
         this.pollingEnabled = false; // 轮询是否启用
         this.wsConnected = false; // WebSocket连接状态
 
+        // Broadcast Channel 用于跨标签页通信
+        this.bc = null;
+        this.setupBroadcastChannel();
+
+        // 缓存价差数据，用于在持仓中显示
+        this.spreadsCache = {};
+
         this.init();
+    }
+
+    setupBroadcastChannel() {
+        // 检查是否支持 Broadcast Channel API
+        if ('BroadcastChannel' in window) {
+            try {
+                this.bc = new BroadcastChannel('trading_monitor_channel');
+
+                // 监听来自其他标签页的消息
+                this.bc.onmessage = (event) => {
+                    if (event.data.type === 'new_tab_opened') {
+                        console.log('[INFO] 检测到新标签页打开，刷新当前页面');
+                        // 延迟100ms刷新，让新标签页有时间加载
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 100);
+                    }
+                };
+
+                // 通知其他标签页：新标签页已打开
+                this.bc.postMessage({ type: 'new_tab_opened', timestamp: Date.now() });
+
+                console.log('[INFO] Broadcast Channel 已启用（支持多标签页刷新）');
+            } catch (e) {
+                console.warn('[WARN] Broadcast Channel 初始化失败:', e);
+            }
+        } else {
+            console.log('[INFO] 浏览器不支持 Broadcast Channel（多标签页刷新功能不可用）');
+        }
     }
 
     init() {
@@ -110,6 +146,7 @@ class TradingMonitor {
             switch (event.type) {
                 case 'snapshot_update':
                     this.loadSnapshot();
+                    this.loadPositions();  // 快照更新时也更新持仓
                     break;
                 case 'spread_update':
                 case 'spreads_batch_update':
@@ -148,6 +185,7 @@ class TradingMonitor {
         console.log('📥 初始加载数据...');
         await Promise.all([
             this.loadSnapshot(),
+            this.loadPositions(),
             this.loadSpreads(),
             this.loadOrders(),
             this.loadStats()
@@ -161,6 +199,12 @@ class TradingMonitor {
         if (data && !data.error) {
             this.renderAccounts(data.accounts);
             this.renderPnL(data.pnl);
+        }
+    }
+
+    async loadPositions() {
+        const data = await this.fetchAPI('positions');
+        if (data && !data.error) {
             this.renderPositions(data);
         }
     }
@@ -168,6 +212,7 @@ class TradingMonitor {
     async loadSpreads() {
         const data = await this.fetchAPI('spreads');
         if (data && !data.error) {
+            this.spreadsCache = data; // 缓存价差数据
             this.renderSpreads(data);
         }
     }
@@ -236,41 +281,123 @@ class TradingMonitor {
         container.innerHTML = html;
     }
 
-    renderPositions(snapshot) {
+    renderPositions(positions) {
         const container = document.getElementById('positions-container');
 
-        if (!snapshot || !snapshot.accounts) {
-            container.innerHTML = '<div class="loader">暂无持仓数据</div>';
-            return;
-        }
-
-        // 提取所有accounts中的holdings
-        let allHoldings = {};
-        for (const [accountName, account] of Object.entries(snapshot.accounts)) {
-            if (account.holdings) {
-                allHoldings = { ...allHoldings, ...account.holdings };
-            }
-        }
-
-        if (Object.keys(allHoldings).length === 0) {
+        if (!positions || positions.length === 0) {
             container.innerHTML = '<div class="loader">暂无持仓</div>';
             return;
         }
 
-        let html = '<table><thead><tr><th>标的</th><th>数量</th><th>市值</th><th>未实现盈亏</th></tr></thead><tbody>';
+        let html = '<table class="positions-table"><thead><tr><th>交易对</th><th>Crypto</th><th>Stock</th><th>配对盈亏</th><th>持仓时长</th></tr></thead><tbody>';
 
-        for (const [symbol, holding] of Object.entries(allHoldings)) {
-            const qty = parseFloat(holding.quantity || 0);
-            const value = parseFloat(holding.market_value || 0);
-            const unrealizedPnl = parseFloat(holding.unrealized_pnl || 0);
+        for (const pos of positions) {
+            const totalPnlClass = pos.total_pnl >= 0 ? 'positive' : 'negative';
+
+            // 计算持仓时长显示
+            const duration = this.formatDuration(pos.hold_duration_seconds);
+
+            // Crypto 持仓信息
+            const cryptoQty = pos.crypto.quantity.toFixed(2);
+            const cryptoAvgPrice = pos.crypto.average_price.toFixed(2);
+            const cryptoMktPrice = pos.crypto.market_price.toFixed(2);
+            const cryptoPnl = pos.crypto.unrealized_pnl;
+            const cryptoPnlClass = cryptoPnl >= 0 ? 'positive' : 'negative';
+            const cryptoOpenValue = (pos.crypto.quantity * pos.crypto.average_price).toFixed(2);
+            const cryptoMktValue = (pos.crypto.quantity * pos.crypto.market_price).toFixed(2);
+
+            // Stock 持仓信息
+            const stockQty = pos.stock.quantity.toFixed(2);
+            const stockAvgPrice = pos.stock.average_price.toFixed(2);
+            const stockMktPrice = pos.stock.market_price.toFixed(2);
+            const stockPnl = pos.stock.unrealized_pnl;
+            const stockPnlClass = stockPnl >= 0 ? 'positive' : 'negative';
+            const stockOpenValue = (pos.stock.quantity * pos.stock.average_price).toFixed(2);
+            const stockMktValue = (pos.stock.quantity * pos.stock.market_price).toFixed(2);
+
+            // 查找对应的价差数据
+            const spread = this.spreadsCache[pos.pair];
+            let spreadInfo = '';
+            let priceInfo = '';
+            if (spread) {
+                const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
+                const spreadClass = spreadPct >= 0 ? 'positive' : 'negative';
+                spreadInfo = `<div style="margin-top: 4px;">
+                    <span class="${spreadClass}" style="font-weight: 600; font-size: 13px;">
+                        ${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(2)}%
+                    </span>
+                </div>`;
+
+                // 添加最新价格显示 (Crypto / Stock)
+                const cryptoLast = parseFloat(spread.crypto_last || pos.crypto.market_price).toFixed(2);
+                const stockLast = parseFloat(spread.stock_last || pos.stock.market_price).toFixed(2);
+                priceInfo = `<div style="margin-top: 4px; font-size: 12px; color: #b0b0b0;">
+                    $${cryptoLast} / $${stockLast}
+                </div>`;
+            }
 
             html += `
                 <tr>
-                    <td><strong>${symbol}</strong></td>
-                    <td>${qty.toFixed(2)}</td>
-                    <td>${this.formatMoney(value)}</td>
-                    <td class="${unrealizedPnl >= 0 ? 'positive' : 'negative'}">
-                        ${this.formatMoney(unrealizedPnl)}
+                    <td style="text-align: left; vertical-align: middle;">
+                        <div>
+                            <strong style="font-size: 14px;">${pos.pair}</strong>
+                            ${spreadInfo}
+                            ${priceInfo}
+                        </div>
+                    </td>
+                    <td style="padding: 12px 16px;">
+                        <div style="margin-bottom: 8px;">
+                            <strong style="font-size: 13px; color: #a0a0ff;">${pos.crypto.symbol}</strong>
+                            <span style="color: #e0e0e0; font-size: 13px; font-weight: 500; margin: 0 6px;">
+                                ${cryptoQty}
+                            </span>
+                            <span style="color: #888; font-size: 12px;">@</span>
+                            <span style="color: #e0e0e0; font-size: 13px; font-weight: 500; margin-left: 6px;">
+                                $${cryptoAvgPrice}
+                            </span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px;">
+                            <span style="color: #888;">开仓市值:</span>
+                            <span style="color: #e0e0e0; font-size: 14px; font-weight: 500;">$${cryptoOpenValue}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px;">
+                            <span style="color: #888;">持仓市值:</span>
+                            <span style="color: #e0e0e0; font-size: 14px; font-weight: 500;">$${cryptoMktValue}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                            <span style="color: #888;">盈亏:</span>
+                            <span class="${cryptoPnlClass}" style="font-size: 14px; font-weight: 600;">${this.formatMoney(cryptoPnl)}</span>
+                        </div>
+                    </td>
+                    <td style="padding: 12px 16px;">
+                        <div style="margin-bottom: 8px;">
+                            <strong style="font-size: 13px; color: #a0a0ff;">${pos.stock.symbol}</strong>
+                            <span style="color: #e0e0e0; font-size: 13px; font-weight: 500; margin: 0 6px;">
+                                ${stockQty}
+                            </span>
+                            <span style="color: #888; font-size: 12px;">@</span>
+                            <span style="color: #e0e0e0; font-size: 13px; font-weight: 500; margin-left: 6px;">
+                                $${stockAvgPrice}
+                            </span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px;">
+                            <span style="color: #888;">开仓市值:</span>
+                            <span style="color: #e0e0e0; font-size: 14px; font-weight: 500;">$${stockOpenValue}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px;">
+                            <span style="color: #888;">持仓市值:</span>
+                            <span style="color: #e0e0e0; font-size: 14px; font-weight: 500;">$${stockMktValue}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                            <span style="color: #888;">盈亏:</span>
+                            <span class="${stockPnlClass}" style="font-size: 14px; font-weight: 600;">${this.formatMoney(stockPnl)}</span>
+                        </div>
+                    </td>
+                    <td class="${totalPnlClass}" style="font-weight: bold; font-size: 16px; text-align: center; vertical-align: middle;">
+                        ${this.formatMoney(pos.total_pnl)}
+                    </td>
+                    <td style="color: #b0b0b0; font-size: 13px; text-align: center; vertical-align: middle;">
+                        ${duration}
                     </td>
                 </tr>
             `;
@@ -278,6 +405,21 @@ class TradingMonitor {
 
         html += '</tbody></table>';
         container.innerHTML = html;
+    }
+
+    formatDuration(seconds) {
+        if (!seconds || seconds < 0) return '-';
+
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+
+        if (hours > 0) {
+            return `${hours}小时${minutes}分钟`;
+        } else if (minutes > 0) {
+            return `${minutes}分钟`;
+        } else {
+            return `${seconds}秒`;
+        }
     }
 
     renderSpreads(spreads) {
@@ -288,27 +430,50 @@ class TradingMonitor {
             return;
         }
 
-        let html = '';
+        // 使用网格布局包裹所有交易对
+        let html = '<div class="spreads-grid">';
+
         for (const [pair, spread] of Object.entries(spreads)) {
             const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
             const spreadClass = spreadPct >= 0 ? 'positive' : 'negative';
 
+            const cryptoBid = parseFloat(spread.crypto_bid || 0);
+            const cryptoAsk = parseFloat(spread.crypto_ask || 0);
+            const stockBid = parseFloat(spread.stock_bid || 0);
+            const stockAsk = parseFloat(spread.stock_ask || 0);
+
+            // 格式化时间戳
+            const timestamp = spread.timestamp ? new Date(spread.timestamp).toLocaleTimeString('zh-CN') : '-';
+
             html += `
                 <div class="spread-item">
-                    <div class="spread-header">${pair}</div>
-                    <div class="spread-value ${spreadClass}">
-                        ${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(2)}%
+                    <!-- 左侧：交易对信息 -->
+                    <div class="spread-left">
+                        <div class="spread-pair-name">${pair}</div>
+                        <div class="spread-quotes">
+                            <div class="quote-item">
+                                <span class="quote-label">Crypto</span>
+                                <span class="quote-value">$${cryptoBid.toFixed(2)} / $${cryptoAsk.toFixed(2)}</span>
+                            </div>
+                            <div class="quote-item">
+                                <span class="quote-label">Stock</span>
+                                <span class="quote-value">$${stockBid.toFixed(2)} / $${stockAsk.toFixed(2)}</span>
+                            </div>
+                        </div>
                     </div>
-                    <div style="font-size: 12px; margin-top: 5px; color: #888;">
-                        Crypto Bid: $${parseFloat(spread.crypto_bid || 0).toFixed(2)} |
-                        Ask: $${parseFloat(spread.crypto_ask || 0).toFixed(2)} |
-                        Stock: $${parseFloat(spread.stock_price || 0).toFixed(2)}
+
+                    <!-- 右侧：价差百分比 -->
+                    <div class="spread-right">
+                        <div class="spread-value ${spreadClass}">
+                            ${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(2)}%
+                        </div>
+                        <div class="spread-timestamp">${timestamp}</div>
                     </div>
-                    <div class="timestamp">${spread.timestamp || '-'}</div>
                 </div>
             `;
         }
 
+        html += '</div>';
         container.innerHTML = html;
     }
 
@@ -403,6 +568,7 @@ class TradingMonitor {
         await Promise.all([
             this.loadSpreads(),
             this.loadSnapshot(),
+            this.loadPositions(),
             this.loadOrders()
         ]);
         this.updateLastUpdateTime();
@@ -436,6 +602,12 @@ class TradingMonitor {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             console.log('[INFO] 关闭 WebSocket 连接');
             this.ws.close(1000, 'Page unload'); // 正常关闭
+        }
+
+        // 关闭 Broadcast Channel
+        if (this.bc) {
+            this.bc.close();
+            console.log('[INFO] 关闭 Broadcast Channel');
         }
 
         // 停止轮询

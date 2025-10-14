@@ -89,22 +89,25 @@ class KrakenSymbolManager(BaseDataSource):
 
         for market_ticker, pair_data in self.source.items():
             try:
-                # 从Kraken格式提取altname (如 "AAPLxUSD")
+                # 从Kraken格式提取altname (如 "AAPLxUSD", "CVXxUSD")
                 altname = pair_data.get('altname', market_ticker)
 
-                # 转换为LEAN crypto symbol格式 (移除'x'和'/')
-                # "AAPLxUSD" -> "AAPLUSD" 或 "AAPLx/USD" -> "AAPLUSD"
-                crypto_symbol_str = altname.replace('x', '').replace('/', '')
+                # 转换为LEAN crypto symbol格式（保留'x'后缀，只移除斜杠）
+                # "AAPLxUSD" -> "AAPLxUSD" 或 "AAPLx/USD" -> "AAPLxUSD"
+                crypto_symbol_str = altname.replace('/', '')
 
                 # 提取对应的股票代码
                 # 移除任何斜杠 (e.g., "AAPLx/USD" -> "AAPLxUSD")
                 symbol = altname.replace('/', '')
 
-                # 找到'x'并分割
+                # 找到'x'并分割（从右边分割，避免ticker本身包含'x'的问题）
                 if 'x' not in symbol:
                     continue
 
-                parts = symbol.split('x')
+                # 使用 rsplit 从右边分割，限制分割次数为1
+                # 例如："CVXxUSD" -> ["CVX", "USD"]（正确）
+                # 而不是 split('x') -> ["CV", "", "USD"]（错误）
+                parts = symbol.rsplit('x', 1)
                 if len(parts) < 2 or not parts[0]:
                     continue
 
@@ -139,7 +142,7 @@ class KrakenSymbolManager(BaseDataSource):
             price_magnifier,strike_multiplier
 
         Example:
-            ["kraken,AAPLUSD,crypto,AAPLx/USD,USD,1,0.01,0.00000001,AAPLxUSD,0.5,,"]
+            ["kraken,AAPLxUSD,crypto,AAPLx/USD,USD,1,0.01,0.00000001,AAPLxUSD,0.5,,"]
 
         Note:
             必须先调用get_tokenize_stocks()以填充self.source
@@ -164,7 +167,7 @@ class KrakenSymbolManager(BaseDataSource):
 
             # Map to CSV fields
             market = 'kraken'
-            symbol = altname.replace('x', '').replace('/', '')  # AAPLxUSD -> AAPLUSD
+            symbol = altname.replace('/', '')  # 保留'x'后缀：AAPLxUSD -> AAPLxUSD
             security_type = 'crypto'
             description = wsname  # AAPLx/USD
             quote_currency = CURRENCY_MAP.get(quote, quote)  # ZUSD -> USD

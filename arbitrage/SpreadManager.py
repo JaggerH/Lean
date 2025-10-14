@@ -5,11 +5,16 @@ Manages many-to-one relationships between crypto tokens (e.g., TSLAx on Kraken)
 and underlying stocks (e.g., TSLA on IBKR).
 """
 from AlgorithmImports import *
-from typing import Dict, Set, List, Tuple, Optional
+from typing import Dict, Set, List, Tuple, Optional, TYPE_CHECKING
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 from limit_order_optimizer import LimitOrderOptimizer
+
+# 避免循环导入，仅用于类型检查
+if TYPE_CHECKING:
+    from monitoring.spread_monitor import RedisSpreadMonitor
+    from strategy.base_strategy import BaseStrategy
 
 
 class SpreadManager:
@@ -31,18 +36,28 @@ class SpreadManager:
         manager.add_pair(crypto, stock)
     """
 
-    def __init__(self, algorithm: QCAlgorithm, strategy=None, aggression: float = 0.6):
+    def __init__(self, algorithm: QCAlgorithm, strategy: Optional['BaseStrategy'] = None,
+                 aggression: float = 0.6,
+                 monitor_adapter: Optional['RedisSpreadMonitor'] = None):
         """
         Initialize SpreadManager
 
         Args:
             algorithm: QCAlgorithm instance for accessing trading APIs
-            strategy: GridStrategy instance
+            strategy: 策略实例 (可选，如 LongCryptoStrategy, BothSideStrategy)
             aggression: 限价单激进度
+            monitor_adapter: 监控适配器实例 (可选，如 RedisSpreadMonitor)
         """
         self.algorithm = algorithm
         self.strategy = strategy
         self.aggression = aggression
+        self.monitor = monitor_adapter  # 监控适配器（依赖注入）
+
+        # 日志输出
+        if self.monitor:
+            self.algorithm.Debug("📊 SpreadManager: 监控适配器已启用")
+        else:
+            self.algorithm.Debug("📊 SpreadManager: 监控适配器未启用")
 
         # Crypto Symbol -> Stock Symbol mapping
         self.pairs: Dict[Symbol, Symbol] = {}
@@ -97,6 +112,10 @@ class SpreadManager:
 
         self.algorithm.Debug(f"Added pair: {crypto_symbol} <-> {stock_symbol}")
         self.algorithm.Debug(f"  Stock {stock_symbol} now paired with {len(self.stock_to_cryptos[stock_symbol])} crypto(s)")
+
+        # 写入配对映射到监控后端（通过适配器）
+        if self.monitor:
+            self.monitor.write_pair_mapping(crypto, stock)
 
     def get_all_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
@@ -205,10 +224,6 @@ class SpreadManager:
             for tick in ticks:
                 if tick.TickType == TickType.Quote:
                     self.latest_quotes[symbol] = tick
-                # elif tick.TickType == TickType.Trade and symbol.SecurityType == SecurityType.Equity:
-                #     # Stock 可能只有 Trade tick，作为备选
-                #     if symbol not in self.latest_quotes or self.latest_quotes[symbol].TickType != TickType.Quote:
-                #         self.latest_quotes[symbol] = tick
 
         # 监控价差
         self.monitor_spread()
@@ -279,3 +294,11 @@ class SpreadManager:
                 crypto_quote, stock_quote,
                 crypto_bid_price, crypto_ask_price
             )
+
+            # 写入价差数据到监控后端（通过适配器）
+            if self.monitor:
+                self.monitor.write_spread(
+                    crypto_symbol, stock_symbol, spread_pct,
+                    crypto_quote, stock_quote,
+                    crypto_bid_price, crypto_ask_price
+                )

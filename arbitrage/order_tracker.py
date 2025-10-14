@@ -23,7 +23,7 @@ class OrderTracker:
     与 BaseStrategy 集成,利用其 order_to_pair 映射来追踪交易对的开平仓。
     """
 
-    def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False, realtime_mode: bool = False, redis_client=None):
         """
         初始化 OrderTracker
 
@@ -31,10 +31,32 @@ class OrderTracker:
             algorithm: QCAlgorithm 实例
             strategy: BaseStrategy 实例 (用于访问 order_to_pair 和 positions)
             debug: 是否启用调试日志输出，默认 False
+            realtime_mode: 是否启用实时监控模式(Live模式下自动启用)
+            redis_client: 已验证的Redis客户端 (优先使用传入的客户端)
         """
         self.algorithm = algorithm
         self.strategy = strategy
         self.debug_enabled = debug
+        self.realtime_mode = realtime_mode
+
+        # 实时监控: 使用传入的Redis客户端 (已在main.py验证)
+        self.redis = None
+        if realtime_mode:
+            if redis_client:
+                # 优先使用传入的已验证客户端
+                self.redis = redis_client
+                self.algorithm.debug("✓ OrderTracker: 使用已验证的Redis客户端")
+            else:
+                # 备用方案: 自行初始化 (兼容旧代码)
+                try:
+                    from monitoring.redis_writer import TradingRedis
+                    self.redis = TradingRedis()
+                    if self.redis.is_connected():
+                        self.algorithm.debug("✓ OrderTracker: Redis连接成功")
+                    else:
+                        self.algorithm.debug("⚠️ OrderTracker: Redis连接失败,实时监控不可用")
+                except Exception as e:
+                    self.algorithm.debug(f"⚠️ OrderTracker: Redis初始化失败: {e}")
 
         # ============ 数据存储 ============
 
@@ -89,7 +111,7 @@ class OrderTracker:
             message: 日志消息
         """
         if self.debug_enabled:
-            self.debug(message)
+            self.algorithm.debug(message)
 
     def record_order_fill(self, order_event: OrderEvent):
         """
@@ -198,9 +220,52 @@ class OrderTracker:
             f"Tracker PnL: ${snapshot['tracker_pnl']['total_unrealized']:.2f}"
         )
 
+        # ========== 实时监控: 写入Redis ==========
+        if self.realtime_mode and self.redis:
+            self._write_snapshot_to_redis(snapshot)
+
+    def capture_initial_snapshot(self):
+        """
+        捕获初始 Portfolio 快照（Initialize 完成时调用）
+
+        与 capture_snapshot() 类似，但不需要 order_event 参数。
+        用于在算法启动时捕获初始状态。
+        """
+        snapshot = {
+            'timestamp': self._serialize_datetime(self.algorithm.Time),
+            'event_type': 'initialization',
+            'order_id': None,
+            'symbol': None,
+            'accounts': {},
+            'lean_pnl': {},
+            'tracker_pnl': {},
+        }
+
+        # ========== 1. 捕获账户状态 ==========
+        snapshot['accounts'] = self._capture_accounts_state()
+
+        # ========== 2. Lean 官方 PnL ==========
+        snapshot['lean_pnl'] = self._capture_lean_pnl()
+
+        # ========== 3. OrderTracker 自己计算的 PnL ==========
+        snapshot['tracker_pnl'] = self._calculate_tracker_pnl()
+
+        # 添加到快照历史
+        self.snapshots.append(snapshot)
+
+        self.debug(
+            f"📸 Initial snapshot captured | "
+            f"Accounts: {list(snapshot['accounts'].keys())} | "
+            f"Total Portfolio Value: ${snapshot['accounts'].get('IBKR', {}).get('total_portfolio_value', 0) + snapshot['accounts'].get('Kraken', {}).get('total_portfolio_value', 0):.2f}"
+        )
+
+        # ========== 实时监控: 写入Redis ==========
+        if self.realtime_mode and self.redis:
+            self._write_snapshot_to_redis(snapshot)
+
     def _capture_accounts_state(self) -> Dict:
         """
-        捕获所有账户的状态
+        捕获所有账户的状态（包括未完成订单）
 
         Returns:
             账户状态字典
@@ -220,6 +285,12 @@ class OrderTracker:
             # 单账户模式
             accounts_state['Main'] = self._capture_single_account(self.algorithm.portfolio, 'Main')
 
+        # ========== Capture open orders and populate each account ==========
+        open_orders_by_account = self._capture_open_orders()
+
+        for account_name in accounts_state:
+            accounts_state[account_name]['open_orders'] = open_orders_by_account.get(account_name, [])
+
         return accounts_state
 
     def _capture_single_account(self, account, account_name: str) -> Dict:
@@ -238,6 +309,7 @@ class OrderTracker:
             'total_portfolio_value': float(account.total_portfolio_value) if hasattr(account, 'total_portfolio_value') else float(account.TotalPortfolioValue),
             'cashbook': {},
             'holdings': {},
+            'open_orders': [],  # Will be populated by caller
         }
 
         # 捕获 CashBook
@@ -270,6 +342,64 @@ class OrderTracker:
             self.debug(f"⚠️ Error capturing Holdings for {account_name}: {e}")
 
         return account_state
+
+    def _capture_open_orders(self) -> Dict[str, List[Dict]]:
+        """
+        捕获所有未完成订单，按账户分组
+
+        Uses self.algorithm.Transactions.GetOpenOrders() to retrieve all open orders.
+        Groups orders by account based on symbol's market (IBKR vs Kraken).
+
+        Returns:
+            Dict mapping account names to list of order dictionaries:
+            {
+                'IBKR': [order_data, ...],
+                'Kraken': [order_data, ...]
+            }
+        """
+        open_orders_by_account = {}
+
+        try:
+            # Get all open orders (no symbol filter)
+            all_open_orders = self.algorithm.transactions.get_open_orders()
+
+            for order in all_open_orders:
+                # Determine account from symbol
+                account = self._determine_account(order.symbol)
+
+                # Extract order details
+                order_data = {
+                    'order_id': order.id,
+                    'symbol': str(order.symbol.value),
+                    'type': str(order.type),
+                    'status': str(order.status),
+                    'direction': str(order.direction),
+                    'quantity': float(order.quantity),
+                    'limit_price': float(order.price) if hasattr(order, 'limit_price') else None,
+                    'time_in_force': str(order.time_in_force) if hasattr(order, 'time_in_force') else None,
+                    'tag': str(order.tag) if order.tag else '',
+                    'created_time': self._serialize_datetime(order.time),
+                    'last_update_time': self._serialize_datetime(order.last_update_time) if order.last_update_time else None,
+                }
+
+                # Group by account
+                if account not in open_orders_by_account:
+                    open_orders_by_account[account] = []
+
+                open_orders_by_account[account].append(order_data)
+
+            # Debug log
+            total_orders = sum(len(orders) for orders in open_orders_by_account.values())
+            if total_orders > 0:
+                self.debug(
+                    f"📋 Captured {total_orders} open orders | " +
+                    " | ".join([f"{acc}: {len(orders)}" for acc, orders in open_orders_by_account.items()])
+                )
+
+        except Exception as e:
+            self.debug(f"⚠️ Error capturing open orders: {e}")
+
+        return open_orders_by_account
 
     def _capture_lean_pnl(self) -> Dict:
         """
@@ -910,3 +1040,44 @@ class OrderTracker:
         report.append("=" * 100)
 
         return "\n".join(report)
+
+    # ========== 实时监控相关方法 ==========
+
+    def _write_snapshot_to_redis(self, snapshot: Dict):
+        """
+        将快照数据写入Redis (用于实时监控)
+
+        Args:
+            snapshot: 快照数据
+        """
+        try:
+            # 准备要写入Redis的数据 (简化版)
+            redis_data = {
+                'timestamp': snapshot['timestamp'],
+                'accounts': snapshot['accounts'],
+                'pnl': {
+                    'realized': self.realized_pnl,
+                    'unrealized': snapshot['tracker_pnl']['total_unrealized']
+                }
+            }
+
+            # 写入Redis
+            self.redis.set_snapshot(redis_data)
+
+            # 同时更新订单数据 (最近的订单)
+            recent_orders = list(self.orders.values())[-10:]
+            for order in recent_orders:
+                # 移除不可序列化的对象
+                order_copy = {k: v for k, v in order.items() if not k.endswith('_obj')}
+                self.redis.add_order(order_copy)
+
+            # 更新统计信息
+            self.redis.set_stats(
+                realized_pnl=str(self.realized_pnl),
+                order_count=str(len(self.orders)),
+                active_round_trips=str(len(self.active_round_trips)),
+                completed_round_trips=str(sum(len(trips) for trips in self.pair_round_trips.values()))
+            )
+
+        except Exception as e:
+            self.debug(f"⚠️ 写入Redis失败: {e}")
