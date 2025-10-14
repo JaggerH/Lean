@@ -4,7 +4,11 @@ Base Strategy - 套利策略基类
 提供基础的开仓/平仓逻辑，供具体策略继承和扩展
 """
 from AlgorithmImports import *
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, List, Dict, TYPE_CHECKING
+
+# 避免循环导入，仅用于类型检查
+if TYPE_CHECKING:
+    from arbitrage.monitoring.state_persistence import StatePersistence
 
 
 class BaseStrategy:
@@ -22,25 +26,35 @@ class BaseStrategy:
     - on_spread_update(): 处理价差更新的具体逻辑
     """
 
-    def __init__(self, algorithm: QCAlgorithm, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, debug: bool = False,
+                 state_persistence: Optional['StatePersistence'] = None):
         """
         初始化基础策略
 
         Args:
             algorithm: QCAlgorithm实例
             debug: 是否输出debug日志 (默认False)
+            state_persistence: 状态持久化适配器实例 (可选，如 StatePersistence)
         """
         self.algorithm = algorithm
         self.debug = debug
+        self.state_persistence = state_persistence  # 状态持久化适配器（依赖注入）
 
         # Position tracking: {(crypto_symbol, stock_symbol): (token_qty, stock_qty)}
         # 维护每个交易对的仓位，解决多对一映射问题
         # Example: {(TSLAxUSD, TSLA): (300, -290)}
         self.positions: Dict[Tuple[Symbol, Symbol], Tuple[float, float]] = {}
 
-        # Order to pair mapping: {order_id: (crypto_symbol, stock_symbol)}
-        # 用于在 on_order_event 时精确查找订单所属的交易对
-        self.order_to_pair: Dict[int, Tuple[Symbol, Symbol]] = {}
+        # Order to pair mapping (扩展版本，包含 filled_qty_snapshot):
+        # {order_id: {"pair": (crypto_symbol, stock_symbol), "filled_qty_snapshot": float}}
+        # 用于在 on_order_event 时精确查找订单所属的交易对，并追踪已成交数量
+        self.order_to_pair: Dict[int, Dict] = {}
+
+        # 日志输出
+        if self.state_persistence:
+            self.algorithm.Debug("📊 BaseStrategy: 状态持久化适配器已启用")
+        else:
+            self.algorithm.Debug("📊 BaseStrategy: 状态持久化适配器未启用")
 
     def _debug(self, message: str):
         """
@@ -51,6 +65,47 @@ class BaseStrategy:
         """
         if self.debug:
             self.algorithm.debug(message)
+
+    def _validate_order_preconditions(self, crypto_symbol: Symbol, stock_symbol: Symbol,
+                                       action: str = "order") -> Tuple[bool, str]:
+        """
+        验证下单前置条件
+
+        检查项:
+        1. Crypto security 是否有数据 (HasData)
+        2. Stock security 是否有数据 (HasData)
+        3. 价格是否有效 (> 0)
+
+        Args:
+            crypto_symbol: Crypto Symbol
+            stock_symbol: Stock Symbol
+            action: 操作描述 (用于日志，如 "open" / "close")
+
+        Returns:
+            (is_valid, error_message): 验证通过返回 (True, "")，失败返回 (False, "原因")
+        """
+        # 1. 检查 crypto 是否有数据
+        crypto_security = self.algorithm.securities[crypto_symbol]
+        if not crypto_security.has_data:
+            msg = f"⚠️ Cannot {action} - crypto {crypto_symbol.value} has no data yet"
+            self._debug(msg)
+            return (False, msg)
+
+        # 2. 检查 stock 是否有数据
+        stock_security = self.algorithm.securities[stock_symbol]
+        if not stock_security.has_data:
+            msg = f"⚠️ Cannot {action} - stock {stock_symbol.value} has no data yet"
+            self._debug(msg)
+            return (False, msg)
+
+        # 3. 检查价格是否有效
+        if crypto_security.price <= 0 or stock_security.price <= 0:
+            msg = f"⚠️ Cannot {action} - invalid prices (crypto: {crypto_security.price}, stock: {stock_security.price})"
+            self._debug(msg)
+            return (False, msg)
+
+        # 所有检查通过
+        return (True, "")
 
     def _should_open_position(self, crypto_symbol: Symbol, stock_symbol: Symbol) -> bool:
         """
@@ -143,21 +198,35 @@ class BaseStrategy:
         """
         crypto_symbol, stock_symbol = pair_symbol
 
-        # 检查是否应该开仓（基于 Lean 原生状态）
+        # ✅ 第一步：验证前置条件（数据和价格）
+        is_valid, error_msg = self._validate_order_preconditions(crypto_symbol, stock_symbol, "open")
+        if not is_valid:
+            return None
+
+        # ✅ 第二步：检查是否应该开仓（基于 Lean 原生状态）
         if not self._should_open_position(crypto_symbol, stock_symbol):
             return None
 
         # 使用 CalculateOrderPair 计算对冲订单对 (市值严格相等，自动适配资金较少的账户)
         # 返回格式: [(symbol1, qty1), (symbol2, qty2)]
+        # useOrderbookConstraint=True (默认): 限制订单大小在 orderbook depth 内，避免过度滑点
+        self.algorithm.debug(
+            f"🔍 Calling CalculateOrderPair | {crypto_symbol.value}<->{stock_symbol.value} | "
+            f"Target: {position_size_pct*100:.1f}%"
+        )
+
         order_pair = self.algorithm.calculate_order_pair(
             crypto_symbol,
             stock_symbol,
-            position_size_pct,
-            opposite_direction=True  # 对冲: long crypto, short stock
+            position_size_pct
         )
 
         if order_pair is None:
-            self._debug(f"⚠️ Cannot build order pair - insufficient buying power or invalid prices")
+            self.algorithm.debug(
+                f"❌ CalculateOrderPair returned None | "
+                f"{crypto_symbol.value}<->{stock_symbol.value} | "
+                f"Possible reasons: insufficient buying power, invalid prices, or orderbook constraints"
+            )
             return None
 
         # 验证数量有效性 - 使用 .Item1 和 .Item2 访问 C# ValueTuple
@@ -171,9 +240,19 @@ class BaseStrategy:
         sym2 = pair2.Item1      # Symbol
         qty2 = float(pair2.Item2)  # decimal -> float
 
-        if int(qty1) == 0 or int(qty2) == 0:
-            self._debug(f"⚠️ Invalid quantity: {sym1.value}={qty1:.2f}, {sym2.value}={qty2:.2f}")
-            return None
+        self.algorithm.debug(
+            f"🔍 CalculateOrderPair result | "
+            f"{sym1.value}: {qty1:.6f} (int={int(qty1)}) | "
+            f"{sym2.value}: {qty2:.6f} (int={int(qty2)})"
+        )
+
+        # if int(qty1) == 0 or int(qty2) == 0:
+        #     self.algorithm.debug(
+        #         f"❌ Quantity validation failed | "
+        #         f"{sym1.value}: float={qty1:.6f}, int={int(qty1)} | "
+        #         f"{sym2.value}: float={qty2:.6f}, int={int(qty2)}"
+        #     )
+        #     return None
 
         # 日志：显示计算的订单对
         self._debug(
@@ -182,14 +261,28 @@ class BaseStrategy:
         )
 
         # 直接使用 order_pair 下单 - 无需手动重组
+        # ✅ 使用异步订单，避免 5 秒超时阻塞
         tickets = self.algorithm.spread_market_order(
             order_pair,
+            asynchronous=True,
             tag=f"OPEN Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
         )
 
         # 检查订单是否成功提交
-        if tickets is None or len(tickets) < 2 or any(ticket.status == OrderStatus.Invalid for ticket in tickets):
-            self._debug(f"❌ Order submission failed")
+        if tickets is None:
+            self.algorithm.debug(f"❌ SpreadMarketOrder returned None")
+            return None
+
+        if len(tickets) < 2:
+            self.algorithm.debug(f"❌ SpreadMarketOrder returned {len(tickets)} tickets (expected 2)")
+            return None
+
+        invalid_tickets = [t for t in tickets if t.status == OrderStatus.Invalid]
+        if invalid_tickets:
+            self.algorithm.debug(
+                f"❌ Order submission failed - {len(invalid_tickets)} invalid ticket(s) | "
+                f"Details: {', '.join([f'{t.symbol.value}={t.status}' for t in invalid_tickets])}"
+            )
             return None
 
         # ✅ 注册订单 (用于 on_order_event 路由)
@@ -223,7 +316,12 @@ class BaseStrategy:
         """
         crypto_symbol, stock_symbol = pair_symbol
 
-        # 检查是否应该平仓（基于 Lean 原生状态）
+        # ✅ 第一步：验证前置条件（数据和价格）
+        is_valid, error_msg = self._validate_order_preconditions(crypto_symbol, stock_symbol, "close")
+        if not is_valid:
+            return None
+
+        # ✅ 第二步：检查是否应该平仓（基于 Lean 原生状态）
         if not self._should_close_position(crypto_symbol, stock_symbol):
             return None
 
@@ -255,8 +353,10 @@ class BaseStrategy:
         close_pair = [(crypto_symbol, -crypto_qty), (stock_symbol, -stock_qty)]
 
         # 使用 SpreadMarketOrder 平仓
+        # ✅ 使用异步订单，避免 5 秒超时阻塞
         tickets = self.algorithm.spread_market_order(
             close_pair,
+            asynchronous=True,
             tag=f"CLOSE Spread | {crypto_symbol.value}<->{stock_symbol.value} | Spread={spread_pct*100:.2f}%"
         )
 
@@ -328,12 +428,20 @@ class BaseStrategy:
             return
 
         for ticket in tickets:
-            self.order_to_pair[ticket.order_id] = pair_symbol
+            # 扩展数据结构：包含 pair 和 filled_qty_snapshot
+            self.order_to_pair[ticket.order_id] = {
+                "pair": pair_symbol,
+                "filled_qty_snapshot": 0.0  # 初始化为 0（刚创建订单）
+            }
 
         self._debug(
             f"📝 Registered {len(tickets)} orders for pair: "
-            f"{pair_symbol[0].value} <-> {pair_symbol[1].value}"
+            f"{pair_symbol[0].Value} <-> {pair_symbol[1].Value}"
         )
+
+        # 持久化状态（通过适配器）
+        if self.state_persistence:
+            self.state_persistence.persist(self.positions, self.order_to_pair)
 
     def get_pair_by_order_id(self, order_id: int) -> Optional[Tuple[Symbol, Symbol]]:
         """
@@ -347,7 +455,10 @@ class BaseStrategy:
         Returns:
             (crypto_symbol, stock_symbol) 或 None (如果订单不是被追踪的订单)
         """
-        return self.order_to_pair.get(order_id)
+        order_info = self.order_to_pair.get(order_id)
+        if order_info:
+            return order_info["pair"]
+        return None
 
     def on_order_event(self, order_event):
         """
@@ -360,11 +471,13 @@ class BaseStrategy:
             order_event: OrderEvent 对象
         """
         # 查找订单所属的交易对
-        pair_symbol = self.get_pair_by_order_id(order_event.order_id)
+        order_info = self.order_to_pair.get(order_event.order_id)
 
-        if not pair_symbol:
+        if not order_info:
             # 不是此策略追踪的订单,忽略
             return
+
+        pair_symbol = order_info["pair"]
 
         # 只在成交时更新仓位
         if order_event.status in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
@@ -396,16 +509,29 @@ class BaseStrategy:
                     f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
                 )
 
+            # 更新 filled_qty_snapshot（只在 PartiallyFilled 时更新，Filled 时会删除）
+            if order_event.status == OrderStatus.PartiallyFilled:
+                ticket = self.algorithm.transactions.get_order_ticket(order_event.order_id)
+                if ticket:
+                    order_info["filled_qty_snapshot"] = float(ticket.quantity_filled)
+                    self._debug(
+                        f"📊 Updated snapshot: Order {order_event.order_id} | "
+                        f"Filled: {order_info['filled_qty_snapshot']:.2f}"
+                    )
+
         # 清理已完成的订单（终态状态）
-        # 使用 LEAN 官方方法判断订单是否已关闭
-        # is_open() = False 表示订单处于终态: Filled, Canceled, 或 Invalid
-        if not order_event.status.is_open():
+        # 直接比较枚举值（官方扩展方法 is_closed() 在当前环境不可用）
+        if order_event.status in [OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid]:
             if order_event.order_id in self.order_to_pair:
                 del self.order_to_pair[order_event.order_id]
                 self._debug(
                     f"🗑️ Cleaned order {order_event.order_id} "
                     f"(status: {order_event.status}) from order_to_pair"
                 )
+
+        # 持久化状态（通过适配器，在事件末尾）
+        if self.state_persistence:
+            self.state_persistence.persist(self.positions, self.order_to_pair)
 
     def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
                         spread_pct: float, crypto_quote, stock_quote,
@@ -423,3 +549,159 @@ class BaseStrategy:
             crypto_ask_price: 我们的买入限价
         """
         raise NotImplementedError("Subclass must implement on_spread_update()")
+
+    # ============================================================================
+    #                      State Persistence and Recovery
+    # ============================================================================
+
+    def restore_state(self):
+        """
+        恢复状态（公共方法，在 Algorithm.Initialize() 末尾调用）
+
+        步骤:
+        1. 从 Redis/ObjectStore 加载数据（对比时间戳，选择最新的）
+        2. 反序列化 positions 和 order_to_pair
+        3. 同步活跃订单的增量成交
+        4. 重新持久化（更新 snapshot）
+        """
+        # 如果没有状态持久化适配器，跳过恢复
+        if not self.state_persistence:
+            self.algorithm.Debug("ℹ️ No state persistence adapter, skipping state restoration")
+            return
+
+        self.algorithm.Debug("=" * 60)
+        self.algorithm.Debug("🔄 Restoring strategy state...")
+        self.algorithm.Debug("=" * 60)
+
+        # Step 1: 从 Redis/ObjectStore 加载（对比时间戳）
+        state_data = self.state_persistence.restore()
+
+        if not state_data:
+            self.algorithm.Debug("ℹ️ No saved state found, starting fresh")
+            self.algorithm.Debug("=" * 60)
+            return
+
+        # Step 2: 反序列化（使用 lambda 作为 symbol_resolver）
+        symbol_resolver = lambda symbol_str: self._get_symbol_from_string(symbol_str)
+
+        self.positions = self.state_persistence.deserialize_positions(
+            state_data.get("positions", {}),
+            symbol_resolver
+        )
+        self.order_to_pair = self.state_persistence.deserialize_order_to_pair(
+            state_data.get("order_to_pair", {}),
+            symbol_resolver
+        )
+
+        self.algorithm.Debug(
+            f"✅ Loaded state from {state_data.get('source', 'unknown')} "
+            f"(saved at {state_data.get('timestamp')})"
+        )
+        self.algorithm.Debug(f"   {len(self.positions)} positions, {len(self.order_to_pair)} active orders")
+
+        # 显示恢复的 positions
+        for pair, (crypto_qty, stock_qty) in self.positions.items():
+            self.algorithm.Debug(
+                f"  Position: {pair[0].Value} ({crypto_qty:.2f}) <-> "
+                f"{pair[1].Value} ({stock_qty:.2f})"
+            )
+
+        # Step 3: 同步活跃订单的增量成交
+        self._sync_open_orders()
+
+        # Step 4: 重新持久化（更新 snapshot）
+        self.state_persistence.persist(self.positions, self.order_to_pair)
+
+        self.algorithm.Debug("=" * 60)
+
+    def _get_symbol_from_string(self, symbol_str: str) -> Optional[Symbol]:
+        """
+        从字符串查找 Symbol 对象（用于状态恢复）
+
+        通过遍历 algorithm.securities 查找匹配的 Symbol
+
+        Args:
+            symbol_str: Symbol 字符串表示
+
+        Returns:
+            匹配的 Symbol 对象，或 None
+        """
+        for symbol in self.algorithm.Securities.Keys:
+            if symbol.Value == symbol_str:
+                return symbol
+        return None
+
+    def _sync_open_orders(self):
+        """
+        同步活跃订单的增量成交
+
+        对于 order_to_pair 中的每个订单:
+        1. 主动查询 OrderTicket.QuantityFilled（不依赖事件）
+        2. 计算增量 = current_filled - snapshot_filled
+        3. 增量更新 positions
+        4. 更新 snapshot
+        5. 清理已完成订单
+        """
+        if not self.order_to_pair:
+            self.algorithm.debug("ℹ️ No active orders to sync")
+            return
+
+        self.algorithm.debug(f"🔄 Syncing {len(self.order_to_pair)} active orders...")
+
+        synced_count = 0
+
+        for order_id, order_info in list(self.order_to_pair.items()):
+            pair_symbol = order_info["pair"]
+            snapshot_filled = order_info["filled_qty_snapshot"]
+
+            # 主动查询订单当前状态
+            ticket = self.algorithm.transactions.get_order_ticket(order_id)
+
+            if not ticket:
+                self.algorithm.debug(f"⚠️ Order {order_id} not found, removing")
+                del self.order_to_pair[order_id]
+                continue
+
+            # 获取当前累计成交数量
+            current_filled = float(ticket.quantity_filled)
+
+            # 计算增量（断线期间的新成交）
+            delta = current_filled - snapshot_filled
+
+            if abs(delta) > 1e-8:
+                # 增量更新 positions
+                crypto_symbol, stock_symbol = pair_symbol
+
+                if ticket.symbol == crypto_symbol:
+                    self.update_pair_position(
+                        pair_symbol,
+                        crypto_qty=delta,
+                        stock_qty=0.0
+                    )
+                elif ticket.symbol == stock_symbol:
+                    self.update_pair_position(
+                        pair_symbol,
+                        crypto_qty=0.0,
+                        stock_qty=delta
+                    )
+
+                # 更新 snapshot 为当前值
+                order_info["filled_qty_snapshot"] = current_filled
+
+                self.algorithm.debug(
+                    f"  ✓ Synced Order {order_id} | {ticket.symbol.value} | "
+                    f"Delta: {delta:+.2f} (Snapshot: {snapshot_filled:.2f} → Current: {current_filled:.2f})"
+                )
+
+                synced_count += 1
+
+            # 清理已完成订单
+            # 直接比较枚举值（官方扩展方法 is_closed() 在当前环境不可用）
+            if ticket.status in [OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid]:
+                del self.order_to_pair[order_id]
+                self.algorithm.debug(f"  🗑️ Cleaned completed order {order_id}")
+
+        if synced_count > 0:
+            self.algorithm.debug(f"✅ Synced {synced_count} orders with new fills")
+        else:
+            self.algorithm.debug("ℹ️ No new fills during disconnect")

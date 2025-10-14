@@ -9,7 +9,7 @@ Both Side Strategy - 双边套利策略
 """
 from AlgorithmImports import *
 from strategy.base_strategy import BaseStrategy
-from SpreadManager import SpreadManager
+from spread_manager import SpreadManager
 
 
 class BothSideStrategy(BaseStrategy):

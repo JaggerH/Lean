@@ -8,7 +8,7 @@ Long Crypto Strategy - 做多加密货币套利策略
 """
 from AlgorithmImports import *
 from strategy.base_strategy import BaseStrategy
-from SpreadManager import SpreadManager
+from spread_manager import SpreadManager
 
 
 class LongCryptoStrategy(BaseStrategy):
@@ -22,22 +22,24 @@ class LongCryptoStrategy(BaseStrategy):
     - 方向限制: 仅 long crypto + short stock
     """
 
-    def __init__(self, algorithm: QCAlgorithm, spread_manager: SpreadManager,
+    def __init__(self, algorithm: QCAlgorithm, spread_manager: SpreadManager = None,
                  entry_threshold: float = -0.01,
                  exit_threshold: float = 0.02,
-                 position_size_pct: float = 0.25):
+                 position_size_pct: float = 0.25,
+                 state_persistence=None):
         """
         初始化策略
 
         Args:
             algorithm: QCAlgorithm实例
-            spread_manager: SpreadManager实例
+            spread_manager: SpreadManager实例 (可选)
             entry_threshold: 开仓阈值 (负数, spread <= entry_threshold 时开仓, 默认-1%)
             exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
             position_size_pct: 仓位大小百分比 (默认25%)
+            state_persistence: 状态持久化适配器 (可选)
         """
-        # 调用父类初始化 (debug=False)
-        super().__init__(algorithm, debug=False)
+        # 调用父类初始化 (debug=False, state_persistence)
+        super().__init__(algorithm, debug=False, state_persistence=state_persistence)
 
         self.spread_manager = spread_manager
         self.entry_threshold = entry_threshold
@@ -75,6 +77,16 @@ class LongCryptoStrategy(BaseStrategy):
         # 使用 BaseStrategy 的方法检查是否应该开/平仓
         can_open = self._should_open_position(crypto_symbol, stock_symbol)
         can_close = self._should_close_position(crypto_symbol, stock_symbol)
+
+        # 🔍 调试日志：仅在接近阈值时输出（±0.5%范围内）
+        # if abs(spread_pct - self.entry_threshold) < 0.005 or abs(spread_pct - self.exit_threshold) < 0.005:
+        #     self.algorithm.debug(
+        #         f"🔍 Spread Update | {crypto_symbol.value}<->{stock_symbol.value} | "
+        #         f"Spread: {spread_pct*100:.3f}% | "
+        #         f"Entry Threshold: {self.entry_threshold*100:.2f}% | "
+        #         f"Exit Threshold: {self.exit_threshold*100:.2f}% | "
+        #         f"can_open={can_open}, can_close={can_close}"
+        #     )
 
         # 开仓逻辑: spread <= entry_threshold (负数) 且可以开仓
         if can_open and spread_pct <= self.entry_threshold:
