@@ -547,7 +547,9 @@ namespace QuantConnect
         /// Hour Resolution (3)
         Hour,
         /// Daily Resolution (4)
-        Daily
+        Daily,
+        /// Orderbook Depth Resolution - Multi-level order book data (5)
+        Orderbook
     }
 
     /// <summary>

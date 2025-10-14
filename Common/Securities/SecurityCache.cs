@@ -43,6 +43,7 @@ namespace QuantConnect.Securities
         private readonly object _locker = new();
         private IReadOnlyList<BaseData> _lastTickQuotes = _empty;
         private IReadOnlyList<BaseData> _lastTickTrades = _empty;
+        private IReadOnlyList<BaseData> _lastOrderbookDepths = _empty;
         private Dictionary<Type, IReadOnlyList<BaseData>> _dataByType;
 
         private Dictionary<string, object> _properties;
@@ -108,6 +109,11 @@ namespace QuantConnect.Securities
         /// Gets the most recent open interest submitted to this cache
         /// </summary>
         public long OpenInterest { get; private set; }
+
+        /// <summary>
+        /// Gets the most recent orderbook depth submitted to this cache
+        /// </summary>
+        public OrderbookDepth OrderbookDepth { get; private set; }
 
         /// <summary>
         /// Collection of keyed custom properties
@@ -249,6 +255,34 @@ namespace QuantConnect.Securities
                 return;
             }
 
+            var orderbookDepth = data as OrderbookDepth;
+            if (orderbookDepth != null)
+            {
+                // Store the full orderbook depth
+                OrderbookDepth = orderbookDepth;
+
+                // Update bid/ask from the top of the orderbook
+                if (orderbookDepth.Bids != null && orderbookDepth.Bids.Count > 0)
+                {
+                    BidPrice = orderbookDepth.Bids[0].Price;
+                    BidSize = orderbookDepth.Bids[0].Size;
+                }
+
+                if (orderbookDepth.Asks != null && orderbookDepth.Asks.Count > 0)
+                {
+                    AskPrice = orderbookDepth.Asks[0].Price;
+                    AskSize = orderbookDepth.Asks[0].Size;
+                }
+
+                // Update price to mid-price if both bid and ask are available
+                if (BidPrice > 0 && AskPrice > 0)
+                {
+                    Price = (BidPrice + AskPrice) / 2;
+                }
+
+                return;
+            }
+
             var bar = data as IBar;
             if (bar != null)
             {
@@ -311,6 +345,12 @@ namespace QuantConnect.Securities
                         _lastTickQuotes = data;
                         return;
                 }
+            }
+
+            if (dataType == typeof(OrderbookDepth))
+            {
+                _lastOrderbookDepths = data;
+                return;
             }
 
             lock (_locker)
@@ -382,6 +422,11 @@ namespace QuantConnect.Securities
                 return _lastTickTrades.Concat(_lastTickQuotes).Cast<T>();
             }
 
+            if (typeof(T) == typeof(OrderbookDepth))
+            {
+                return _lastOrderbookDepths.Cast<T>();
+            }
+
             lock (_locker)
             {
                 if (_dataByType == null || !_dataByType.TryGetValue(typeof(T), out var list))
@@ -412,11 +457,13 @@ namespace QuantConnect.Securities
 
             Volume = 0;
             OpenInterest = 0;
+            OrderbookDepth = null;
 
             _lastData = null;
             _dataByType = null;
             _lastTickQuotes = _empty;
             _lastTickTrades = _empty;
+            _lastOrderbookDepths = _empty;
 
             _lastOHLCUpdate = default;
             _lastQuoteBarUpdate = default;
@@ -463,6 +510,11 @@ namespace QuantConnect.Securities
                 }
 
                 data = isQuoteDefaultDataType ? _lastTickQuotes : _lastTickTrades;
+                return data?.Count > 0;
+            }
+            else if (type == typeof(OrderbookDepth))
+            {
+                data = _lastOrderbookDepths;
                 return data?.Count > 0;
             }
 
@@ -523,6 +575,10 @@ namespace QuantConnect.Securities
                         break;
                 }
             }
+            else if (data.GetType() == typeof(OrderbookDepth))
+            {
+                _lastOrderbookDepths = new List<BaseData> { data };
+            }
             else
             {
                 lock (_locker)
@@ -573,6 +629,7 @@ namespace QuantConnect.Securities
             targetToModify._dataByType = sourceToShare._dataByType;
             targetToModify._lastTickTrades = sourceToShare._lastTickTrades;
             targetToModify._lastTickQuotes = sourceToShare._lastTickQuotes;
+            targetToModify._lastOrderbookDepths = sourceToShare._lastOrderbookDepths;
         }
 
         /// <summary>

@@ -35,6 +35,7 @@ namespace QuantConnect.Data
         private Ticks _ticks;
         private TradeBars _bars;
         private QuoteBars _quoteBars;
+        private OrderbookDepths _orderbookDepths;
         private OptionChains _optionChains;
         private FuturesChains _futuresChains;
 
@@ -102,6 +103,14 @@ namespace QuantConnect.Data
         public Ticks Ticks
         {
             get { return _ticks; }
+        }
+
+        /// <summary>
+        /// Gets the <see cref="OrderbookDepths"/> for this slice of data
+        /// </summary>
+        public OrderbookDepths OrderbookDepths
+        {
+            get { return _orderbookDepths; }
         }
 
         /// <summary>
@@ -240,6 +249,7 @@ namespace QuantConnect.Data
             : this(time, data, CreateCollection<TradeBars, TradeBar>(time, data),
                 CreateCollection<QuoteBars, QuoteBar>(time, data),
                 CreateTicksCollection(time, data),
+                CreateCollection<OrderbookDepths, OrderbookDepth>(time, data),
                 CreateCollection<OptionChains, OptionChain>(time, data),
                 CreateCollection<FuturesChains, FuturesChain>(time, data),
                 CreateCollection<Splits, Split>(time, data),
@@ -270,6 +280,7 @@ namespace QuantConnect.Data
             _ticks = slice._ticks;
             _bars = slice._bars;
             _quoteBars = slice._quoteBars;
+            _orderbookDepths = slice._orderbookDepths;
             _optionChains = slice._optionChains;
             _futuresChains = slice._futuresChains;
 
@@ -289,6 +300,7 @@ namespace QuantConnect.Data
         /// <param name="tradeBars">The trade bars for this slice</param>
         /// <param name="quoteBars">The quote bars for this slice</param>
         /// <param name="ticks">This ticks for this slice</param>
+        /// <param name="orderbookDepths">The orderbook depths for this slice</param>
         /// <param name="optionChains">The option chains for this slice</param>
         /// <param name="futuresChains">The futures chains for this slice</param>
         /// <param name="splits">The splits for this slice</param>
@@ -298,7 +310,7 @@ namespace QuantConnect.Data
         /// <param name="marginInterestRates">The margin interest rates for this slice</param>
         /// <param name="utcTime">The timestamp for this slice of data in UTC</param>
         /// <param name="hasData">true if this slice contains data</param>
-        public Slice(DateTime time, List<BaseData> data, TradeBars tradeBars, QuoteBars quoteBars, Ticks ticks, OptionChains optionChains, FuturesChains futuresChains, Splits splits, Dividends dividends, Delistings delistings, SymbolChangedEvents symbolChanges, MarginInterestRates marginInterestRates, DateTime utcTime, bool? hasData = null)
+        public Slice(DateTime time, List<BaseData> data, TradeBars tradeBars, QuoteBars quoteBars, Ticks ticks, OrderbookDepths orderbookDepths, OptionChains optionChains, FuturesChains futuresChains, Splits splits, Dividends dividends, Delistings delistings, SymbolChangedEvents symbolChanges, MarginInterestRates marginInterestRates, DateTime utcTime, bool? hasData = null)
         {
             Time = time;
             UtcTime = utcTime;
@@ -311,6 +323,7 @@ namespace QuantConnect.Data
             _ticks = ticks;
             _bars = tradeBars;
             _quoteBars = quoteBars;
+            _orderbookDepths = orderbookDepths;
             _optionChains = optionChains;
             _futuresChains = futuresChains;
 
@@ -450,6 +463,10 @@ namespace QuantConnect.Data
                 {
                     dictionary = QuoteBars;
                 }
+                else if (type == typeof(OrderbookDepth))
+                {
+                    dictionary = OrderbookDepths;
+                }
                 else if (type == typeof(Delisting))
                 {
                     dictionary = Delistings;
@@ -563,6 +580,7 @@ namespace QuantConnect.Data
             _bars = (TradeBars)UpdateCollection(_bars, inputSlice.Bars);
             _quoteBars = (QuoteBars)UpdateCollection(_quoteBars, inputSlice.QuoteBars);
             _ticks = (Ticks)UpdateCollection(_ticks, inputSlice.Ticks);
+            _orderbookDepths = (OrderbookDepths)UpdateCollection(_orderbookDepths, inputSlice.OrderbookDepths);
             _optionChains = (OptionChains)UpdateCollection(_optionChains, inputSlice.OptionChains);
             _futuresChains = (FuturesChains)UpdateCollection(_futuresChains, inputSlice.FuturesChains);
             _splits = (Splits)UpdateCollection(_splits, inputSlice.Splits);

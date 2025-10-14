@@ -2455,7 +2455,7 @@ namespace QuantConnect.Algorithm
         /// Creates and adds a new <see cref="Crypto"/> security to the algorithm
         /// </summary>
         /// <param name="ticker">The currency pair</param>
-        /// <param name="resolution">The <see cref="Resolution"/> of market data, Tick, Second, Minute, Hour, or Daily. Default is <see cref="Resolution.Minute"/></param>
+        /// <param name="resolution">The <see cref="Resolution"/> of market data, Tick, Second, Minute, Hour, Daily, or Orderbook. Default is <see cref="Resolution.Minute"/></param>
         /// <param name="market">The cfd trading market, <seealso cref="Market"/>. Default value is null and looked up using BrokerageModel.DefaultMarkets in <see cref="AddSecurity{T}"/></param>
         /// <param name="fillForward">If true, returns the last available data even if none in that timeslice. Default is <value>true</value></param>
         /// <param name="leverage">The requested leverage for this equity. Default is set by <see cref="SecurityInitializer"/></param>
@@ -2463,7 +2463,42 @@ namespace QuantConnect.Algorithm
         [DocumentationAttribute(AddingData)]
         public Crypto AddCrypto(string ticker, Resolution? resolution = null, string market = null, bool fillForward = true, decimal leverage = Security.NullLeverage)
         {
+            // Handle Resolution.Orderbook specially - subscribe to OrderbookDepth data
+            if (resolution == Resolution.Orderbook)
+            {
+                return AddCryptoOrderbook(ticker, market, fillForward, leverage);
+            }
+
             return AddSecurity<Crypto>(SecurityType.Crypto, ticker, resolution, market, fillForward, leverage, false);
+        }
+
+        /// <summary>
+        /// Internal helper to add crypto with OrderbookDepth data
+        /// </summary>
+        private Crypto AddCryptoOrderbook(string ticker, string market, bool fillForward, decimal leverage)
+        {
+            market = GetMarket(market, ticker, SecurityType.Crypto);
+
+            Symbol symbol;
+            if (!SymbolCache.TryGetSymbol(ticker, out symbol) ||
+                symbol.ID.Market != market ||
+                symbol.SecurityType != SecurityType.Crypto)
+            {
+                symbol = QuantConnect.Symbol.Create(ticker, SecurityType.Crypto, market);
+            }
+
+            // Create a subscription config for OrderbookDepth while keeping SecurityType.Crypto
+            var config = SubscriptionManager.SubscriptionDataConfigService.Add(
+                typeof(Data.Market.OrderbookDepth),
+                symbol,
+                Resolution.Tick,  // OrderbookDepth uses Tick resolution internally
+                fillForward,
+                extendedMarketHours: true,
+                isCustomData: false);  // Not custom data - it's a built-in market data type
+
+            var security = Securities.CreateSecurity(symbol, new List<SubscriptionDataConfig> { config }, leverage);
+
+            return (Crypto)AddToUserDefinedUniverse(security, new List<SubscriptionDataConfig> { config });
         }
 
         /// <summary>
