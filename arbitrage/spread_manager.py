@@ -5,11 +5,14 @@ Manages many-to-one relationships between crypto tokens (e.g., TSLAx on Kraken)
 and underlying stocks (e.g., TSLA on IBKR).
 """
 from AlgorithmImports import *
-from typing import Dict, Set, List, Tuple, Optional, TYPE_CHECKING
+from typing import Dict, Set, List, Tuple, Optional, TYPE_CHECKING, Type
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 from limit_order_optimizer import LimitOrderOptimizer
+from QuantConnect.Orders.Fees import KrakenFeeModel, InteractiveBrokersFeeModel
+from QuantConnect.Securities import SecurityMarginModel
+from QuantConnect.Data.Market import OrderbookDepth
 
 # 避免循环导入，仅用于类型检查
 if TYPE_CHECKING:
@@ -71,8 +74,8 @@ class SpreadManager:
         # Already subscribed cryptos (Security objects)
         self.cryptos: Set[Security] = set()
 
-        # Latest quotes cache (for handling asynchronous tick arrivals)
-        self.latest_quotes: Dict[Symbol, any] = {}
+        # Data type registry (Symbol -> Type mapping for dynamic data access)
+        self.data_types: Dict[Symbol, Type] = {}
 
         # Note: Position and order management has been moved to BaseStrategy
         # for better separation of concerns and to support multiple strategy instances
@@ -110,12 +113,92 @@ class SpreadManager:
         self.cryptos.add(crypto)
         self.stocks.add(stock)
 
-        self.algorithm.Debug(f"Added pair: {crypto_symbol} <-> {stock_symbol}")
-        self.algorithm.Debug(f"  Stock {stock_symbol} now paired with {len(self.stock_to_cryptos[stock_symbol])} crypto(s)")
-
         # 写入配对映射到监控后端（通过适配器）
         if self.monitor:
             self.monitor.write_pair_mapping(crypto, stock)
+
+    def subscribe_trading_pair(
+        self,
+        pair_symbol: Tuple[Symbol, Symbol],
+        resolution: Tuple[Type, Resolution] = (OrderbookDepth, Resolution.TICK),
+        fee_model: Tuple = (KrakenFeeModel(), InteractiveBrokersFeeModel()),
+        leverage_config: Tuple[float, float] = (5.0, 2.0),
+        extended_market_hours: bool = False
+    ) -> Tuple[Security, Security]:
+        """
+        订阅并注册交易对（多账户模式）
+
+        封装了完整的交易对初始化流程：
+        1. 添加加密货币和股票数据订阅
+        2. 设置数据标准化模式为 RAW
+        3. 配置 Margin 模式和杠杆倍数
+        4. 设置 Fee Model
+        5. 自动注册到 SpreadManager
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol) 元组
+            resolution: (data_type, resolution) 元组
+                - data_type: 数据类型（如 OrderbookDepth），为 None 时使用默认 add_crypto
+                - resolution: 数据分辨率（如 Resolution.TICK）
+            fee_model: (crypto_fee_model, stock_fee_model) 元组
+            leverage_config: (crypto_leverage, stock_leverage) 元组
+            extended_market_hours: 股票是否订阅盘前盘后数据
+
+        Returns:
+            (crypto_security, stock_security) 元组
+
+        Example:
+            >>> crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
+            >>> stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+            >>> crypto_sec, stock_sec = manager.subscribe_trading_pair(
+            ...     pair_symbol=(crypto_symbol, stock_symbol)
+            ... )
+        """
+        # 解构参数
+        crypto_symbol, stock_symbol = pair_symbol
+        data_type, res = resolution
+        crypto_fee, stock_fee = fee_model
+        crypto_leverage, stock_leverage = leverage_config
+
+        # === 添加加密货币数据 ===
+        if data_type is None:
+            # 使用默认 add_crypto
+            crypto_security = self.algorithm.add_crypto(
+                crypto_symbol.value, res, crypto_symbol.id.market
+            )
+            # 记录数据类型为 Tick (使用 Security.Symbol 而非参数 Symbol)
+            self.data_types[crypto_security.Symbol] = Tick
+        else:
+            # 使用自定义数据类型（如 OrderbookDepth）
+            crypto_security = self.algorithm.add_data(data_type, crypto_symbol, res)
+            # 记录自定义数据类型 (使用 Security.Symbol 而非参数 Symbol)
+            self.data_types[crypto_security.Symbol] = data_type # Orderbook Depth
+
+        # 设置加密货币配置
+        crypto_security.data_normalization_mode = DataNormalizationMode.RAW
+        crypto_security.set_buying_power_model(SecurityMarginModel(crypto_leverage))
+        crypto_security.fee_model = crypto_fee
+
+        # === 添加股票数据（检查是否已订阅） ===
+        if stock_symbol in self.algorithm.securities:
+            stock_security = self.algorithm.securities[stock_symbol]
+            self.algorithm.Debug(f"Stock {stock_symbol.value} already subscribed, reusing existing security")
+        else:
+            stock_security = self.algorithm.add_equity(
+                stock_symbol.value, res, stock_symbol.id.market,
+                extended_market_hours=extended_market_hours
+            )
+            # 设置股票配置（仅在首次订阅时）
+            stock_security.data_normalization_mode = DataNormalizationMode.RAW
+            stock_security.set_buying_power_model(SecurityMarginModel(stock_leverage))
+            stock_security.fee_model = stock_fee
+            # 记录股票数据类型为 Tick (使用 Security.Symbol 而非参数 Symbol)
+            self.data_types[stock_security.Symbol] = Tick
+
+        # === 注册交易对 ===
+        self.add_pair(crypto_security, stock_security)
+
+        return (crypto_security, stock_security)
 
     def get_all_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
@@ -162,7 +245,8 @@ class SpreadManager:
         if stock_symbol:
             return (crypto_symbol, stock_symbol)
         return None
-    
+
+
     @staticmethod
     def calculate_spread_pct(token_bid: float, token_ask: float,
                             stock_bid: float, stock_ask: float) -> float:
@@ -208,97 +292,51 @@ class SpreadManager:
         else:
             return spread_long_token
 
-    def on_data(self, data):
+    def on_data(self, data: Slice):
         """
-        处理数据更新 - 更新报价缓存并监控价差
+        处理数据更新 - 监控价差
 
         Args:
             data: Slice对象，包含tick数据
         """
-        if not data.Ticks or len(data.Ticks) == 0:
-            return
-
-        # 更新报价缓存 (Quote ticks 优先，Trade ticks 作为备选)
-        for symbol in data.Ticks.Keys:
-            ticks = data.Ticks[symbol]
-            for tick in ticks:
-                if tick.TickType == TickType.Quote:
-                    self.latest_quotes[symbol] = tick
-
-        # 监控价差
-        self.monitor_spread()
-
-    def monitor_spread(self, latest_quotes: dict = None):
-        """
-        监控所有交易对的spread并触发策略
-
-        Args:
-            latest_quotes: (可选) {symbol: QuoteTick or TradeTick} 字典
-                          如果不提供，使用内部的self.latest_quotes
-        """
-        if not self.strategy:
-            return
-
-        # 使用传入的quotes或内部缓存
-        quotes = latest_quotes if latest_quotes is not None else self.latest_quotes
-
         for crypto_symbol, stock_symbol in self.get_all_pairs():
-            crypto_quote = quotes.get(crypto_symbol)
-            stock_quote = quotes.get(stock_symbol)
-
-            if not crypto_quote or not stock_quote:
+            # 获取 Security 对象
+            if crypto_symbol not in self.algorithm.Securities or stock_symbol not in self.algorithm.Securities:
                 continue
 
-            # 只处理 Quote tick (Crypto 和 Stock 都必须有 BidPrice/AskPrice)
-            if not hasattr(crypto_quote, 'BidPrice') or not hasattr(crypto_quote, 'AskPrice'):
-                continue
-            if not hasattr(stock_quote, 'BidPrice') or not hasattr(stock_quote, 'AskPrice'):
-                continue
+            crypto_security = self.algorithm.Securities[crypto_symbol]
+            stock_security = self.algorithm.Securities[stock_symbol]
+
+            # 直接使用 Cache 的 BidPrice/AskPrice（自动从 OrderbookDepth 或 Tick 更新）
+            crypto_bid = crypto_security.Cache.BidPrice
+            crypto_ask = crypto_security.Cache.AskPrice
+            stock_bid = stock_security.Cache.BidPrice
+            stock_ask = stock_security.Cache.AskPrice
 
             # 验证价格有效性
-            if crypto_quote.BidPrice <= 0 or crypto_quote.AskPrice <= 0:
-                continue
-            if stock_quote.BidPrice <= 0 or stock_quote.AskPrice <= 0:
+            if crypto_bid <= 0 or crypto_ask <= 0 or stock_bid <= 0 or stock_ask <= 0:
                 continue
 
-            stock_bid = stock_quote.BidPrice
-            stock_ask = stock_quote.AskPrice
-
-            # 计算限价单价格
-            crypto_bid_price = LimitOrderOptimizer.calculate_buy_limit_price(
-                crypto_quote.BidPrice, crypto_quote.AskPrice, self.aggression
-            )
-            crypto_ask_price = LimitOrderOptimizer.calculate_sell_limit_price(
-                crypto_quote.BidPrice, crypto_quote.AskPrice, self.aggression
-            )
-
-            # 计算spread (用限价单价格)
+            # 计算spread
             spread_pct = self.calculate_spread_pct(
-                crypto_bid_price,  # 我们的卖出限价
-                crypto_ask_price,  # 我们的买入限价
-                stock_bid,
-                stock_ask
+                float(crypto_bid),
+                float(crypto_ask),
+                float(stock_bid),
+                float(stock_ask)
             )
 
             # Debug: 检测异常价差
             if abs(spread_pct) > 0.5:  # 超过50%的价差肯定有问题
                 self.algorithm.Debug(
                     f"⚠️ 异常价差 {spread_pct*100:.2f}% | "
-                    f"{crypto_symbol.Value}: bid={crypto_quote.BidPrice:.2f} ask={crypto_quote.AskPrice:.2f} | "
+                    f"{crypto_symbol.Value}: bid={crypto_bid:.2f} ask={crypto_ask:.2f} | "
                     f"{stock_symbol.Value}: bid={stock_bid:.2f} ask={stock_ask:.2f}"
                 )
 
-            # 触发策略
-            self.strategy.on_spread_update(
-                crypto_symbol, stock_symbol, spread_pct,
-                crypto_quote, stock_quote,
-                crypto_bid_price, crypto_ask_price
-            )
+            # 触发策略（简化参数）
+            pair_symbol = (crypto_symbol, stock_symbol)
+            self.strategy.on_spread_update(pair_symbol, spread_pct)
 
             # 写入价差数据到监控后端（通过适配器）
             if self.monitor:
-                self.monitor.write_spread(
-                    crypto_symbol, stock_symbol, spread_pct,
-                    crypto_quote, stock_quote,
-                    crypto_bid_price, crypto_ask_price
-                )
+                self.monitor.write_spread(pair_symbol, spread_pct)

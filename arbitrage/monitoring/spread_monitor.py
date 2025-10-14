@@ -116,22 +116,21 @@ class RedisSpreadMonitor:
                 import traceback
                 self.algorithm.Debug(f"   详细错误:\n{traceback.format_exc()}")
 
-    def write_spread(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                    spread_pct: float, crypto_quote, stock_quote,
-                    crypto_bid_price: float, crypto_ask_price: float):
+    def write_spread(self, pair_symbol: tuple, spread_pct: float):
         """
         将价差数据写入 Redis
 
         Args:
-            crypto_symbol: 加密货币 Symbol
-            stock_symbol: 股票 Symbol
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
             spread_pct: 价差百分比
-            crypto_quote: 加密货币报价 tick
-            stock_quote: 股票报价 tick
-            crypto_bid_price: 加密货币限价买入价
-            crypto_ask_price: 加密货币限价卖出价
         """
         try:
+            crypto_symbol, stock_symbol = pair_symbol
+
+            # 获取 Security 对象以访问当前价格
+            crypto_security = self.algorithm.securities[crypto_symbol]
+            stock_security = self.algorithm.securities[stock_symbol]
+
             # 构建交易对标识 (如 "BTCUSDx<->BTC")
             pair_key = f"{crypto_symbol.Value}<->{stock_symbol.Value}"
 
@@ -141,12 +140,12 @@ class RedisSpreadMonitor:
                 'crypto_symbol': crypto_symbol.Value,
                 'stock_symbol': stock_symbol.Value,
                 'spread_pct': float(spread_pct),
-                'crypto_bid': float(crypto_quote.BidPrice),
-                'crypto_ask': float(crypto_quote.AskPrice),
-                'crypto_limit_bid': float(crypto_bid_price),  # 我们的买入限价
-                'crypto_limit_ask': float(crypto_ask_price),  # 我们的卖出限价
-                'stock_bid': float(stock_quote.BidPrice),
-                'stock_ask': float(stock_quote.AskPrice),
+                'crypto_bid': float(crypto_security.Cache.BidPrice),
+                'crypto_ask': float(crypto_security.Cache.AskPrice),
+                'crypto_limit_bid': float(crypto_security.Cache.BidPrice),  # 我们的买入限价
+                'crypto_limit_ask': float(crypto_security.Cache.AskPrice),  # 我们的卖出限价
+                'stock_bid': float(stock_security.Cache.BidPrice),
+                'stock_ask': float(stock_security.Cache.AskPrice),
                 'timestamp': self.algorithm.Time.isoformat()
             }
 
@@ -160,8 +159,8 @@ class RedisSpreadMonitor:
                 self.algorithm.Debug(
                     f"✓ Redis价差写入成功 [{pair_key}] | "
                     f"spread={spread_pct:.4%} | "
-                    f"crypto={crypto_quote.BidPrice:.2f}/{crypto_quote.AskPrice:.2f} | "
-                    f"stock={stock_quote.BidPrice:.2f}/{stock_quote.AskPrice:.2f}"
+                    f"crypto={crypto_security.Cache.BidPrice:.2f}/{crypto_security.Cache.AskPrice:.2f} | "
+                    f"stock={stock_security.Cache.BidPrice:.2f}/{stock_security.Cache.AskPrice:.2f}"
                 )
 
             # 每100次写入输出一次统计

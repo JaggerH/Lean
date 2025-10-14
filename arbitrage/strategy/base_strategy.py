@@ -182,15 +182,13 @@ class BaseStrategy:
         return True
 
     def _open_position(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float,
-                      crypto_quote, stock_quote, position_size_pct: float) -> Optional[List]:
+                      position_size_pct: float) -> Optional[List]:
         """
         开仓 - 使用 CalculateOrderPair + SpreadMarketOrder 实现市值对冲
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
             spread_pct: 当前spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
             position_size_pct: 仓位大小百分比 (e.g., 0.25 = 25%)
 
         Returns:
@@ -296,8 +294,7 @@ class BaseStrategy:
 
         return tickets
 
-    def _close_position(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float,
-                       crypto_quote, stock_quote) -> Optional[List]:
+    def _close_position(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float) -> Optional[List]:
         """
         平仓 - 使用 SpreadMarketOrder 平掉当前持仓
 
@@ -308,8 +305,6 @@ class BaseStrategy:
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
             spread_pct: 当前spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
 
         Returns:
             订单tickets列表，如果失败返回None
@@ -533,20 +528,13 @@ class BaseStrategy:
         if self.state_persistence:
             self.state_persistence.persist(self.positions, self.order_to_pair)
 
-    def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                        spread_pct: float, crypto_quote, stock_quote,
-                        crypto_bid_price: float, crypto_ask_price: float):
+    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
         处理spread更新 - 由子类实现具体策略逻辑
 
         Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
             spread_pct: Spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-            crypto_bid_price: 我们的卖出限价
-            crypto_ask_price: 我们的买入限价
         """
         raise NotImplementedError("Subclass must implement on_spread_update()")
 

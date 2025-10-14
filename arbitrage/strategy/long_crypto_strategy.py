@@ -7,6 +7,7 @@ Long Crypto Strategy - 做多加密货币套利策略
 - 方向限制: 仅 long crypto + short stock
 """
 from AlgorithmImports import *
+from typing import Tuple
 from strategy.base_strategy import BaseStrategy
 from spread_manager import SpreadManager
 
@@ -57,22 +58,15 @@ class LongCryptoStrategy(BaseStrategy):
             f"Position: {self.position_size_pct*100:.1f}%"
         )
 
-    def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                        spread_pct: float, crypto_quote, stock_quote,
-                        crypto_bid_price: float, crypto_ask_price: float):
+    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
         处理spread更新 - 使用 BaseStrategy 的方法判断开/平仓
 
         Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
             spread_pct: Spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-            crypto_bid_price: 我们的卖出限价 (未使用)
-            crypto_ask_price: 我们的买入限价 (未使用)
         """
-        pair_symbol = (crypto_symbol, stock_symbol)
+        crypto_symbol, stock_symbol = pair_symbol
 
         # 使用 BaseStrategy 的方法检查是否应该开/平仓
         can_open = self._should_open_position(crypto_symbol, stock_symbol)
@@ -90,16 +84,13 @@ class LongCryptoStrategy(BaseStrategy):
 
         # 开仓逻辑: spread <= entry_threshold (负数) 且可以开仓
         if can_open and spread_pct <= self.entry_threshold:
-            tickets = self._open_position(
-                pair_symbol, spread_pct, crypto_quote, stock_quote,
-                self.position_size_pct
-            )
+            tickets = self._open_position(pair_symbol, spread_pct, self.position_size_pct)
             if tickets:
                 self.open_times[pair_symbol] = self.algorithm.time
 
         # 平仓逻辑: spread >= exit_threshold (正数) 且可以平仓
         elif can_close and spread_pct >= self.exit_threshold:
-            tickets = self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
+            tickets = self._close_position(pair_symbol, spread_pct)
             if tickets:
                 # 计算持仓时间
                 if pair_symbol in self.open_times:

@@ -8,6 +8,7 @@ Both Side Strategy - 双边套利策略
 根据当前持仓方向选择平仓条件
 """
 from AlgorithmImports import *
+from typing import Tuple
 from strategy.base_strategy import BaseStrategy
 from spread_manager import SpreadManager
 
@@ -66,22 +67,15 @@ class BothSideStrategy(BaseStrategy):
             f"Position: {self.position_size_pct*100:.1f}%"
         )
 
-    def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                        spread_pct: float, crypto_quote, stock_quote,
-                        crypto_bid_price: float, crypto_ask_price: float):
+    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
         处理spread更新 - 使用 BaseStrategy 的方法判断开/平仓
 
         Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
             spread_pct: Spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-            crypto_bid_price: 我们的卖出限价
-            crypto_ask_price: 我们的买入限价
         """
-        pair_symbol = (crypto_symbol, stock_symbol)
+        crypto_symbol, stock_symbol = pair_symbol
 
         # 使用 BaseStrategy 的方法检查是否应该开/平仓
         can_open = self._should_open_position(crypto_symbol, stock_symbol)
@@ -94,10 +88,7 @@ class BothSideStrategy(BaseStrategy):
         if can_open:
             # Long Crypto + Short Stock (spread <= -1%)
             if spread_pct <= self.long_crypto_entry:
-                tickets = self._open_position(
-                    pair_symbol, spread_pct, crypto_quote, stock_quote,
-                    self.position_size_pct
-                )
+                tickets = self._open_position(pair_symbol, spread_pct, self.position_size_pct)
                 if tickets:
                     self.position_direction[pair_symbol] = 'long_crypto'
                     self.open_times[pair_symbol] = self.algorithm.time
@@ -108,7 +99,7 @@ class BothSideStrategy(BaseStrategy):
             # Short Crypto + Long Stock (spread >= 3%)
             elif spread_pct >= self.short_crypto_entry:
                 tickets = self._open_position(
-                    pair_symbol, spread_pct, crypto_quote, stock_quote,
+                    pair_symbol, spread_pct,
                     -self.position_size_pct  # 负数: short crypto + long stock
                 )
                 if tickets:
@@ -137,7 +128,7 @@ class BothSideStrategy(BaseStrategy):
                 )
 
             if should_close:
-                tickets = self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
+                tickets = self._close_position(pair_symbol, spread_pct)
                 if tickets:
                     # 计算持仓时间
                     if pair_symbol in self.open_times:
