@@ -57,8 +57,7 @@ class AAPLSpreadAnalysis(QCAlgorithm):
         self.set_brokerage_model(BrokerageName.Kraken, AccountType.Cash)
 
         # 禁用基准（benchmark）以避免查找 BTCUSD trade 数据
-        # 在价差分析中我们不需要基准对比
-        # self.set_benchmark(lambda x: 0)
+        self.set_benchmark(lambda x: 0)
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
@@ -72,7 +71,7 @@ class AAPLSpreadAnalysis(QCAlgorithm):
         # Note: Now using C# OrderbookDepth type which supports TICK resolution
         # IMPORTANT: Must specify Market.Kraken to match data file path: Data/crypto/kraken/tick/aaplxusd/
         self.debug("📊 Adding OrderbookDepth Data (Kraken)...")
-        symbol = Symbol.create("AAPLXUSD", SecurityType.CRYPTO, Market.KRAKEN)
+        symbol = Symbol.create("AAPLxUSD", SecurityType.CRYPTO, Market.KRAKEN)
         self.debug(f"   Created Symbol: {symbol}, Market: {symbol.ID.Market}")
         self.aapl_depth = self.add_data(OrderbookDepth, symbol, Resolution.TICK)
         self.debug(f"   Added OrderbookDepth subscription for: {self.aapl_depth.Symbol}")

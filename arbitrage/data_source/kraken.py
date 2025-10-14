@@ -12,7 +12,20 @@ from typing import List, Tuple, Dict, Any
 from AlgorithmImports import *
 
 from .base_data_source import BaseDataSource
-from utils import CURRENCY_MAP
+
+# Currency mapping from Kraken format to standard format
+CURRENCY_MAP = {
+    'ZUSD': 'USD',
+    'ZEUR': 'EUR',
+    'ZGBP': 'GBP',
+    'ZAUD': 'AUD',
+    'ZCAD': 'CAD',
+    'ZJPY': 'JPY',
+    'XXBT': 'BTC',
+    'XXRP': 'XRP',
+    'XLTC': 'LTC',
+    'XETH': 'ETH'
+}
 
 
 class KrakenSymbolManager(BaseDataSource):
@@ -167,7 +180,7 @@ class KrakenSymbolManager(BaseDataSource):
 
             # Map to CSV fields
             market = 'kraken'
-            symbol = altname.replace('/', '')  # 保留'x'后缀：AAPLxUSD -> AAPLxUSD
+            symbol = altname.replace('/', '').upper()  # 转换为大写：AAPLxUSD -> AAPLXUSD (LEAN要求大写)
             security_type = 'crypto'
             description = wsname  # AAPLx/USD
             quote_currency = CURRENCY_MAP.get(quote, quote)  # ZUSD -> USD
