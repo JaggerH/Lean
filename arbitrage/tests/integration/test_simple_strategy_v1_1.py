@@ -21,10 +21,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from AlgorithmImports import *
 from testing.testable_algorithm import TestableAlgorithm
-from SpreadManager import SpreadManager
+from spread_manager import SpreadManager
+from strategy.long_crypto_strategy import LongCryptoStrategy
 
 
-class SimpleStrategy:
+class LegacySimpleStrategy:
     """
     简单套利策略 - 市价单版本
 
@@ -363,13 +364,12 @@ class SimpleStrategyTest(TestableAlgorithm):
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(
             algorithm=self,
-            strategy=None,  # Will set later
-            aggression=0.6
+            strategy=None  # Will set later
         )
 
-        # === 6. 初始化简单策略 ===
-        self.debug("📋 Initializing SimpleStrategy...")
-        self.strategy = SimpleStrategy(
+        # === 6. 初始化做多加密货币策略 ===
+        self.debug("📋 Initializing LongCryptoStrategy...")
+        self.strategy = LongCryptoStrategy(
             algorithm=self,
             spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%

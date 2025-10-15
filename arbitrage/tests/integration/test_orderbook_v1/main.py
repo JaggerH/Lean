@@ -56,7 +56,7 @@ class OrderBookTest(QCAlgorithm):
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
-        self.set_brokerage_model(BrokerageName.Kraken, AccountType.Cash)
+        # self.set_brokerage_model(BrokerageName.Kraken, AccountType.Cash)
         self.set_benchmark(lambda x: 0)
 
         # === 1. 初始化 SpreadManager ===

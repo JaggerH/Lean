@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from AlgorithmImports import *
 from testing.testable_algorithm import TestableAlgorithm
-from SpreadManager import SpreadManager
+from spread_manager import SpreadManager
 from strategy.base_strategy import BaseStrategy
 from order_tracker import OrderTracker as EnhancedOrderTracker
 
@@ -48,7 +48,7 @@ class SimpleStrategy(BaseStrategy):
     - 方向限制: 仅 long crypto + short stock
     """
 
-    def __init__(self, algorithm: QCAlgorithm, spread_manager: SpreadManager,
+    def __init__(self, algorithm: QCAlgorithm,
                  entry_threshold: float = -0.01,
                  exit_threshold: float = 0.02,
                  position_size_pct: float = 0.25):
@@ -57,7 +57,6 @@ class SimpleStrategy(BaseStrategy):
 
         Args:
             algorithm: QCAlgorithm实例
-            spread_manager: SpreadManager实例
             entry_threshold: 开仓阈值 (负数, spread <= entry_threshold 时开仓, 默认-1%)
             exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
             position_size_pct: 仓位大小百分比 (默认25%)
@@ -65,7 +64,6 @@ class SimpleStrategy(BaseStrategy):
         # 调用父类初始化 (debug=False)
         super().__init__(algorithm, debug=False)
 
-        self.spread_manager = spread_manager
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.position_size_pct = position_size_pct
@@ -81,22 +79,15 @@ class SimpleStrategy(BaseStrategy):
             f"Position: {self.position_size_pct*100:.1f}%"
         )
 
-    def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                        spread_pct: float, crypto_quote, stock_quote,
-                        crypto_bid_price: float, crypto_ask_price: float):
+    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
         处理spread更新 - 使用 BaseStrategy 的方法判断开/平仓
 
         Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
             spread_pct: Spread百分比
-            crypto_quote: Crypto报价
-            stock_quote: Stock报价
-            crypto_bid_price: 我们的卖出限价 (未使用)
-            crypto_ask_price: 我们的买入限价 (未使用)
         """
-        pair_symbol = (crypto_symbol, stock_symbol)
+        crypto_symbol, stock_symbol = pair_symbol
 
         # 使用 BaseStrategy 的方法检查是否应该开/平仓
         can_open = self._should_open_position(crypto_symbol, stock_symbol)
@@ -104,16 +95,13 @@ class SimpleStrategy(BaseStrategy):
 
         # 开仓逻辑: spread <= entry_threshold (负数) 且可以开仓
         if can_open and spread_pct <= self.entry_threshold:
-            tickets = self._open_position(
-                pair_symbol, spread_pct, crypto_quote, stock_quote,
-                self.position_size_pct
-            )
+            tickets = self._open_position(pair_symbol, spread_pct, self.position_size_pct)
             if tickets:
                 self.open_times[pair_symbol] = self.algorithm.time
 
         # 平仓逻辑: spread >= exit_threshold (正数) 且可以平仓
         elif can_close and spread_pct >= self.exit_threshold:
-            tickets = self._close_position(pair_symbol, spread_pct, crypto_quote, stock_quote)
+            tickets = self._close_position(pair_symbol, spread_pct)
             if tickets:
                 # 计算持仓时间
                 if pair_symbol in self.open_times:
@@ -207,31 +195,27 @@ class MultiAccountTest(TestableAlgorithm):
 
         # === 6. 初始化 SpreadManager ===
         self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(
-            algorithm=self,
-            strategy=None,  # Will set later
-            aggression=0.6
-        )
+        self.spread_manager = SpreadManager(algorithm=self)
 
         # === 7. 初始化简单策略 ===
         self.debug("📋 Initializing SimpleStrategy...")
         self.strategy = SimpleStrategy(
             algorithm=self,
-            spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
             position_size_pct=0.23  # 10% (更保守，因为有两个账户)
         )
 
-        # 链接策略到 SpreadManager
-        self.spread_manager.strategy = self.strategy
+        # === 8. 注册策略到 SpreadManager（观察者模式）===
+        self.debug("🔗 Registering strategy as spread observer...")
+        self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 8. 注册交易对 ===
+        # === 9. 注册交易对 ===
         self.debug("🔗 Registering trading pairs...")
         self.spread_manager.add_pair(self.tsla_crypto, self.tsla_stock)
         self.spread_manager.add_pair(self.aapl_crypto, self.aapl_stock)
 
-        # === 9. 数据追踪 ===
+        # === 10. 数据追踪 ===
         self.tick_count = 0
         self.order_events = []
 
@@ -242,7 +226,7 @@ class MultiAccountTest(TestableAlgorithm):
             'Unknown': []
         }
 
-        # === 10. 初始化独立的订单追踪器 (Enhanced Version) ===
+        # === 11. 初始化独立的订单追踪器 (Enhanced Version) ===
         self.debug("📊 Initializing EnhancedOrderTracker for independent order verification...")
         self.order_tracker = EnhancedOrderTracker(self, self.strategy)
 
