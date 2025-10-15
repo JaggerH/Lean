@@ -1,0 +1,28 @@
+{
+  "environment": "backtesting",
+  "algorithm-type-name": "KrakenValidationTest",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/validate_data/test_kraken_valid.py",
+  "data-folder": "../../../Data/",
+
+  "debugging": false,
+  "debugging-method": "LocalCmdline",
+
+  "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+  "messaging-handler": "QuantConnect.Messaging.Messaging",
+  "job-queue-handler": "QuantConnect.Queues.JobQueue",
+  "api-handler": "QuantConnect.Api.Api",
+  "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+  "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+  "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+  "data-channel-provider": "DataChannelProvider",
+  "object-store": "QuantConnect.Lean.Engine.Storage.LocalObjectStore",
+  "data-aggregator": "QuantConnect.Lean.Engine.DataFeeds.AggregationManager",
+
+  "backtesting": {
+    "name": "Kraken Crypto Data Validation Test",
+    "cash": {"USD": 100000},
+    "start-date": "2025-09-02",
+    "end-date": "2025-09-05"
+  }
+}
