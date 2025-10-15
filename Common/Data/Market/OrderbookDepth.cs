@@ -124,7 +124,7 @@ namespace QuantConnect.Data.Market
             Bids = new List<OrderbookLevel>();
             Asks = new List<OrderbookLevel>();
             Levels = DefaultLevels;
-            DataType = MarketDataType.Tick;
+            DataType = MarketDataType.Base;
         }
 
         /// <summary>

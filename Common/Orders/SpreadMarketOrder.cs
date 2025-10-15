@@ -31,11 +31,6 @@ namespace QuantConnect.Orders
     public class SpreadMarketOrder : MarketOrder
     {
         /// <summary>
-        /// Spread Market Order Type
-        /// </summary>
-        public override OrderType Type => OrderType.SpreadMarket;
-
-        /// <summary>
         /// Creates a new instance of SpreadMarketOrder
         /// </summary>
         public SpreadMarketOrder() : base()
