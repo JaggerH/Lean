@@ -1,7 +1,14 @@
 {
     "files.eol": "\n",
+    "python.defaultInterpreterPath": "${env:USERPROFILE}/anaconda3/envs/lean/python.exe",
     "python.analysis.extraPaths": [
         "/Lean/Algorithm.Python",
-        "/opt/miniconda3/lib/python3.8/site-packages"
-    ]
+        "/opt/miniconda3/lib/python3.8/site-packages",
+        "${workspaceFolder}/arbitrage"
+    ],
+    "terminal.integrated.showOnStartup": "never",
+    "output.smartScroll.enabled": false,
+    "problems.autoReveal": false,
+    "terminal.integrated.automationProfile.windows": null,
+    "extensions.autoUpdate": false
 }
