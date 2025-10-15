@@ -39,22 +39,18 @@ class SpreadManager:
         manager.add_pair(crypto, stock)
     """
 
-    def __init__(self, algorithm: QCAlgorithm, strategy: Optional['BaseStrategy'] = None,
-                 aggression: float = 0.6,
+    def __init__(self, algorithm: QCAlgorithm,
                  monitor_adapter: Optional['RedisSpreadMonitor'] = None):
         """
         Initialize SpreadManager
 
         Args:
             algorithm: QCAlgorithm instance for accessing trading APIs
-            strategy: 策略实例 (可选，如 LongCryptoStrategy, BothSideStrategy)
-            aggression: 限价单激进度
             monitor_adapter: 监控适配器实例 (可选，如 RedisSpreadMonitor)
         """
         self.algorithm = algorithm
-        self.strategy = strategy
-        self.aggression = aggression
         self.monitor = monitor_adapter  # 监控适配器（依赖注入）
+        self._spread_observers = []  # 价差观察者列表（策略回调）
 
         # 日志输出
         if self.monitor:
@@ -79,6 +75,54 @@ class SpreadManager:
 
         # Note: Position and order management has been moved to BaseStrategy
         # for better separation of concerns and to support multiple strategy instances
+
+    def register_observer(self, callback):
+        """
+        注册价差观察者（策略回调）
+
+        Args:
+            callback: 回调函数，签名为 callback(pair_symbol, spread_pct)
+
+        Example:
+            >>> manager.register_observer(strategy.on_spread_update)
+        """
+        if callback not in self._spread_observers:
+            self._spread_observers.append(callback)
+            callback_name = getattr(callback, '__name__', repr(callback))
+            self.algorithm.Debug(f"✅ Registered spread observer: {callback_name}")
+
+    def unregister_observer(self, callback):
+        """
+        注销价差观察者
+
+        Args:
+            callback: 要移除的回调函数
+
+        Example:
+            >>> manager.unregister_observer(strategy.on_spread_update)
+        """
+        if callback in self._spread_observers:
+            self._spread_observers.remove(callback)
+            callback_name = getattr(callback, '__name__', repr(callback))
+            self.algorithm.Debug(f"🗑️ Unregistered spread observer: {callback_name}")
+
+    def _notify_observers(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
+        """
+        通知所有注册的观察者
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
+            spread_pct: 价差百分比
+        """
+        for observer in self._spread_observers:
+            try:
+                observer(pair_symbol, spread_pct)
+            except:
+                import traceback
+                error_msg = traceback.format_exc()
+                self.algorithm.Debug(
+                    f"❌ Observer error for {pair_symbol[0].Value}<->{pair_symbol[1].Value}: {error_msg}"
+                )
 
     def add_pair(self, crypto: Security, stock: Security):
         """
@@ -120,7 +164,7 @@ class SpreadManager:
     def subscribe_trading_pair(
         self,
         pair_symbol: Tuple[Symbol, Symbol],
-        resolution: Tuple[Type, Resolution] = (OrderbookDepth, Resolution.TICK),
+        resolution: Tuple[Resolution, Resolution] = (Resolution.ORDERBOOK, Resolution.TICK),
         fee_model: Tuple = (KrakenFeeModel(), InteractiveBrokersFeeModel()),
         leverage_config: Tuple[float, float] = (5.0, 2.0),
         extended_market_hours: bool = False
@@ -137,9 +181,9 @@ class SpreadManager:
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol) 元组
-            resolution: (data_type, resolution) 元组
-                - data_type: 数据类型（如 OrderbookDepth），为 None 时使用默认 add_crypto
-                - resolution: 数据分辨率（如 Resolution.TICK）
+            resolution: (crypto_resolution, stock_resolution) 元组
+                - crypto_resolution: 加密货币数据分辨率（如 Resolution.ORDERBOOK, Resolution.TICK）
+                - stock_resolution: 股票数据分辨率（如 Resolution.TICK）
             fee_model: (crypto_fee_model, stock_fee_model) 元组
             leverage_config: (crypto_leverage, stock_leverage) 元组
             extended_market_hours: 股票是否订阅盘前盘后数据
@@ -150,29 +194,29 @@ class SpreadManager:
         Example:
             >>> crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
             >>> stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+            >>> # 订阅 Orderbook 深度数据
             >>> crypto_sec, stock_sec = manager.subscribe_trading_pair(
-            ...     pair_symbol=(crypto_symbol, stock_symbol)
+            ...     pair_symbol=(crypto_symbol, stock_symbol),
+            ...     resolution=(Resolution.ORDERBOOK, Resolution.TICK)
             ... )
         """
         # 解构参数
         crypto_symbol, stock_symbol = pair_symbol
-        data_type, res = resolution
+        crypto_res, stock_res = resolution
         crypto_fee, stock_fee = fee_model
         crypto_leverage, stock_leverage = leverage_config
 
         # === 添加加密货币数据 ===
-        if data_type is None:
-            # 使用默认 add_crypto
-            crypto_security = self.algorithm.add_crypto(
-                crypto_symbol.value, res, crypto_symbol.id.market
-            )
-            # 记录数据类型为 Tick (使用 Security.Symbol 而非参数 Symbol)
-            self.data_types[crypto_security.Symbol] = Tick
+        # 使用 add_crypto，支持 Resolution.ORDERBOOK 和其他 Resolution
+        crypto_security = self.algorithm.add_crypto(
+            crypto_symbol.value, crypto_res, crypto_symbol.id.market
+        )
+
+        # 记录数据类型（根据 Resolution 判断）
+        if crypto_res == Resolution.ORDERBOOK:
+            self.data_types[crypto_security.Symbol] = OrderbookDepth
         else:
-            # 使用自定义数据类型（如 OrderbookDepth）
-            crypto_security = self.algorithm.add_data(data_type, crypto_symbol, res)
-            # 记录自定义数据类型 (使用 Security.Symbol 而非参数 Symbol)
-            self.data_types[crypto_security.Symbol] = data_type # Orderbook Depth
+            self.data_types[crypto_security.Symbol] = Tick
 
         # 设置加密货币配置
         crypto_security.data_normalization_mode = DataNormalizationMode.RAW
@@ -185,7 +229,7 @@ class SpreadManager:
             self.algorithm.Debug(f"Stock {stock_symbol.value} already subscribed, reusing existing security")
         else:
             stock_security = self.algorithm.add_equity(
-                stock_symbol.value, res, stock_symbol.id.market,
+                stock_symbol.value, stock_res, stock_symbol.id.market,
                 extended_market_hours=extended_market_hours
             )
             # 设置股票配置（仅在首次订阅时）
@@ -333,9 +377,9 @@ class SpreadManager:
                     f"{stock_symbol.Value}: bid={stock_bid:.2f} ask={stock_ask:.2f}"
                 )
 
-            # 触发策略（简化参数）
+            # 通知所有观察者（策略）
             pair_symbol = (crypto_symbol, stock_symbol)
-            self.strategy.on_spread_update(pair_symbol, spread_pct)
+            self._notify_observers(pair_symbol, spread_pct)
 
             # 写入价差数据到监控后端（通过适配器）
             if self.monitor:
