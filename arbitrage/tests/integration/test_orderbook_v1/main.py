@@ -38,12 +38,8 @@ from AlgorithmImports import *
 sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
-from strategy.base_strategy import BaseStrategy
 from strategy.long_crypto_strategy import LongCryptoStrategy
 from order_tracker import OrderTracker as EnhancedOrderTracker
-from QuantConnect.Data.Market import OrderbookDepth
-from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel, KrakenFeeModel
-from data_source import KrakenSymbolManager
 
 class OrderBookTest(QCAlgorithm):
     """多账户Margin模式集成测试"""
@@ -61,26 +57,23 @@ class OrderBookTest(QCAlgorithm):
 
         # === 1. 初始化 SpreadManager ===
         self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(
-            algorithm=self,
-            strategy=None  # Will set later
-        )
+        self.spread_manager = SpreadManager(algorithm=self)
 
         # === 2. 初始化做多加密货币策略 ===
         self.debug("📋 Initializing LongCryptoStrategy...")
         self.strategy = LongCryptoStrategy(
             algorithm=self,
-            spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
             position_size_pct=0.80  # 80% (考虑杠杆和费用)
         )
 
-        # 链接策略到 SpreadManager
-        self.spread_manager.strategy = self.strategy
+        # === 3. 使用 Observer 模式连接 SpreadManager 和 Strategy ===
+        self.debug("🔗 Registering strategy as spread observer...")
+        self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 3. 订阅交易对（使用 subscribe_trading_pair 简化代码）===
-        self.debug("🔗 Subscribing to trading pairs...")
+        # === 4. 订阅交易对（使用 subscribe_trading_pair 简化代码）===
+        self.debug("📡 Subscribing to trading pairs...")
         crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
         stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
 
@@ -90,8 +83,7 @@ class OrderBookTest(QCAlgorithm):
 
         self.debug(f"✅ Subscribed: {crypto_symbol.value} <-> {stock_symbol.value}")
 
-        self.tick_count = 0
-        # === 11. 初始化独立的订单追踪器 (Enhanced Version) ===
+        # === 5. 初始化独立的订单追踪器 (Enhanced Version) ===
         self.debug("📊 Initializing EnhancedOrderTracker for independent order verification...")
         self.order_tracker = EnhancedOrderTracker(self, self.strategy)
 
@@ -99,14 +91,36 @@ class OrderBookTest(QCAlgorithm):
         """处理数据 - 委托给SpreadManager处理"""
         if not data.ticks or len(data.ticks) == 0:
             return
-
-        self.tick_count += 1
-
         # 委托给SpreadManager处理数据并监控价差
         self.spread_manager.on_data(data)
 
     def on_order_event(self, order_event: OrderEvent):
         """处理订单事件 - 验证多账户路由"""
+        # 诊断：如果是 AAPL 的 Submitted 事件，输出详细状态
+        if order_event.symbol == self.aapl_stock.symbol and order_event.status == OrderStatus.Submitted:
+            aapl_security = self.securities[self.aapl_stock.symbol]
+            last_data = aapl_security.get_last_data()
+            self.debug(
+                f"🔍 AAPL Order Diagnostics | "
+                f"HasData: {aapl_security.has_data} | "
+                f"Price: {aapl_security.price} | "
+                f"LastData: {last_data is not None} | "
+                f"LastDataTime: {last_data.end_time if last_data else 'None'} | "
+                f"Exchange.IsOpen: {aapl_security.exchange.hours.is_open(aapl_security.local_time, False)} | "
+                f"LocalTime: {aapl_security.local_time} | "
+                f"BidPrice: {aapl_security.bid_price} | "
+                f"AskPrice: {aapl_security.ask_price}"
+            )
+
+        # 输出所有订单事件状态便于诊断
+        self.debug(
+            f"📋 Order Event | ID: {order_event.order_id} | "
+            f"Symbol: {order_event.symbol.value} | "
+            f"Status: {order_event.status} | "
+            f"Qty: {order_event.fill_quantity} | "
+            f"Price: {order_event.fill_price}"
+        )
+
         # 委托给 Strategy 的 on_order_event 处理订单事件
         self.strategy.on_order_event(order_event)
 
@@ -114,4 +128,3 @@ class OrderBookTest(QCAlgorithm):
         """算法结束 - 输出统计信息和验证多账户Margin模式行为"""
         super().on_end_of_algorithm()
         
-        self.debug(f"ohhhhhh {self.tick_count}")
