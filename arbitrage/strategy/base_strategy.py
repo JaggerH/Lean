@@ -107,12 +107,13 @@ class BaseStrategy:
         # 所有检查通过
         return (True, "")
 
-    def _should_open_position(self, crypto_symbol: Symbol, stock_symbol: Symbol) -> bool:
+    def _should_open_position(self, crypto_symbol: Symbol, stock_symbol: Symbol,
+                              target_position_size_pct: float = 0.25) -> bool:
         """
         判断是否应该开仓
 
         检查逻辑（只检查 crypto 侧）：
-        1. 检查 crypto 是否有持仓（Invested 基于 LotSize，自动忽略残留持仓）
+        1. 检查当前持仓是否已达到目标持仓（支持增量建仓）
         2. 检查 crypto 是否有未完成订单
 
         为什么只检查 crypto 侧：
@@ -123,30 +124,47 @@ class BaseStrategy:
         Args:
             crypto_symbol: Crypto Symbol
             stock_symbol: Stock Symbol (保留参数，便于未来扩展)
+            target_position_size_pct: 目标仓位百分比（默认25%）
 
         Returns:
             True if should open position, False otherwise
         """
-        # 1. 检查 crypto 是否有持仓
-        # Invested = abs(Quantity) >= LotSize
-        # Lean 已经处理了残留持仓问题（如 0.02 < 0.01 LotSize）
-        if self.algorithm.portfolio[crypto_symbol].invested:
-            # self._debug(
-            #     f"⚠️ Cannot open - crypto already invested | "
-            #     f"{crypto_symbol.value}: {self.algorithm.portfolio[crypto_symbol].quantity:.4f}"
-            # )
+        # 1. 检查当前持仓是否已达到目标持仓
+        portfolio_value = self.algorithm.portfolio.total_portfolio_value
+        if portfolio_value <= 0:
+            self._debug("⚠️ Cannot open - portfolio value is zero or negative")
+            return False
+
+        crypto_value = abs(self.algorithm.portfolio[crypto_symbol].holdings_value)
+        current_position_pct = crypto_value / portfolio_value
+
+        # 允许5%误差，避免因为价格波动导致无法继续开仓
+        if current_position_pct >= target_position_size_pct * 0.95:
+            self._debug(
+                f"⚠️ Cannot open - position already at target | "
+                f"{crypto_symbol.value}: {current_position_pct*100:.2f}% / {target_position_size_pct*100:.1f}%"
+            )
             return False
 
         # 2. 检查 crypto 是否有未完成订单
-        open_orders = self.algorithm.transactions.get_open_orders(crypto_symbol)
-        if len(open_orders) > 0:
+        open_orders_crypto = self.algorithm.transactions.get_open_orders(crypto_symbol)
+        if len(open_orders_crypto) > 0:
             self._debug(
-                f"⚠️ Cannot open - crypto has {len(open_orders)} open order(s) | "
+                f"⚠️ Cannot open - crypto has {len(open_orders_crypto)} open order(s) | "
                 f"{crypto_symbol.value}"
             )
             return False
 
-        # 3. 都通过 → 可以开仓
+        # 3. 检查 stock 是否有未完成订单
+        open_orders_stock = self.algorithm.transactions.get_open_orders(stock_symbol)
+        if len(open_orders_stock) > 0:
+            self._debug(
+                f"⚠️ Cannot open - stock has {len(open_orders_stock)} open order(s) | "
+                f"{stock_symbol.value}"
+            )
+            return False
+
+        # 4. 都通过 → 可以开仓
         return True
 
     def _should_close_position(self, crypto_symbol: Symbol, stock_symbol: Symbol) -> bool:
@@ -223,25 +241,19 @@ class BaseStrategy:
             self.algorithm.debug(
                 f"❌ CalculateOrderPair returned None | "
                 f"{crypto_symbol.value}<->{stock_symbol.value} | "
-                f"Possible reasons: insufficient buying power, invalid prices, or orderbook constraints"
+                f"Possible reasons: insufficient buying power, invalid prices"
             )
             return None
 
-        # 验证数量有效性 - 使用 .Item1 和 .Item2 访问 C# ValueTuple
-        # Python.NET 无法直接解包 C# ValueTuple，需要使用属性访问
-        pair1 = order_pair[0]  # 第一个 (Symbol, decimal) tuple
-        pair2 = order_pair[1]  # 第二个 (Symbol, decimal) tuple
-
-        sym1 = pair1.Item1      # Symbol
-        qty1 = float(pair1.Item2)  # decimal -> float
-
-        sym2 = pair2.Item1      # Symbol
-        qty2 = float(pair2.Item2)  # decimal -> float
+        # ✅ 新版本: order_pair 是 Dictionary<Symbol, decimal>
+        # 可以直接通过 symbol 作为 key 访问
+        qty1 = float(order_pair[crypto_symbol])  # decimal -> float
+        qty2 = float(order_pair[stock_symbol])   # decimal -> float
 
         self.algorithm.debug(
             f"🔍 CalculateOrderPair result | "
-            f"{sym1.value}: {qty1:.6f} (int={int(qty1)}) | "
-            f"{sym2.value}: {qty2:.6f} (int={int(qty2)})"
+            f"{crypto_symbol.value}: {qty1:.6f} (int={int(qty1)}) | "
+            f"{stock_symbol.value}: {qty2:.6f} (int={int(qty2)})"
         )
 
         # if int(qty1) == 0 or int(qty2) == 0:
@@ -255,7 +267,7 @@ class BaseStrategy:
         # 日志：显示计算的订单对
         self._debug(
             f"📊 Order Pair | Target: {position_size_pct*100}% | "
-            f"{sym1.value}: {qty1:.2f} | {sym2.value}: {qty2:.2f}"
+            f"{crypto_symbol.value}: {qty1:.2f} | {stock_symbol.value}: {qty2:.2f}"
         )
 
         # 直接使用 order_pair 下单 - 无需手动重组

@@ -10,7 +10,6 @@ Both Side Strategy - 双边套利策略
 from AlgorithmImports import *
 from typing import Tuple
 from strategy.base_strategy import BaseStrategy
-from spread_manager import SpreadManager
 
 
 class BothSideStrategy(BaseStrategy):
@@ -25,28 +24,28 @@ class BothSideStrategy(BaseStrategy):
     - 根据当前持仓方向选择平仓条件
     """
 
-    def __init__(self, algorithm: QCAlgorithm, spread_manager: SpreadManager,
+    def __init__(self, algorithm: QCAlgorithm,
                  long_crypto_entry: float = -0.01,
                  long_crypto_exit: float = 0.02,
                  short_crypto_entry: float = 0.03,
                  short_crypto_exit: float = -0.009,
-                 position_size_pct: float = 0.25):
+                 position_size_pct: float = 0.25,
+                 state_persistence=None):
         """
         初始化策略
 
         Args:
             algorithm: QCAlgorithm实例
-            spread_manager: SpreadManager实例
             long_crypto_entry: Long crypto开仓阈值 (负数, 默认-1%)
             long_crypto_exit: Long crypto平仓阈值 (正数, 默认2%)
             short_crypto_entry: Short crypto开仓阈值 (正数, 默认3%)
             short_crypto_exit: Short crypto平仓阈值 (负数, 默认-0.9%)
             position_size_pct: 仓位大小百分比 (默认25%)
+            state_persistence: 状态持久化适配器 (可选)
         """
-        # 调用父类初始化 (debug=False)
-        super().__init__(algorithm, debug=False)
+        # 调用父类初始化 (debug=False, state_persistence)
+        super().__init__(algorithm, debug=False, state_persistence=state_persistence)
 
-        self.spread_manager = spread_manager
         self.long_crypto_entry = long_crypto_entry
         self.long_crypto_exit = long_crypto_exit
         self.short_crypto_entry = short_crypto_entry
@@ -78,7 +77,7 @@ class BothSideStrategy(BaseStrategy):
         crypto_symbol, stock_symbol = pair_symbol
 
         # 使用 BaseStrategy 的方法检查是否应该开/平仓
-        can_open = self._should_open_position(crypto_symbol, stock_symbol)
+        can_open = self._should_open_position(crypto_symbol, stock_symbol, self.position_size_pct)
         can_close = self._should_close_position(crypto_symbol, stock_symbol)
 
         # 获取当前持仓方向
