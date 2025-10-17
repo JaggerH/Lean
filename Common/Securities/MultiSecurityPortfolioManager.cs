@@ -198,8 +198,17 @@ namespace QuantConnect.Securities
                         var tempOrder = new MarketOrder(symbol, 0, DateTime.UtcNow);
                         var targetAccount = _router.Route(tempOrder);
 
-                        // Add the Security only to the target sub-account's SecurityManager
-                        // This ensures independent Holdings: IBKR gets AAPL (stock), Kraken gets AAPLUSD (crypto)
+                        // 🔧 FIX: Add Security to BOTH main and sub-account SecurityManagers
+                        // Main SecurityManager is needed by BacktestingBrokerage.Scan() for order filling
+                        // Sub-account SecurityManager is needed for independent Holdings tracking
+
+                        // Add to main SecurityManager (used by BacktestingBrokerage.Scan())
+                        if (!this.Securities.ContainsKey(symbol))
+                        {
+                            this.Securities.Add(symbol, security);
+                        }
+
+                        // Add to the target sub-account's SecurityManager (for Holdings tracking)
                         if (_subAccountSecurityManagers.TryGetValue(targetAccount, out var subSecurityManager))
                         {
                             if (!subSecurityManager.ContainsKey(symbol))

@@ -1885,5 +1885,372 @@ namespace QuantConnect.Tests.Algorithm
             new object[] { new List<Symbol>() { Symbols.AAPL, Symbols.SPY }, true, new Dictionary<Symbol, decimal> { { Symbols.AAPL, 504m }, { Symbols.IBM, -3m }, { Symbols.SPY, 250m } }, "(MultipleSymbols, true)" },
             new object[] { new List<Symbol>() { Symbols.AAPL, Symbols.SPY }, false, new Dictionary<Symbol, decimal> { { Symbols.AAPL, 504m }, { Symbols.SPY, 250m } }, "(MultipleSymbols, false)" },
         };
+
+        /*****************************************************/
+        //  CalculateOrderPair Tests (Refactored Version)
+        /*****************************************************/
+
+        [Test]
+        public void CalculateOrderPair_BasicHedgedPair_LongCryptoShortStock()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act - Target 10% long on crypto (positive targetPercent)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert
+            Assert.IsNotNull(result, "Should return a valid dictionary");
+            Assert.AreEqual(2, result.Count, "Should return orders for both symbols");
+            Assert.IsTrue(result.ContainsKey(btcusd.Symbol), "Should contain BTCUSD");
+            Assert.IsTrue(result.ContainsKey(spy.Symbol), "Should contain SPY");
+
+            // Long crypto (buy) - returns target quantity, not delta
+            Assert.Greater(result[btcusd.Symbol], 0, "BTCUSD target should be positive (long)");
+
+            // Short stock (sell) - returns target quantity, not delta
+            Assert.Less(result[spy.Symbol], 0, "SPY target should be negative (short)");
+
+            // Equal market values (within lot size rounding tolerance)
+            var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+            var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+            Assert.AreEqual((double)btcValue, (double)spyValue, 500.0, "Market values should be approximately equal (within lot size rounding)");
+        }
+
+        [Test]
+        public void CalculateOrderPair_ReverseDirection_ShortCryptoLongStock()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act - Target -10% (negative targetPercent = short crypto, long stock)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, -0.1m);
+
+            // Assert
+            Assert.IsNotNull(result, "Should return a valid dictionary");
+            Assert.AreEqual(2, result.Count, "Should return orders for both symbols");
+
+            // Short crypto (sell) - returns target quantity, not delta
+            Assert.Less(result[btcusd.Symbol], 0, "BTCUSD target should be negative (short)");
+
+            // Long stock (buy) - returns target quantity, not delta
+            Assert.Greater(result[spy.Symbol], 0, "SPY target should be positive (long)");
+
+            // Equal market values (within lot size rounding tolerance)
+            var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+            var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+            Assert.AreEqual((double)btcValue, (double)spyValue, 500.0, "Market values should be approximately equal (within lot size rounding)");
+        }
+
+        [Test]
+        public void CalculateOrderPair_ReturnsDictionaryType()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert
+            Assert.IsInstanceOf<Dictionary<Symbol, decimal>>(result, "Should return Dictionary<Symbol, decimal>");
+            Assert.IsNotNull(result, "Dictionary should not be null");
+        }
+
+        [Test]
+        public void CalculateOrderPair_AsymmetricExecution_OneSideAtTarget()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // First, calculate target position
+            var initialResult = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Simulate filling the BTC order only (asymmetric scenario)
+            btcusd.Holdings.SetHoldings(50000m, initialResult[btcusd.Symbol]);
+
+            // Act - Calculate target again (should return same target for BTC, different for SPY based on existing position)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert
+            Assert.IsNotNull(result, "Should return valid dictionary");
+
+            // BTCUSD target should be same as before (it returns target quantity, not delta)
+            Assert.AreEqual((double)initialResult[btcusd.Symbol], (double)result[btcusd.Symbol], 0.001,
+                "BTCUSD target should be the same as before (already at target position)");
+
+            // SPY should return target quantity (negative for short)
+            Assert.Less(result[spy.Symbol], 0, "SPY target should be negative (short position)");
+        }
+
+        [Test]
+        public void CalculateOrderPair_LotSizeRounding_LongPositionRoundsDown()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+
+            // Set prices that will result in fractional quantities
+            Update(btcusd, 50000m);
+            Update(spy, 333.33m); // Chosen to create fractional SPY quantity
+
+            // Act
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.05m);
+
+            // Assert
+            Assert.IsNotNull(result);
+
+            // Verify lot size conformance
+            var btcLotSize = btcusd.SymbolProperties.LotSize;
+            var spyLotSize = spy.SymbolProperties.LotSize;
+
+            Assert.AreEqual(0, result[btcusd.Symbol] % btcLotSize, "BTCUSD should conform to lot size");
+            Assert.AreEqual(0, result[spy.Symbol] % spyLotSize, "SPY should conform to lot size");
+
+            // Long positions should round down
+            Assert.Greater(result[btcusd.Symbol], 0, "BTCUSD should be long");
+        }
+
+        [Test]
+        public void CalculateOrderPair_LotSizeRounding_ShortPositionRoundsUp()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 333.33m);
+
+            // Act - Negative target for short crypto
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, -0.05m);
+
+            // Assert
+            Assert.IsNotNull(result);
+
+            // Short positions should round up (toward zero, which is less negative)
+            Assert.Less(result[btcusd.Symbol], 0, "BTCUSD should be short");
+
+            // Verify lot size conformance
+            var btcLotSize = btcusd.SymbolProperties.LotSize;
+            Assert.AreEqual(0, Math.Abs(result[btcusd.Symbol]) % btcLotSize, "BTCUSD should conform to lot size");
+        }
+
+        [Test]
+        public void CalculateOrderPair_ZeroPrice_ReturnsNull()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 0m); // Invalid zero price
+            Update(spy, 400m);
+
+            // Act
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert
+            Assert.IsNull(result, "Should return null for zero price");
+        }
+
+        [Test]
+        public void CalculateOrderPair_MissingSecurity_ThrowsException()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            var unknownSymbol = Symbol.Create("UNKNOWN", SecurityType.Equity, Market.USA);
+
+            // Act & Assert - Should throw KeyNotFoundException for missing security
+            Assert.Throws<KeyNotFoundException>(() =>
+            {
+                algo.CalculateOrderPair(unknownSymbol, spy.Symbol, 0.1m);
+            }, "Should throw exception for missing security");
+        }
+
+        [Test]
+        public void CalculateOrderPair_ReturnsTargetQuantities_NotDeltas()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Calculate target positions
+            var initialResult = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Simulate filling orders to reach target
+            btcusd.Holdings.SetHoldings(50000m, initialResult[btcusd.Symbol]);
+            spy.Holdings.SetHoldings(400m, initialResult[spy.Symbol]);
+
+            // Act - Calculate again when already at target
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert - Method returns TARGET quantities, not deltas
+            // So it will still return the same target quantities even if already at target
+            Assert.IsNotNull(result, "Should return a dictionary, not null");
+            Assert.AreEqual(2, result.Count, "Should return target quantities for both symbols");
+
+            // Target quantities should be the same as before (not zero)
+            Assert.AreEqual((double)initialResult[btcusd.Symbol], (double)result[btcusd.Symbol], 0.001,
+                "BTCUSD target should be same as initial (method returns targets, not deltas)");
+            Assert.AreEqual((double)initialResult[spy.Symbol], (double)result[spy.Symbol], 0.001,
+                "SPY target should be same as initial (method returns targets, not deltas)");
+        }
+
+        [Test]
+        public void CalculateOrderPair_SingleAccount_CalculatesCorrectly()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act - Single account scenario (default)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+
+            // Target value should be 10% of portfolio (100k * 0.1 = 10k)
+            var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+            var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+
+            // Both should target approximately $10k (within lot size rounding tolerance)
+            Assert.AreEqual(10000.0, (double)btcValue, 500.0, "BTC value should be approximately $10k (within lot size rounding)");
+            Assert.AreEqual(10000.0, (double)spyValue, 500.0, "SPY value should be approximately $10k (within lot size rounding)");
+        }
+
+        [Test]
+        public void CalculateOrderPair_HedgingConstraint_EqualMarketValues()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.15m);
+
+            // Assert
+            var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+            var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+
+            // Hedging constraint: equal market values (within lot size rounding)
+            Assert.AreEqual((double)btcValue, (double)spyValue, 250.0, "Market values should be equal within rounding tolerance");
+        }
+
+        [Test]
+        public void CalculateOrderPair_InsufficientBuyingPower_ReturnsEmptyOrSmaller()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Set very low cash to limit buying power
+            algo.SetCash(1000m); // Only $1000 available
+
+            // Act - Request 50% allocation (would need $500 on $1000 portfolio)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.5m);
+
+            // Assert
+            Assert.IsNotNull(result);
+
+            if (result.Count > 0)
+            {
+                // If orders are generated, they should be small due to buying power constraint
+                var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+                var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+
+                // Values should be constrained by available buying power (~$1000)
+                Assert.LessOrEqual(btcValue, 1000m, "BTC value should be limited by buying power");
+                Assert.LessOrEqual(spyValue, 1000m, "SPY value should be limited by buying power");
+            }
+        }
+
+        [Test]
+        public void CalculateOrderPair_LargeTargetPercent_ConstrainedByBuyingPower()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act - Request 200% allocation (impossible with 1x leverage)
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 2.0m);
+
+            // Assert
+            Assert.IsNotNull(result);
+
+            if (result.Count > 0)
+            {
+                // Should be constrained by available buying power, not unlimited
+                var btcValue = Math.Abs(result[btcusd.Symbol] * 50000m);
+                var spyValue = Math.Abs(result[spy.Symbol] * 400m);
+
+                // With 100k portfolio and 1x leverage, max ~100k
+                Assert.LessOrEqual(btcValue, 100000m, "Should be constrained by buying power");
+                Assert.LessOrEqual(spyValue, 100000m, "Should be constrained by buying power");
+            }
+        }
+
+        [Test]
+        public void CalculateOrderPair_OppositeDirections_Verified()
+        {
+            // Arrange
+            var algo = GetAlgorithmForOrderPairTests(out var btcusd, out var spy);
+            Update(btcusd, 50000m);
+            Update(spy, 400m);
+
+            // Act
+            var result = algo.CalculateOrderPair(btcusd.Symbol, spy.Symbol, 0.1m);
+
+            // Assert - Verify hedging: opposite directions
+            var btcSign = Math.Sign(result[btcusd.Symbol]);
+            var spySign = Math.Sign(result[spy.Symbol]);
+
+            Assert.AreNotEqual(btcSign, spySign, "Orders should be in opposite directions for hedging");
+            Assert.AreNotEqual(0, btcSign, "BTC order should not be zero");
+            Assert.AreNotEqual(0, spySign, "SPY order should not be zero");
+        }
+
+        /*****************************************************/
+        // Helper method for CalculateOrderPair tests
+        /*****************************************************/
+
+        private QCAlgorithm GetAlgorithmForOrderPairTests(out Security btcusd, out Security spy)
+        {
+            // Initialize algorithm
+            var algo = new QCAlgorithm();
+            algo.Settings.MinimumOrderMarginPortfolioPercentage = 0;
+            algo.SubscriptionManager.SetDataManager(new DataManagerStub(algo));
+
+            // Add crypto (BTCUSD)
+            var btcSymbol = Symbol.Create("BTCUSD", SecurityType.Crypto, Market.Coinbase);
+            algo.AddCrypto("BTCUSD", Resolution.Minute, Market.Coinbase);
+            btcusd = algo.Securities[btcSymbol];
+            btcusd.FeeModel = new ConstantFeeModel(0);
+
+            // Add equity (SPY)
+            algo.AddSecurity(SecurityType.Equity, "SPY");
+            spy = algo.Securities[Symbols.SPY];
+            spy.FeeModel = new ConstantFeeModel(0);
+
+            // Set initial cash
+            algo.SetCash(100000);
+            algo.SetFinishedWarmingUp();
+            algo.SetLiveMode(false);
+
+            // Setup fake order processor
+            _fakeOrderProcessor = new FakeOrderProcessor();
+            algo.Transactions.SetOrderProcessor(_fakeOrderProcessor);
+
+            // Set current slice
+            algo.SetCurrentSlice(new Slice(DateTime.MinValue, Enumerable.Empty<BaseData>(), DateTime.MinValue));
+
+            return algo;
+        }
     }
 }

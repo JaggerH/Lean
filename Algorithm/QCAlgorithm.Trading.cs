@@ -25,6 +25,7 @@ using static QuantConnect.StringExtensions;
 using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Orders.TimeInForces;
 using Python.Runtime;
+using QuantConnect.Util;
 
 namespace QuantConnect.Algorithm
 {
@@ -1775,29 +1776,7 @@ namespace QuantConnect.Algorithm
         [DocumentationAttribute(TradingAndOrders)]
         public decimal CalculateOrderQuantity(Symbol symbol, decimal target)
         {
-            SecurityPortfolioManager portfolioToUse = null;
-
-            // Check if we're in a multi-account scenario
-            if (Portfolio is MultiSecurityPortfolioManager multiPortfolio)
-            {
-                // Create a temporary order to determine routing target
-                // Using MarketOrder with quantity 0 as a routing probe
-                var tempOrder = new MarketOrder(symbol, 0, UtcTime);
-
-                // Use the router to determine which sub-account this order will route to
-                var router = multiPortfolio.GetType()
-                    .GetField("_router", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?.GetValue(multiPortfolio) as IOrderRouter;
-
-                if (router != null)
-                {
-                    var targetAccount = router.Route(tempOrder);
-                    portfolioToUse = multiPortfolio.GetAccount(targetAccount);
-
-                    Debug($"CalculateOrderQuantity: Multi-account detected. Symbol {symbol} routed to account '{targetAccount}' with portfolio value ${portfolioToUse.TotalPortfolioValue:N2}");
-                }
-            }
-
+            var portfolioToUse = this.GetPortfolioForSymbol(symbol);
             var percent = PortfolioTarget.Percent(this, symbol, target, true, portfolio: portfolioToUse);
 
             if (percent == null)
@@ -1808,88 +1787,272 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
-        /// Calculates order quantities for a hedged pair of symbols, ensuring equal market values
+        /// Gets the buying power for both accounts that will handle the given symbol pair.
+        /// Determines which account each symbol routes to and retrieves their available buying power.
         /// </summary>
-        /// <param name="symbol1">First symbol (e.g., crypto)</param>
-        /// <param name="symbol2">Second symbol (e.g., stock)</param>
-        /// <param name="targetPercent">Target percentage of portfolio value (positive for long, negative for short)</param>
-        /// <param name="oppositeDirection">
-        /// If true, symbol2 will be in opposite direction to symbol1 (hedged)
-        /// If false, both symbols will be in the same direction
-        /// </param>
-        /// <returns>
-        /// A tuple containing:
-        /// - quantity1: Order quantity for symbol1 (signed: positive = buy, negative = sell)
-        /// - quantity2: Order quantity for symbol2 (signed: positive = buy, negative = sell)
-        /// - marketValue: Actual market value to be used (same for both symbols)
-        /// Returns null if unable to construct a valid order pair
-        /// </returns>
-        [DocumentationAttribute(TradingAndOrders)]
-        public List<(Symbol, decimal)> CalculateOrderPair(
+        /// <param name="symbol1">First symbol in the pair</param>
+        /// <param name="symbol2">Second symbol in the pair</param>
+        /// <param name="targetPercent">Target percentage to determine order direction (positive = long, negative = short)</param>
+        /// <returns>Tuple of (buyingPower1, buyingPower2)</returns>
+        private (decimal buyingPower1, decimal buyingPower2) GetAccountBuyingPowers(
             Symbol symbol1,
             Symbol symbol2,
-            decimal targetPercent,
-            bool oppositeDirection = true)
+            decimal targetPercent)
         {
-            // 1. Calculate target quantities for each account using existing method
-            //    CalculateOrderQuantity already handles:
-            //    - Multi-account routing
-            //    - BuyingPower validation and auto-downgrade
-            //    - Leverage and margin calculations
-            //    - Long/Short (positive/negative percentage)
-            var qty1 = CalculateOrderQuantity(symbol1, targetPercent);
+            // Determine order direction based on targetPercent
+            var direction1 = targetPercent > 0 ? OrderDirection.Buy : OrderDirection.Sell;
+            var direction2 = targetPercent > 0 ? OrderDirection.Sell : OrderDirection.Buy; // Opposite for hedging
 
-            // For symbol2, reverse the percentage if oppositeDirection is true (hedging)
-            var targetPercent2 = oppositeDirection ? -targetPercent : targetPercent;
-            var qty2 = CalculateOrderQuantity(symbol2, targetPercent2);
+            // Get portfolios for each symbol using extension method
+            var portfolio1 = this.GetPortfolioForSymbol(symbol1);
+            var portfolio2 = this.GetPortfolioForSymbol(symbol2);
 
-            // 2. Get current prices
-            if (!Securities.TryGetValue(symbol1, out var security1))
+            // Get buying power for each account
+            var buyingPower1 = portfolio1.GetBuyingPower(symbol1, direction1);
+            var buyingPower2 = portfolio2.GetBuyingPower(symbol2, direction2);
+
+            return (buyingPower1, buyingPower2);
+        }
+
+        /// <summary>
+        /// Calculates the maximum tradable market value for a hedged pair trade, considering both accounts'
+        /// portfolio values and buying power constraints. Returns the minimum of available buying power
+        /// across both accounts to ensure balanced hedging.
+        /// </summary>
+        /// <param name="symbol1">First symbol in the pair</param>
+        /// <param name="symbol2">Second symbol in the pair</param>
+        /// <param name="targetPercent">Target percentage of portfolio value (positive for long, negative for short)</param>
+        /// <returns>Maximum tradable market value that both accounts can execute</returns>
+        private decimal CalculateMaxTradableMarketValue(
+            Symbol symbol1,
+            Symbol symbol2,
+            decimal targetPercent)
+        {
+            // Get portfolios for each symbol directly using extension method
+            var portfolio1 = this.GetPortfolioForSymbol(symbol1);
+            var portfolio2 = this.GetPortfolioForSymbol(symbol2);
+
+            // Get buying powers for both accounts
+            var (buyingPower1, buyingPower2) = GetAccountBuyingPowers(symbol1, symbol2, targetPercent);
+
+            // Calculate planned market values based on each account's total portfolio value
+            var plannedValue1 = portfolio1.TotalPortfolioValue * Math.Abs(targetPercent);
+            var plannedValue2 = portfolio2.TotalPortfolioValue * Math.Abs(targetPercent);
+
+            // Take minimum across all constraints to ensure both sides can execute
+            var targetValue = Math.Min(
+                Math.Min(plannedValue1, plannedValue2),
+                Math.Min(buyingPower1, buyingPower2)
+            );
+
+            return targetValue;
+        }
+
+        /// <summary>
+        /// Checks if the security has valid orderbook depth data
+        /// </summary>
+        /// <param name="security">Security to check</param>
+        /// <returns>True if orderbook depth is available with valid bid and ask levels</returns>
+        private bool HasOrderbookDepth(Security security)
+        {
+            var orderbookDepth = security.Cache.OrderbookDepth;
+            return orderbookDepth != null &&
+                   orderbookDepth.Bids != null && orderbookDepth.Bids.Count > 0 &&
+                   orderbookDepth.Asks != null && orderbookDepth.Asks.Count > 0;
+        }
+
+        /// <summary>
+        /// Calculates estimated execution price, quantity and value based on orderbook depth
+        /// </summary>
+        /// <param name="security">Security to analyze</param>
+        /// <param name="isBuying">True for buy orders (consume asks), false for sell orders (consume bids)</param>
+        /// <param name="targetValue">Target execution value in quote currency</param>
+        /// <param name="maxSpreadPct">Maximum acceptable spread from mid price (optional)</param>
+        /// <returns>Tuple of (estimated average price, max fillable quantity, max fillable value)</returns>
+        private (decimal estimatedPrice, decimal maxQuantity, decimal maxValue) CalculateOrderbookExecution(
+            Security security,
+            bool isBuying,
+            decimal targetValue,
+            decimal? maxSpreadPct = null)
+        {
+            var orderbookDepth = security.Cache.OrderbookDepth;
+
+            // Select appropriate side of the book (buy = consume asks, sell = consume bids)
+            var levels = isBuying ? orderbookDepth.Asks : orderbookDepth.Bids;
+
+            // Calculate mid price for spread constraint
+            decimal midPrice = 0;
+            if (maxSpreadPct.HasValue &&
+                orderbookDepth.Bids.Count > 0 &&
+                orderbookDepth.Asks.Count > 0)
             {
-                Error($"CalculateOrderPair: {symbol1} not found in securities");
+                midPrice = (orderbookDepth.Bids[0].Price + orderbookDepth.Asks[0].Price) / 2;
+            }
+
+            decimal totalQuantity = 0;
+            decimal totalCost = 0;
+
+            // Walk through orderbook levels
+            foreach (var level in levels)
+            {
+                // Check spread constraint
+                if (maxSpreadPct.HasValue && midPrice > 0)
+                {
+                    var spreadPct = Math.Abs((level.Price - midPrice) / midPrice);
+                    if (spreadPct > maxSpreadPct.Value)
+                    {
+                        break; // Exceeded spread limit, stop consuming
+                    }
+                }
+
+                var levelValue = level.Price * level.Size;
+                if (totalCost + levelValue <= targetValue)
+                {
+                    // Fully consume this level
+                    totalQuantity += level.Size;
+                    totalCost += levelValue;
+                }
+                else
+                {
+                    // Partially consume this level
+                    var remainingValue = targetValue - totalCost;
+                    var partialQuantity = remainingValue / level.Price;
+                    totalQuantity += partialQuantity;
+                    totalCost += remainingValue;
+                    break;
+                }
+            }
+
+            var estimatedPrice = totalQuantity > 0 ? totalCost / totalQuantity : 0;
+            return (estimatedPrice, totalQuantity, totalCost);
+        }
+
+        /// <summary>
+        /// Gets execution estimate using orderbook depth (if available) or Level1 data
+        /// </summary>
+        /// <param name="security">Security to analyze</param>
+        /// <param name="isBuying">True for buy orders, false for sell orders</param>
+        /// <param name="targetValue">Target execution value</param>
+        /// <param name="maxSpreadPct">Maximum acceptable spread from mid price (optional)</param>
+        /// <returns>Tuple of (price, max fillable quantity, max fillable value)</returns>
+        private (decimal price, decimal maxQuantity, decimal maxValue) GetExecutionEstimate(
+            Security security,
+            bool isBuying,
+            decimal targetValue,
+            decimal? maxSpreadPct = null)
+        {
+            if (HasOrderbookDepth(security))
+            {
+                // Crypto: Use orderbook depth for detailed execution analysis
+                return CalculateOrderbookExecution(security, isBuying, targetValue, maxSpreadPct);
+            }
+            else
+            {
+                // IBKR Stock: Use Level1 data (Bid/Ask price and size)
+                var cache = security.Cache;
+                var price = isBuying ? cache.AskPrice : cache.BidPrice;
+                var size = isBuying ? cache.AskSize : cache.BidSize;
+
+                // Fallback to last trade price if bid/ask not available
+                if (price == 0)
+                {
+                    price = security.Price;
+                }
+
+                if (size > 0)
+                {
+                    // Check spread constraint for Level1 data
+                    if (maxSpreadPct.HasValue && cache.BidPrice > 0 && cache.AskPrice > 0)
+                    {
+                        var midPrice = (cache.BidPrice + cache.AskPrice) / 2;
+                        var spreadPct = Math.Abs((price - midPrice) / midPrice);
+                        if (spreadPct > maxSpreadPct.Value)
+                        {
+                            // Exceeded spread limit
+                            return (price, 0, 0);
+                        }
+                    }
+
+                    var value = Math.Min(price * size, targetValue);
+                    var quantity = value / price;
+                    return (price, quantity, value);
+                }
+                else
+                {
+                    // No size data available, assume sufficient liquidity
+                    return (price, decimal.MaxValue, decimal.MaxValue);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Calculates target holding quantities for a hedged pair of symbols.
+        /// Uses PortfolioTarget.Percent to compute target quantities with automatic lot size handling.
+        /// Returns TARGET quantities (absolute holdings), not deltas. Execution layer must calculate delta = target - current holdings.
+        /// </summary>
+        /// <param name="symbol1">First symbol (e.g., crypto) - will be long if targetPercent > 0</param>
+        /// <param name="symbol2">Second symbol (e.g., stock) - will be opposite direction to symbol1 for hedging</param>
+        /// <param name="targetPercent">Target percentage of portfolio value (positive for long symbol1, negative for short symbol1)</param>
+        /// <returns>
+        /// Dictionary mapping Symbol to TARGET quantity (signed: positive = long, negative = short).
+        /// These are absolute target positions, NOT incremental order quantities.
+        /// Returns null if unable to construct valid targets (e.g., invalid prices, securities not found).
+        /// </returns>
+        [DocumentationAttribute(TradingAndOrders)]
+        public Dictionary<Symbol, decimal> CalculateOrderPair(
+            Symbol symbol1,
+            Symbol symbol2,
+            decimal targetPercent)
+        {
+            // 1. Calculate max tradable market value (respects buying power constraints)
+            var maxTradableMarketValue = CalculateMaxTradableMarketValue(symbol1, symbol2, targetPercent);
+
+            if (maxTradableMarketValue <= 0)
+            {
+                Debug($"CalculateOrderPair: No available buying power or target value is zero");
+                return new Dictionary<Symbol, decimal>();
+            }
+
+            // 3. Get portfolio for each symbol using extension method
+            var portfolio1 = this.GetPortfolioForSymbol(symbol1);
+            var portfolio2 = this.GetPortfolioForSymbol(symbol2);
+
+            // 4. Calculate target percent for each account
+            // Target percent = maxTradableMarketValue / account's TotalPortfolioValue
+            var targetPercent1 = maxTradableMarketValue / portfolio1.TotalPortfolioValue * Math.Sign(targetPercent);
+            var targetPercent2 = maxTradableMarketValue / portfolio2.TotalPortfolioValue * -Math.Sign(targetPercent);
+
+            Debug($"CalculateOrderPair: Account target percents - " +
+                  $"{symbol1}: {targetPercent1:P2}, {symbol2}: {targetPercent2:P2}");
+
+            // 5. Use PortfolioTarget.Percent to calculate target quantities
+            var target1 = PortfolioTarget.Percent(this, symbol1, targetPercent1,
+                                                  returnDeltaQuantity: false,
+                                                  portfolio: portfolio1);
+
+            var target2 = PortfolioTarget.Percent(this, symbol2, targetPercent2,
+                                                  returnDeltaQuantity: false,
+                                                  portfolio: portfolio2);
+
+            // 6. Validate results
+            if (target1 == null || target2 == null)
+            {
+                Error($"CalculateOrderPair: Failed to calculate target quantities");
                 return null;
             }
 
-            if (!Securities.TryGetValue(symbol2, out var security2))
+            var qty1 = target1.Quantity;
+            var qty2 = target2.Quantity;
+
+            Debug($"CalculateOrderPair: Target quantities - " +
+                  $"{symbol1}: {qty1:F4}, {symbol2}: {qty2:F4}");
+
+            // 7. Return target quantities (execution layer will calculate delta)
+            return new Dictionary<Symbol, decimal>
             {
-                Error($"CalculateOrderPair: {symbol2} not found in securities");
-                return null;
-            }
-
-            var price1 = security1.Price;
-            var price2 = security2.Price;
-
-            if (price1 == 0 || price2 == 0)
-            {
-                Error($"CalculateOrderPair: Invalid price - {symbol1}: ${price1}, {symbol2}: ${price2}");
-                return null;
-            }
-
-            // 3. Calculate market values (absolute value)
-            var value1 = Math.Abs(qty1 * price1);
-            var value2 = Math.Abs(qty2 * price2);
-
-            // 4. Hedging constraint: use minimum value (ensure both accounts can support it)
-            var finalValue = Math.Min(value1, value2);
-
-            if (finalValue == 0)
-            {
-                Error($"CalculateOrderPair: Final value is zero (Symbol1 value: {value1}, Symbol2 value: {value2})");
-                return null;
-            }
-
-            // 5. Recalculate quantities based on minimum value (ensure equal market values)
-            //    Preserve the original direction sign
-            var sign1 = Math.Sign(qty1);
-            var sign2 = Math.Sign(qty2);
-
-            var finalQty1 = (finalValue / price1) * sign1;
-            var finalQty2 = (finalValue / price2) * sign2;
-
-            Debug($"CalculateOrderPair: {symbol1} {finalQty1:F2} @ ${price1:F2} = ${Math.Abs(finalQty1 * price1):F2}, " +
-                  $"{symbol2} {finalQty2:F2} @ ${price2:F2} = ${Math.Abs(finalQty2 * price2):F2}");
-
-            return new List<(Symbol, decimal)> { (symbol1, finalQty1), (symbol2, finalQty2) };
+                { symbol1, qty1 },
+                { symbol2, qty2 }
+            };
         }
 
         /// <summary>

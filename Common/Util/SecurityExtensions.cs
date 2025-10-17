@@ -16,6 +16,8 @@
 
 using System.Linq;
 using QuantConnect.Securities;
+using QuantConnect.Interfaces;
+using QuantConnect.Orders;
 
 namespace QuantConnect.Util
 {
@@ -31,6 +33,38 @@ namespace QuantConnect.Util
         public static bool IsInternalFeed(this Security security)
         {
             return security.Subscriptions.All(x => x.IsInternalFeed);
+        }
+
+        /// <summary>
+        /// Gets the portfolio manager for the account that would handle orders for the given symbol.
+        /// In single-account scenarios, returns the main portfolio.
+        /// In multi-account scenarios, uses the order router to determine the target account.
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="symbol">The symbol to route</param>
+        /// <returns>The portfolio manager for the account that handles this symbol</returns>
+        public static SecurityPortfolioManager GetPortfolioForSymbol(
+            this IAlgorithm algorithm, Symbol symbol)
+        {
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+            {
+                // Create a temporary order to determine routing
+                var tempOrder = new MarketOrder(symbol, 0, algorithm.UtcTime);
+
+                // Access the router via reflection (it's a private field)
+                var router = multiPortfolio.GetType()
+                    .GetField("_router", System.Reflection.BindingFlags.NonPublic |
+                                         System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(multiPortfolio) as IOrderRouter;
+
+                if (router != null)
+                {
+                    var accountName = router.Route(tempOrder);
+                    return multiPortfolio.GetAccount(accountName);
+                }
+            }
+
+            return algorithm.Portfolio;
         }
     }
 }
