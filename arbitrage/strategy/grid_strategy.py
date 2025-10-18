@@ -10,7 +10,7 @@ from .base_strategy import BaseStrategy
 from .grid_models import GridLevel, generate_grid_id
 from .grid_level_manager import GridLevelManager
 from .grid_position_manager import GridPositionManager
-from .executor import ExecutionManager
+from .execution_manager import ExecutionManager
 from .execution_models import ExecutionTarget
 
 if TYPE_CHECKING:
@@ -59,9 +59,6 @@ class GridStrategy(BaseStrategy):
         # 初始化执行管理器
         # self.execution_manager = ExecutionManager(algorithm, debug=debug)
         self.execution_manager = ExecutionManager(algorithm, debug=True)
-
-        # 建立双向引用：GridPositionManager -> ExecutionManager
-        self.grid_position_manager.execution_manager = self.execution_manager
 
         self.algorithm.debug("📊 GridStrategy initialized")
 
@@ -148,19 +145,18 @@ class GridStrategy(BaseStrategy):
         # === 4. 检查失败订单，允许重试 ===
         grid_position = self.grid_position_manager.get_grid_position(pair_symbol, grid_id)
 
-        if grid_position and grid_position.status == "FAILED":
+        # if grid_position:
             # 检查是否有孤立仓位（单边持仓）
-            if self.grid_position_manager._has_orphan_position(grid_position):
-                self.algorithm.debug(
-                    f"⚠️ Grid {grid_id} has orphan position, cannot retry | "
-                    f"Crypto: {grid_position.actual_crypto_qty:.4f}, "
-                    f"Stock: {grid_position.actual_stock_qty:.4f}"
-                )
-                return None
+            # if self.grid_position_manager._has_orphan_position(grid_position):
+            #     self.algorithm.debug(
+            #         f"⚠️ Grid {grid_id} has orphan position, cannot retry | "
+            #         f"Crypto: {grid_position.actual_crypto_qty:.4f}, "
+            #         f"Stock: {grid_position.actual_stock_qty:.4f}"
+            #     )
+            #     return None
 
             # 重置状态，允许重试
-            grid_position.status = "OPEN"
-            self.algorithm.debug(f"🔄 Retrying failed grid {grid_id}")
+            # self.algorithm.debug(f"🔄 Retrying failed grid {grid_id}")
 
         # === 5. 创建 GridPosition（如果不存在）===
         # 提前创建是为了追踪后续的订单组
@@ -202,9 +198,6 @@ class GridStrategy(BaseStrategy):
 
         for grid_id, position in pair_positions.items():
             # 只有 FILLED 状态的网格线可以平仓
-            if position.status != "FILLED":
-                continue
-
             # === 3. 检查是否有active ExecutionTarget ===
             if self.execution_manager.has_active_execution(pair_symbol, grid_id):
                 self.algorithm.debug(f"⚠️ Grid {grid_id} has active execution, skipping close")
@@ -226,9 +219,9 @@ class GridStrategy(BaseStrategy):
         Args:
             data: Slice 数据
         """
-        # 重新触发所有 PENDING 的 ExecutionTargets
+        # 重新触发所有 New 状态的 ExecutionTargets
         for execution_key, target in list(self.execution_manager.active_targets.items()):
-            if target.is_pending():
+            if target.is_active():
                 self.execution_manager.execute(target)
 
     def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
@@ -240,12 +233,6 @@ class GridStrategy(BaseStrategy):
             spread_pct: Spread 百分比
         """
         crypto_symbol, stock_symbol = pair_symbol
-
-        # === 0. 检查订单超时（Market Order 容错机制）===
-        # 每次价差更新时检查是否有订单超时
-        # 超时订单会被主动取消，并触发对冲敞口检测
-        self.grid_position_manager.check_order_timeouts()
-
 
         # === 1. 检查是否触发进场线 ===
         entry_level = self.grid_level_manager.get_triggered_entry_level(pair_symbol, spread_pct)
@@ -311,7 +298,7 @@ class GridStrategy(BaseStrategy):
             target_qty=target_order_pair,
             expected_spread_pct=spread_pct,
             spread_direction=level.direction,
-            grid_position_manager=self.grid_position_manager
+            algorithm=self.algorithm
         )
         
         # register execution in active target
@@ -381,7 +368,10 @@ class GridStrategy(BaseStrategy):
         """
         处理订单事件 - 扩展版本
 
-        同时更新 BaseStrategy 和 GridPositionManager 的状态
+        事件驱动更新链：
+        Order → ExecutionManager (更新 ExecutionTarget)
+             → GridPositionManager (更新 GridPosition)
+             → BaseStrategy (更新 positions)
 
         Args:
             order_event: OrderEvent 对象
@@ -389,50 +379,11 @@ class GridStrategy(BaseStrategy):
         # 调用父类的订单事件处理（更新 positions）
         super().on_order_event(order_event)
 
+        # 调用 ExecutionManager 的订单事件处理（更新 ExecutionTarget）
+        self.execution_manager.on_order_event(order_event)
+
         # 调用 GridPositionManager 的订单事件处理（更新网格持仓）
         self.grid_position_manager.on_order_event(order_event)
-
-        # 检查平仓是否完成
-        if order_event.status == OrderStatus.Filled:
-            self._check_grid_close_completion(order_event)
-
-
-    def _check_grid_close_completion(self, order_event):
-        """
-        检查网格线平仓是否完成
-
-        如果网格线的所有持仓都已平仓，标记为 CLOSED
-
-        Args:
-            order_event: OrderEvent 对象
-        """
-        order_id = order_event.order_id
-
-        # 查找订单所属的网格线
-        group_id = self.grid_position_manager.order_to_group.get(order_id)
-        if not group_id:
-            return
-
-        grid_info = self.grid_position_manager.order_group_to_grid.get(group_id)
-        if not grid_info:
-            return
-
-        pair_symbol, grid_id = grid_info
-        position = self.grid_position_manager.get_grid_position(pair_symbol, grid_id)
-
-        if not position:
-            return
-
-        # 如果是平仓订单（status = CLOSING）且持仓接近 0，标记为 CLOSED
-        if position.status == "CLOSING":
-            if abs(position.actual_crypto_qty) < 1e-8 and abs(position.actual_stock_qty) < 1e-8:
-                self.grid_position_manager.close_grid_position(pair_symbol, grid_id)
-
-                self.algorithm.debug(
-                    f"✅ Grid {grid_id} fully closed | "
-                    f"Final Crypto: {position.actual_crypto_qty:.4f} | "
-                    f"Final Stock: {position.actual_stock_qty:.4f}"
-                )
 
     # ============================================================================
     #                      统计和报告
