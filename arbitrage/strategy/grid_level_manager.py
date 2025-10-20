@@ -78,7 +78,7 @@ class GridLevelManager:
         levels = self.grid_levels.get(pair_symbol, [])
 
         for level in levels:
-            if level.level_type == "ENTRY" and level.paired_exit_level_id:
+            if level.type == "ENTRY" and level.paired_exit_level_id:
                 self.entry_exit_pairs[pair_symbol][level.level_id] = level.paired_exit_level_id
 
     def validate_grid_levels(self, pair_symbol: Tuple[Symbol, Symbol],
@@ -108,8 +108,8 @@ class GridLevelManager:
             raise ValueError(f"No grid levels defined for {pair_symbol}")
 
         # 分类进场线和出场线
-        entry_levels = [l for l in levels if l.level_type == "ENTRY"]
-        exit_levels = [l for l in levels if l.level_type == "EXIT"]
+        entry_levels = [l for l in levels if l.type == "ENTRY"]
+        exit_levels = [l for l in levels if l.type == "EXIT"]
 
         if not entry_levels:
             raise ValueError(f"No entry levels defined for {pair_symbol}")
@@ -195,7 +195,7 @@ class GridLevelManager:
             >>> profit = calculate_expected_profit(entry_at_neg1, exit_at_pos2)
             >>> # Returns: 0.03 (3%)
         """
-        return abs(exit_level.trigger_spread_pct - entry_level.trigger_spread_pct)
+        return abs(exit_level.spread_pct - entry_level.spread_pct)
 
     def estimate_total_fees(self, crypto_fee_pct: float, stock_fee_pct: float) -> float:
         """
@@ -218,14 +218,76 @@ class GridLevelManager:
         """
         return (crypto_fee_pct + stock_fee_pct) * 2
 
+    def get_active_level(self, pair_symbol: Tuple[Symbol, Symbol],
+                         spread_pct: float) -> Optional[GridLevel]:
+        """
+        获取当前活跃的网格线（ENTRY 或 EXIT）
+
+        核心概念：对于给定的价差，只有一个活跃的网格线
+        - 价差在某个区间 → 触发对应的 ENTRY 线
+        - 价差在另一个区间 → 触发对应的 EXIT 线
+
+        触发规则（根据方向）:
+        - LONG_SPREAD:
+          * ENTRY: spread_pct <= level.spread_pct (价差为负时触发进场)
+          * EXIT: spread_pct >= level.spread_pct (价差回正时触发出场)
+        - SHORT_SPREAD:
+          * ENTRY: spread_pct >= level.spread_pct (价差为正时触发进场)
+          * EXIT: spread_pct <= level.spread_pct (价差回负时触发出场)
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol)
+            spread_pct: 当前价差百分比
+
+        Returns:
+            被触发的 GridLevel (ENTRY or EXIT)，如果没有则返回 None
+
+        Note:
+            如果多个网格线同时触发，返回最接近当前价差的那个
+        """
+        levels = self.grid_levels.get(pair_symbol, [])
+        valid_levels = [l for l in levels if l.is_valid]
+
+        triggered_levels = []
+
+        for level in valid_levels:
+            is_triggered = False
+
+            # 根据方向和类型判断是否触发
+            if level.direction == "LONG_SPREAD":
+                if level.type == "ENTRY":
+                    # 做多价差：价差为负时触发进场（spread_pct <= trigger）
+                    is_triggered = spread_pct <= level.spread_pct
+                elif level.type == "EXIT":
+                    # 做多价差：价差回正时触发出场（spread_pct >= trigger）
+                    is_triggered = spread_pct >= level.spread_pct
+
+            elif level.direction == "SHORT_SPREAD":
+                if level.type == "ENTRY":
+                    # 做空价差：价差为正时触发进场（spread_pct >= trigger）
+                    is_triggered = spread_pct >= level.spread_pct
+                elif level.type == "EXIT":
+                    # 做空价差：价差回负时触发出场（spread_pct <= trigger）
+                    is_triggered = spread_pct <= level.spread_pct
+
+            if is_triggered:
+                triggered_levels.append(level)
+
+        # 如果有多个触发，返回最接近当前价差的（最激进的）
+        if triggered_levels:
+            # 按距离排序（距离 = |spread_pct - level.spread_pct|）
+            triggered_levels.sort(key=lambda l: abs(spread_pct - l.spread_pct))
+            return triggered_levels[0]
+
+        return None
+
     def get_triggered_entry_level(self, pair_symbol: Tuple[Symbol, Symbol],
                                    spread_pct: float) -> Optional[GridLevel]:
         """
         获取被触发的进场线（如果有）
 
-        触发规则（根据方向）:
-        - LONG_CRYPTO: spread_pct <= entry_level.trigger_spread_pct (价差为负时触发)
-        - SHORT_CRYPTO: spread_pct >= entry_level.trigger_spread_pct (价差为正时触发)
+        DEPRECATED: 使用 get_active_level() 替代
+        保留此方法用于向后兼容
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -233,32 +295,10 @@ class GridLevelManager:
 
         Returns:
             被触发的 GridLevel，如果没有则返回 None
-
-        Note:
-            如果多个网格线同时触发，返回最接近当前价差的那个
         """
-        levels = self.grid_levels.get(pair_symbol, [])
-        entry_levels = [l for l in levels if l.level_type == "ENTRY" and l.is_valid]
-
-        triggered_levels = []
-
-        for level in entry_levels:
-            # 根据方向判断是否触发
-            if level.direction == "LONG_CRYPTO":
-                # 做多 crypto：价差为负时触发（spread_pct <= trigger）
-                if spread_pct <= level.trigger_spread_pct:
-                    triggered_levels.append(level)
-            elif level.direction == "SHORT_CRYPTO":
-                # 做空 crypto：价差为正时触发（spread_pct >= trigger）
-                if spread_pct >= level.trigger_spread_pct:
-                    triggered_levels.append(level)
-
-        # 如果有多个触发，返回最接近当前价差的（最激进的）
-        if triggered_levels:
-            # 按距离排序（距离 = |spread_pct - trigger_spread_pct|）
-            triggered_levels.sort(key=lambda l: abs(spread_pct - l.trigger_spread_pct))
-            return triggered_levels[0]
-
+        level = self.get_active_level(pair_symbol, spread_pct)
+        if level and level.type == "ENTRY":
+            return level
         return None
 
     def get_triggered_exit_levels(self, pair_symbol: Tuple[Symbol, Symbol],
@@ -267,7 +307,8 @@ class GridLevelManager:
         """
         获取被触发的出场线列表
 
-        根据活跃的网格线ID，查找对应的出场线，并检查是否触发
+        DEPRECATED: 使用 get_active_level() 替代
+        保留此方法用于向后兼容
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -276,53 +317,11 @@ class GridLevelManager:
 
         Returns:
             被触发的 GridLevel 列表
-
-        Note:
-            - 多个网格线可能同时触发出场
-            - 只返回与活跃网格线配对的出场线
         """
-        if not active_grid_ids:
-            return []
-
-        levels = self.grid_levels.get(pair_symbol, [])
-        entry_exit_pairs = self.entry_exit_pairs.get(pair_symbol, {})
-
-        triggered_exit_levels = []
-
-        for grid_id in active_grid_ids:
-            # 从 grid_id 中提取 level_id（格式：{crypto}_{stock}_{level_id}）
-            # 简化实现：假设 grid_id 的最后部分是 level_id
-            parts = grid_id.split("_")
-            if len(parts) < 3:
-                continue
-            level_id = "_".join(parts[2:])  # 重新组合 level_id（可能包含下划线）
-
-            # 查找配对的出场线ID
-            exit_level_id = entry_exit_pairs.get(level_id)
-            if not exit_level_id:
-                continue
-
-            # 查找出场线配置
-            exit_level = next(
-                (l for l in levels if l.level_id == exit_level_id and l.level_type == "EXIT"),
-                None
-            )
-
-            if not exit_level:
-                continue
-
-            # 检查是否触发
-            # 根据方向判断
-            if exit_level.direction == "LONG_CRYPTO":
-                # 做多 crypto 的出场：价差回升到正值（spread_pct >= trigger）
-                if spread_pct >= exit_level.trigger_spread_pct:
-                    triggered_exit_levels.append(exit_level)
-            elif exit_level.direction == "SHORT_CRYPTO":
-                # 做空 crypto 的出场：价差回落到负值（spread_pct <= trigger）
-                if spread_pct <= exit_level.trigger_spread_pct:
-                    triggered_exit_levels.append(exit_level)
-
-        return triggered_exit_levels
+        level = self.get_active_level(pair_symbol, spread_pct)
+        if level and level.type == "EXIT":
+            return [level]
+        return []
 
     def get_level_by_id(self, pair_symbol: Tuple[Symbol, Symbol], level_id: str) -> Optional[GridLevel]:
         """
@@ -365,8 +364,8 @@ class GridLevelManager:
         if not levels:
             return f"No grid levels configured for {pair_symbol[0].value} <-> {pair_symbol[1].value}"
 
-        entry_levels = [l for l in levels if l.level_type == "ENTRY"]
-        exit_levels = [l for l in levels if l.level_type == "EXIT"]
+        entry_levels = [l for l in levels if l.type == "ENTRY"]
+        exit_levels = [l for l in levels if l.type == "EXIT"]
 
         summary_lines = [
             f"Grid Levels for {pair_symbol[0].value} <-> {pair_symbol[1].value}:",
@@ -382,15 +381,15 @@ class GridLevelManager:
 
             if exit_level:
                 summary_lines.append(
-                    f"  {entry.level_id} ({entry.trigger_spread_pct*100:+.2f}%) -> "
-                    f"{exit_level.level_id} ({exit_level.trigger_spread_pct*100:+.2f}%) | "
+                    f"  {entry.level_id} ({entry.spread_pct*100:+.2f}%) -> "
+                    f"{exit_level.level_id} ({exit_level.spread_pct*100:+.2f}%) | "
                     f"Profit: {entry.expected_profit_pct*100:.3f}% | "
                     f"Fees: {entry.estimated_fee_pct*100:.3f}% | "
                     f"Valid: {entry.is_valid}"
                 )
             else:
                 summary_lines.append(
-                    f"  {entry.level_id} ({entry.trigger_spread_pct*100:+.2f}%) -> "
+                    f"  {entry.level_id} ({entry.spread_pct*100:+.2f}%) -> "
                     f"EXIT NOT FOUND ({exit_id})"
                 )
 

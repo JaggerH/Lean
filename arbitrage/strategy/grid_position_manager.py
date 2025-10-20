@@ -9,7 +9,7 @@ Grid Position Manager - 网格持仓追踪管理器
 """
 from AlgorithmImports import QCAlgorithm, Symbol, OrderEvent, OrderStatus
 from typing import Dict, List, Tuple, Optional
-from .grid_models import GridLevel, GridPosition, generate_grid_id
+from .grid_models import GridLevel, GridPosition
 
 
 class GridPositionManager:
@@ -47,7 +47,7 @@ class GridPositionManager:
     #                      持仓状态查询
     # ============================================================================
 
-    def has_reached_target(self, pair_symbol: Tuple[Symbol, Symbol], level: GridLevel) -> bool:
+    def has_reached_target(self, level: GridLevel) -> bool:
         """
         检查指定网格线的持仓是否达到目标
 
@@ -58,18 +58,18 @@ class GridPositionManager:
         - 检查 delta 是否低于 lot_size（低于则认为已达到目标）
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            level: 网格线配置
+            level: 网格线配置（包含 pair_symbol 和 level_id）
 
         Returns:
             True if position reached target, False otherwise
         """
+        pair_symbol = level.pair_symbol
         crypto_symbol, stock_symbol = pair_symbol
-        grid_id = generate_grid_id(pair_symbol, level.level_id)
+        level_id = level.level_id  # 直接使用 level_id
 
         # 1. 计算目标持仓（使用 CalculateOrderPair）
         position_size_pct = level.position_size_pct
-        if level.direction == "SHORT_CRYPTO":
+        if level.direction == "SHORT_SPREAD":
             position_size_pct = -position_size_pct
 
         target_order_pair = self.algorithm.calculate_order_pair(
@@ -80,11 +80,11 @@ class GridPositionManager:
 
         if not target_order_pair:
             # 无法计算目标（可能是买入力不足），认为已达到目标
-            self.debug(f"⚠️ Grid {grid_id} cannot calculate target, treating as reached")
+            self.debug(f"⚠️ Grid {level_id} cannot calculate target, treating as reached")
             return True
 
         # 2. 获取该网格线的当前持仓（从 GridPosition）
-        grid_position = self.get_grid_position(pair_symbol, grid_id)
+        grid_position = self.get_grid_position(level)
 
         if not grid_position:
             # 网格线不存在，说明还没有持仓，可以开仓
@@ -92,22 +92,22 @@ class GridPositionManager:
 
 
         # 4. 检查 delta 是否低于 lot_size（使用 IsPairQuantityFilled）
-        is_below_lotsize = self.algorithm.is_pair_quantity_filled(
+        is_filled = self.algorithm.is_pair_quantity_filled(
             crypto_symbol, target_order_pair[crypto_symbol], grid_position.quantity[0],
             stock_symbol, target_order_pair[stock_symbol], grid_position.quantity[1],
             1
         )
 
         # 如果 delta 低于 lot_size，说明该网格线已达到目标
-        if is_below_lotsize:
+        if is_filled:
             self.debug(
-                f"⚠️ Grid {grid_id} reached target | "
+                f"⚠️ Grid {level_id} reached target | "
                 f"Current: {grid_position.quantity[0]:.4f}/{grid_position.quantity[1]:.4f} | "
                 f"Target: {target_order_pair[crypto_symbol]:.4f}/{target_order_pair[stock_symbol]:.4f} | "
                 f"Delta: {target_order_pair[crypto_symbol] - grid_position.quantity[0]:.4f}/{target_order_pair[stock_symbol] - grid_position.quantity[1]:.4f}"
             )
 
-        return is_below_lotsize
+        return is_filled
 
     # ============================================================================
     #                      订单事件处理
@@ -195,54 +195,86 @@ class GridPositionManager:
     #                      GridPosition 管理
     # ============================================================================
 
-    def get_or_create_grid_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                                    grid_id: str, level: GridLevel) -> GridPosition:
+    def get_or_create_grid_position(self, level: GridLevel) -> GridPosition:
         """
         获取或创建 GridPosition
 
         如果网格线不存在，创建新的 GridPosition
+        所有需要的信息都从 level 中获取
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
-            level: 网格线配置
+            level: 网格线配置（包含 pair_symbol 和 level_id）
 
         Returns:
             GridPosition 对象
         """
+        # 从 level 中提取需要的信息
+        pair_symbol = level.pair_symbol
+        level_id = level.level_id  # 直接使用 level_id
+
         if pair_symbol not in self.grid_positions:
             self.grid_positions[pair_symbol] = {}
 
-        if grid_id in self.grid_positions[pair_symbol]:
-            return self.grid_positions[pair_symbol][grid_id]
+        if level_id in self.grid_positions[pair_symbol]:
+            return self.grid_positions[pair_symbol][level_id]
 
         # 创建新的 GridPosition
         position = GridPosition(
-            grid_id=grid_id,
             pair_symbol=pair_symbol,
             level=level
         )
 
-        self.grid_positions[pair_symbol][grid_id] = position
+        self.grid_positions[pair_symbol][level_id] = position
 
-        self.debug(f"🆕 Created grid position {grid_id}")
+        self.debug(f"🆕 Created grid position {level_id}")
 
         return position
 
-    def get_grid_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                         grid_id: str) -> Optional[GridPosition]:
+    def get_grid_position(self, level: GridLevel) -> Optional[GridPosition]:
         """
         获取指定网格线的持仓
 
+        可以通过 entry_level 或 exit_level 找到对应的持仓
+        - 如果是 ENTRY level，直接通过 level_id 查找
+        - 如果是 EXIT level，通过 paired_exit_level_id 反向查找
+
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
+            level: 网格线配置（ENTRY 或 EXIT）
 
         Returns:
             GridPosition 或 None
         """
+        pair_symbol = level.pair_symbol
         pair_positions = self.grid_positions.get(pair_symbol, {})
-        return pair_positions.get(grid_id)
+
+        if level.type == "ENTRY":
+            # 如果是进场线，直接通过 level_id 查找
+            level_id = level.level_id
+            return pair_positions.get(level_id)
+
+        elif level.type == "EXIT":
+            # 如果是出场线，需要找到配对的进场线的 level_id
+            # 遍历所有持仓，查找 paired_exit_level_id 匹配的
+            for level_id, position in pair_positions.items():
+                if position.level.paired_exit_level_id == level.level_id:
+                    return position
+
+        return None
+
+    def find_position_by_level(self, level: GridLevel) -> Optional[GridPosition]:
+        """
+        通过 GridLevel 查找对应的 GridPosition
+
+        DEPRECATED: 使用 get_grid_position() 替代
+        保留此方法用于向后兼容
+
+        Args:
+            level: GridLevel 对象（ENTRY 或 EXIT）
+
+        Returns:
+            GridPosition 或 None
+        """
+        return self.get_grid_position(level)
 
     def get_all_grid_positions(self, pair_symbol: Tuple[Symbol, Symbol]) -> Dict[str, GridPosition]:
         """

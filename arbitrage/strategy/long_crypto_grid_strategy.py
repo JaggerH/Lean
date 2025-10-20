@@ -76,18 +76,20 @@ class LongCryptoGridStrategy(GridStrategy):
         # 创建单一entry/exit grid level
         entry_level = GridLevel(
             level_id="entry_long_crypto",
-            level_type="ENTRY",
-            trigger_spread_pct=self.entry_threshold,
+            type="ENTRY",
+            pair_symbol=pair_symbol,
+            spread_pct=self.entry_threshold,
             paired_exit_level_id="exit_long_crypto",
             position_size_pct=self.position_size_pct,
-            direction="LONG_CRYPTO"
+            direction="LONG_SPREAD"
         )
 
         exit_level = GridLevel(
             level_id="exit_long_crypto",
-            level_type="EXIT",
-            trigger_spread_pct=self.exit_threshold,
-            direction="LONG_CRYPTO"
+            type="EXIT",
+            pair_symbol=pair_symbol,
+            spread_pct=self.exit_threshold,
+            direction="LONG_SPREAD"
         )
 
         # 使用GridStrategy的setup方法配置grid levels

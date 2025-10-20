@@ -7,7 +7,7 @@ Grid Strategy - 网格交易策略基类
 from AlgorithmImports import QCAlgorithm, Symbol, OrderStatus
 from typing import Tuple, List, Dict, Optional, TYPE_CHECKING
 from .base_strategy import BaseStrategy
-from .grid_models import GridLevel, generate_grid_id
+from .grid_models import GridLevel, GridPosition, generate_order_tag
 from .grid_level_manager import GridLevelManager
 from .grid_position_manager import GridPositionManager
 from .execution_manager import ExecutionManager
@@ -108,7 +108,6 @@ class GridStrategy(BaseStrategy):
         1. 市场是否同时开盘（crypto 和 stock 都必须在交易时段）
         2. 是否有active ExecutionTarget（挂单检查 - ExecutionManager）
         3. 持仓是否达到目标（持仓检查 - GridPositionManager）
-        4. 是否有孤立仓位（失败重试检查）
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -116,10 +115,10 @@ class GridStrategy(BaseStrategy):
             level: 触发的网格线配置
 
         Returns:
-            grid_id if should open, None otherwise
+            True if should open, False otherwise
         """
         crypto_symbol, stock_symbol = pair_symbol
-        grid_id = generate_grid_id(pair_symbol, level.level_id)
+        level_id = level.level_id
 
         # === 1. 市场开盘检查 ===
         crypto_exchange_open = self.algorithm.securities[crypto_symbol].exchange.exchange_open
@@ -127,60 +126,40 @@ class GridStrategy(BaseStrategy):
 
         if not (crypto_exchange_open and stock_exchange_open):
             self.algorithm.debug(
-                f"⚠️ Market not open | Grid: {grid_id} | "
+                f"⚠️ Market not open | Level: {level_id} | "
                 f"Crypto: {crypto_exchange_open}, Stock: {stock_exchange_open}"
             )
-            return None
+            return False
 
         # === 2. 挂单检查（ExecutionManager）===
-        if self.execution_manager.has_active_execution(pair_symbol, grid_id):
-            # self.algorithm.debug(f"⚠️ Grid {grid_id} has active execution, skipping")
-            return None
+        if self.execution_manager.has_active_execution(level):
+            # self.algorithm.debug(f"⚠️ Level {level_id} has active execution, skipping open")
+            return False
 
         # === 3. 持仓检查（GridPositionManager）===
-        if self.grid_position_manager.has_reached_target(pair_symbol, level):
-            self.algorithm.debug(f"⚠️ Grid {grid_id} position reached target, skipping")
-            return None
+        if self.grid_position_manager.has_reached_target(level):
+            self.algorithm.debug(f"⚠️ Level {level_id} position reached target, skipping open")
+            return False
 
-        # === 4. 检查失败订单，允许重试 ===
-        grid_position = self.grid_position_manager.get_grid_position(pair_symbol, grid_id)
-
-        # if grid_position:
-            # 检查是否有孤立仓位（单边持仓）
-            # if self.grid_position_manager._has_orphan_position(grid_position):
-            #     self.algorithm.debug(
-            #         f"⚠️ Grid {grid_id} has orphan position, cannot retry | "
-            #         f"Crypto: {grid_position.actual_crypto_qty:.4f}, "
-            #         f"Stock: {grid_position.actual_stock_qty:.4f}"
-            #     )
-            #     return None
-
-            # 重置状态，允许重试
-            # self.algorithm.debug(f"🔄 Retrying failed grid {grid_id}")
-
-        # === 5. 创建 GridPosition（如果不存在）===
-        # 提前创建是为了追踪后续的订单组
-        if not grid_position:
-            self.grid_position_manager.get_or_create_grid_position(pair_symbol, grid_id, level)
-
-        return grid_id
+        return True
 
     def should_close_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                             spread_pct: float) -> List[str]:
+                             spread_pct: float, level: GridLevel) -> bool:
         """
-        判断哪些网格线需要平仓（策略层协调）
+        判断是否需要平仓（策略层协调）
 
         检查逻辑:
-        1. 市场是否同时开盘
-        2. 遍历活跃网格线（FILLED状态）
-        3. 检查是否有active ExecutionTarget（跳过正在执行的）
+        1. 市场是否同时开盘（crypto 和 stock 都必须在交易时段）
+        2. 是否有对应的持仓（通过 get_grid_position）
+        3. 是否有active ExecutionTarget（挂单检查 - ExecutionManager）
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
             spread_pct: 当前价差百分比
+            level: 触发的出场线配置 (EXIT level)
 
         Returns:
-            List of grid_ids that should be closed
+            True if should close, False otherwise
         """
         crypto_symbol, stock_symbol = pair_symbol
 
@@ -189,23 +168,26 @@ class GridStrategy(BaseStrategy):
         stock_exchange_open = self.algorithm.securities[stock_symbol].exchange.exchange_open
 
         if not (crypto_exchange_open and stock_exchange_open):
-            return []
+            self.algorithm.debug(
+                f"⚠️ Market not open for exit | "
+                f"Crypto: {crypto_exchange_open}, Stock: {stock_exchange_open}"
+            )
+            return False
 
-        # === 2. 获取活跃网格线 ===
-        pair_positions = self.grid_position_manager.grid_positions.get(pair_symbol, {})
+        # === 2. 检查是否有对应的持仓 ===
+        position = self.grid_position_manager.get_grid_position(level)
+        if not position:
+            # 没有持仓，无需平仓
+            return False
 
-        closable_grids = []
+        level_id = level.level_id
 
-        for grid_id, position in pair_positions.items():
-            # 只有 FILLED 状态的网格线可以平仓
-            # === 3. 检查是否有active ExecutionTarget ===
-            if self.execution_manager.has_active_execution(pair_symbol, grid_id):
-                self.algorithm.debug(f"⚠️ Grid {grid_id} has active execution, skipping close")
-                continue
+        # === 3. 挂单检查（ExecutionManager）===
+        if self.execution_manager.has_active_execution(level):
+            self.algorithm.debug(f"⚠️ Level {level_id} has active execution, skipping close")
+            return False
 
-            closable_grids.append(grid_id)
-
-        return closable_grids
+        return True
 
     def on_data(self, data):
         """
@@ -226,63 +208,54 @@ class GridStrategy(BaseStrategy):
 
     def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
-        处理价差更新 - 网格交易逻辑
+        处理价差更新 - 网格交易逻辑（简化版）
+
+        核心逻辑：
+        1. 获取当前活跃的网格线（唯一的 ENTRY 或 EXIT level）
+        2. 如果是 ENTRY，检查是否应该开仓
+        3. 如果是 EXIT，检查是否应该平仓
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
             spread_pct: Spread 百分比
         """
-        crypto_symbol, stock_symbol = pair_symbol
+        # 获取当前活跃的网格线（唯一）
+        level = self.grid_level_manager.get_active_level(pair_symbol, spread_pct)
 
-        # === 1. 检查是否触发进场线 ===
-        entry_level = self.grid_level_manager.get_triggered_entry_level(pair_symbol, spread_pct)
+        if not level:
+            # 没有活跃的网格线
+            return
 
-        if entry_level:
+        # 根据 level 类型执行相应操作
+        if level.type == "ENTRY":
             # 检查是否应该开仓
-            grid_id = self.should_open_position(pair_symbol, spread_pct, entry_level)
+            if self.should_open_position(pair_symbol, spread_pct, level):
+                self._open_grid_position(pair_symbol, level, spread_pct)
 
-            if grid_id:
-                self._open_grid_position(pair_symbol, grid_id, entry_level, spread_pct)
+        elif level.type == "EXIT":
+            # 检查是否应该平仓
+            if self.should_close_position(pair_symbol, spread_pct, level):
+                # 通过 level 找到对应的持仓
+                position = self.grid_position_manager.get_grid_position(level)
+                if position:
+                    self._close_grid_position(position, spread_pct)
 
-        # === 2. 检查是否触发出场线 ===
-        # 获取可以平仓的网格线ID（策略层判断）
-        closable_grid_ids = self.should_close_position(pair_symbol, spread_pct)
-
-        if closable_grid_ids:
-            # 查找被触发的出场线
-            exit_levels = self.grid_level_manager.get_triggered_exit_levels(
-                pair_symbol, spread_pct, closable_grid_ids
-            )
-
-            # 对每个触发的出场线，检查对应的网格线是否需要平仓
-            for exit_level in exit_levels:
-                # 找到配对的进场线对应的 grid_id
-                # 遍历可平仓网格，检查是否匹配出场线
-                for grid_id in closable_grid_ids:
-                    position = self.grid_position_manager.get_grid_position(pair_symbol, grid_id)
-                    if not position:
-                        continue
-
-                    # 检查是否是配对的网格线
-                    if position.level.paired_exit_level_id == exit_level.level_id:
-                        self._close_grid_position(pair_symbol, grid_id, spread_pct)
-
-    def _open_grid_position(self, pair_symbol: Tuple[Symbol, Symbol], grid_id: str,
+    def _open_grid_position(self, pair_symbol: Tuple[Symbol, Symbol],
                            level: GridLevel, spread_pct: float):
         """
         开仓 - 委托给执行层
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
             level: 网格线配置
             spread_pct: 当前价差百分比
         """
         crypto_symbol, stock_symbol = pair_symbol
+        level_id = level.level_id
 
         # ✅ 计算目标数量（Strategy职责）
         position_size_pct = level.position_size_pct
-        if level.direction == "SHORT_CRYPTO":
+        if level.direction == "SHORT_SPREAD":
             position_size_pct = -position_size_pct
 
         target_order_pair = self.algorithm.calculate_order_pair(
@@ -291,54 +264,60 @@ class GridStrategy(BaseStrategy):
             position_size_pct
         )
 
+        # ✅ 计算增量数量（delta = 目标 - 当前持仓）
+        grid_position = self.grid_position_manager.get_or_create_grid_position(level)
+        current_crypto_qty, current_stock_qty = grid_position.quantity
+
+        delta_order_pair = {
+            crypto_symbol: target_order_pair[crypto_symbol] - current_crypto_qty,
+            stock_symbol: target_order_pair[stock_symbol] - current_stock_qty
+        }
+
         # ✅ 构建执行目标
+        # 转换方向：LONG_SPREAD -> LONG_CRYPTO, SHORT_SPREAD -> SHORT_CRYPTO
+        execution_direction = "LONG_CRYPTO" if level.direction == "LONG_SPREAD" else "SHORT_CRYPTO"
+
         execution_target = ExecutionTarget(
             pair_symbol=pair_symbol,
-            grid_id=grid_id,
-            target_qty=target_order_pair,
+            grid_id=level_id,  # 直接使用 level_id
+            target_qty=delta_order_pair,
             expected_spread_pct=spread_pct,
-            spread_direction=level.direction,
+            spread_direction=execution_direction,
             algorithm=self.algorithm
         )
-        
+
         # register execution in active target
         self.execution_manager.register_execution_target(execution_target)
         # ✅ 委托给执行层（完全交给 ExecutionManager）
         self.execution_manager.execute(execution_target)
 
-    def _close_grid_position(self, pair_symbol: Tuple[Symbol, Symbol], grid_id: str,
-                            spread_pct: float):
+    def _close_grid_position(self, position: GridPosition, spread_pct: float):
         """
         平仓 - 委托给执行层
 
         根据 GridPosition 的实际持仓数量平仓
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
+            position: GridPosition 对象
             spread_pct: 当前价差百分比
         """
+        pair_symbol = position.pair_symbol
         crypto_symbol, stock_symbol = pair_symbol
+        level_id = position.grid_id  # grid_id 现在就是 level_id
 
-        # ✅ 获取网格线持仓
-        position = self.grid_position_manager.get_grid_position(pair_symbol, grid_id)
-        if not position:
-            self.algorithm.debug(f"⚠️ Grid position {grid_id} not found")
-            return
-
-        crypto_qty = position.actual_crypto_qty
-        stock_qty = position.actual_stock_qty
+        # 获取当前持仓数量
+        crypto_qty, stock_qty = position.quantity
 
         # 检查是否有足够的仓位可以平仓
         if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
             self.algorithm.debug(
-                f"⚠️ Grid {grid_id} position too small to close | "
+                f"⚠️ Level {level_id} position too small to close | "
                 f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
             )
             return
 
         self.algorithm.debug(
-            f"🔍 Closing grid position | Grid: {grid_id} | "
+            f"🔍 Closing grid position | Level: {level_id} | "
             f"Spread: {spread_pct*100:.2f}% | "
             f"Crypto: {crypto_qty:.2f} | Stock: {stock_qty:.2f}"
         )
@@ -349,17 +328,17 @@ class GridStrategy(BaseStrategy):
             stock_symbol: 0.0
         }
 
+        # 转换方向：LONG_SPREAD -> LONG_CRYPTO, SHORT_SPREAD -> SHORT_CRYPTO
+        execution_direction = "LONG_CRYPTO" if position.level.direction == "LONG_SPREAD" else "SHORT_CRYPTO"
+
         execution_target = ExecutionTarget(
             pair_symbol=pair_symbol,
-            grid_id=grid_id,
+            grid_id=level_id,  # 直接使用 level_id
             target_qty=target_order_pair,
             expected_spread_pct=spread_pct,
-            spread_direction=position.level.direction,
+            spread_direction=execution_direction,
             grid_position_manager=self.grid_position_manager
         )
-
-        # ✅ 标记网格线为正在平仓
-        position.status = "CLOSING"
 
         # ✅ 委托给执行层
         self.execution_manager.execute(execution_target)

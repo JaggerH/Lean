@@ -40,7 +40,7 @@ class ExecutionManager:
         """
         self.algorithm = algorithm
         self.debug_enabled = debug
-        # Track active ExecutionTargets: key = (pair_symbol, grid_id)
+        # Track active ExecutionTargets: key = (pair_symbol, level_id)
         self.active_targets: Dict[Tuple[Tuple[Symbol, Symbol], str], ExecutionTarget] = {}
         
     # ============================================================================
@@ -48,17 +48,18 @@ class ExecutionManager:
     # ============================================================================
     
     def register_execution_target(self, target: ExecutionTarget):
-        grid_id = target.grid_id
+        level_id = target.grid_id  # grid_id 现在就是 level_id
         execution_key = target.get_execution_key()
         target.created_time = self.algorithm.UtcTime
         self.active_targets[execution_key] = target
-        self._debug(f"📝 Registered ExecutionTarget for grid {grid_id}")
+        self._debug(f"📝 Registered ExecutionTarget for level {level_id}")
+        self._debug(f"📝 Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}")
 
     def get_active_target_by_order_event(self, order_event: OrderEvent) -> Optional[Tuple[ExecutionTarget, Tuple]]:
         """
         通过订单事件查找对应的 ExecutionTarget
 
-        使用 Order.Tag (grid_id) 直接查找，避免异步时序问题
+        使用 Order.Tag (level_id) 直接查找，避免异步时序问题
 
         Args:
             order_event: OrderEvent对象
@@ -71,21 +72,21 @@ class ExecutionManager:
         # 通过 Transactions 获取 Order 对象
         order = self.algorithm.transactions.get_order_by_id(order_id)
 
-        # Order.Tag 就是 grid_id
-        grid_id = order.tag
-        if not grid_id:
+        # Order.Tag 就是 level_id
+        level_id = order.tag
+        if not level_id:
             self.algorithm.error(f"❌ Order {order_id} has no tag")
             return None
 
-        # 遍历 active_targets 查找匹配的 grid_id
+        # 遍历 active_targets 查找匹配的 level_id
         for execution_key, target in self.active_targets.items():
-            if target.grid_id == grid_id:
+            if target.grid_id == level_id:
                 return (target, execution_key)
 
         # 找不到说明逻辑出现问题，记录错误
         self.algorithm.error(
             f"❌ CRITICAL: Cannot find ExecutionTarget for order {order_id} | "
-            f"Grid ID: {grid_id} | Symbol: {order_event.symbol.value} | "
+            f"Level ID: {level_id} | Symbol: {order_event.symbol.value} | "
             f"Status: {order_event.status} | Active targets: {len(self.active_targets)}"
         )
         return None
@@ -104,7 +105,7 @@ class ExecutionManager:
             target: ExecutionTarget对象，包含目标数量和执行参数
         """
         pair_symbol = target.pair_symbol
-        grid_id = target.grid_id
+        level_id = target.grid_id  # grid_id 现在就是 level_id
         crypto_symbol, stock_symbol = pair_symbol
 
         execution_key = target.get_execution_key()
@@ -118,13 +119,13 @@ class ExecutionManager:
 
         # === 步骤 2: 单腿满填检测（最高优先级）===
         if target.is_one_leg_filled():
-            # self._debug(f"🎯 Detected one-leg filled for grid {grid_id}, handling sweep order")
+            # self._debug(f"🎯 Detected one-leg filled for level {level_id}, handling sweep order")
             target.handle_one_leg_order()
             return
 
         # === 步骤 3: 双腿市值误差检测 ===
         if target.is_quantity_filled():
-            self._debug(f"✅ Grid {grid_id} reached target with acceptable error, marking as completed")
+            self._debug(f"✅ Level {level_id} reached target with acceptable error, marking as completed")
             target.status = ExecutionStatus.Filled
             del self.active_targets[execution_key]
             return
@@ -133,14 +134,14 @@ class ExecutionManager:
         result = target.calculate_executable_quantity(self.debug_enabled)
 
         if not result:
-            self._debug(f"⏸️ Grid {grid_id} no valid execution opportunity this tick")
+            # self._debug(f"⏸️ Level {level_id} no valid execution opportunity this tick")
             return
 
         leg1, leg2 = result
 
         # === 步骤 5: 预先创建 OrderGroup（占位，解决异步竞态条件）===
         order_group = OrderGroup(
-            grid_id=grid_id,
+            grid_id=level_id,
             pair_symbol=pair_symbol,
             order_tickets=[],  # 空列表，稍后在 on_order_event 中填充
             type=OrderGroupType.MarketOrder,
@@ -151,15 +152,14 @@ class ExecutionManager:
         target.order_groups.append(order_group)  # 立即添加
 
         # === 步骤 6: 提交订单（不保存 tickets 返回值）===
-        self._place_order(leg1, leg2, grid_id)
+        self._place_order(leg1, leg2, level_id)
 
         # === 步骤 7: 更新ExecutionTarget状态 ===
         target.status = ExecutionStatus.Submitted
 
-        self.algorithm.debug(
-            f"📤 Submitted orders for grid {grid_id} | "
-            f"{leg1[0].value}: {leg1[1]:.4f}, {leg2[0].value}: {leg2[1]:.4f}"
-        )
+        # self.algorithm.debug( f"📤 Submitted orders for level {level_id}")
+        # self.algorithm.debug( f"Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}")
+        # self.algorithm.debug( f"PlaceOrder: {leg1[0].value}: {leg1[1]:.4f}, {leg2[0].value}: {leg2[1]:.4f}" )
 
     def _validate_preconditions(self, pair_symbol: Tuple[Symbol, Symbol]) -> bool:
         """
@@ -203,7 +203,7 @@ class ExecutionManager:
         self,
         leg1: Tuple[Symbol, float],
         leg2: Tuple[Symbol, float],
-        grid_id: str
+        level_id: str
     ):
         """
         提交订单对
@@ -213,13 +213,13 @@ class ExecutionManager:
         Args:
             leg1: (Symbol, Quantity) 第一腿
             leg2: (Symbol, Quantity) 第二腿
-            grid_id: 网格线ID
+            level_id: 网格线ID（level_id）
         """
         symbol1, qty1 = leg1
         symbol2, qty2 = leg2
 
-        # 直接使用 grid_id 作为 tag（唯一标识）
-        tag = grid_id
+        # 直接使用 level_id 作为 tag（唯一标识）
+        tag = level_id
 
         self.algorithm.market_order(
             symbol1,
@@ -235,18 +235,19 @@ class ExecutionManager:
             tag=tag
         )
 
-    def has_active_execution(self, pair_symbol: Tuple[Symbol, Symbol], grid_id: str) -> bool:
+    def has_active_execution(self, level) -> bool:
         """
         检查是否有活跃的ExecutionTarget
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
+            level: GridLevel 对象（包含 pair_symbol 和 level_id）
 
         Returns:
             True if has active ExecutionTarget, False otherwise
         """
-        execution_key = (pair_symbol, grid_id)
+        pair_symbol = level.pair_symbol
+        level_id = level.level_id  # 直接使用 level_id
+        execution_key = (pair_symbol, level_id)
         return execution_key in self.active_targets
 
     def on_order_event(self, order_event: OrderEvent):
@@ -276,11 +277,11 @@ class ExecutionManager:
             if target.is_completely_filled():
                 target.status = ExecutionStatus.Filled
                 del self.active_targets[execution_key]
-                self._debug(f"✅ ExecutionTarget for grid {target.grid_id} completed (Filled)")
+                self._debug(f"✅ ExecutionTarget for level {target.grid_id} completed (Filled)")
             else:
                 # 至少有一个 OrderGroup 部分成交
                 target.status = ExecutionStatus.PartiallyFilled
-                self._debug(f"📊 ExecutionTarget for grid {target.grid_id} partially filled")
+                self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
 
         elif order_event.status in [OrderStatus.Canceled, OrderStatus.Invalid]:
             # 订单失败 - 检查对冲敞口
@@ -297,12 +298,12 @@ class ExecutionManager:
             order_event: OrderEvent对象
             execution_key: ExecutionTarget的唯一键
         """
-        grid_id = target.grid_id
+        level_id = target.grid_id  # grid_id 现在就是 level_id
         pair_symbol = target.pair_symbol
 
         self.algorithm.debug(
             f"⚠️ Order {order_event.order_id} failed: {order_event.status} | "
-            f"Grid: {grid_id} | Symbol: {order_event.symbol.value}"
+            f"Level: {level_id} | Symbol: {order_event.symbol.value}"
         )
 
         # # 检查是否有对冲敞口
@@ -325,4 +326,4 @@ class ExecutionManager:
     def _debug(self, message: str):
         """条件debug输出"""
         if self.debug_enabled:
-            self.algorithm.debug(f"[{self.algorithm.time}]" + message)
+            self.algorithm.debug(f"[{self.algorithm.time:%Y-%m-%d %H:%M:%S}]" + message)
