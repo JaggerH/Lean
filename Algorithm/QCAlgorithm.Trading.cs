@@ -1822,28 +1822,40 @@ namespace QuantConnect.Algorithm
         /// <param name="symbol1">First symbol in the pair</param>
         /// <param name="symbol2">Second symbol in the pair</param>
         /// <param name="targetPercent">Target percentage of portfolio value (positive for long, negative for short)</param>
+        /// <param name="respectBuyingPower">If true, respects buying power constraints. If false, only considers portfolio values without buying power limits</param>
         /// <returns>Maximum tradable market value that both accounts can execute</returns>
         private decimal CalculateMaxTradableMarketValue(
             Symbol symbol1,
             Symbol symbol2,
-            decimal targetPercent)
+            decimal targetPercent,
+            bool respectBuyingPower = false)
         {
             // Get portfolios for each symbol directly using extension method
             var portfolio1 = this.GetPortfolioForSymbol(symbol1);
             var portfolio2 = this.GetPortfolioForSymbol(symbol2);
 
-            // Get buying powers for both accounts
-            var (buyingPower1, buyingPower2) = GetAccountBuyingPowers(symbol1, symbol2, targetPercent);
-
             // Calculate planned market values based on each account's total portfolio value
             var plannedValue1 = portfolio1.TotalPortfolioValue * Math.Abs(targetPercent);
             var plannedValue2 = portfolio2.TotalPortfolioValue * Math.Abs(targetPercent);
 
-            // Take minimum across all constraints to ensure both sides can execute
-            var targetValue = Math.Min(
-                Math.Min(plannedValue1, plannedValue2),
-                Math.Min(buyingPower1, buyingPower2)
-            );
+            decimal targetValue;
+
+            if (respectBuyingPower)
+            {
+                // Get buying powers for both accounts
+                var (buyingPower1, buyingPower2) = GetAccountBuyingPowers(symbol1, symbol2, targetPercent);
+
+                // Take minimum across all constraints to ensure both sides can execute
+                targetValue = Math.Min(
+                    Math.Min(plannedValue1, plannedValue2),
+                    Math.Min(buyingPower1, buyingPower2)
+                );
+            }
+            else
+            {
+                // Only consider portfolio values, ignore buying power constraints
+                targetValue = Math.Min(plannedValue1, plannedValue2);
+            }
 
             return targetValue;
         }
@@ -1881,13 +1893,7 @@ namespace QuantConnect.Algorithm
             var levels = isBuying ? orderbookDepth.Asks : orderbookDepth.Bids;
 
             // Calculate mid price for spread constraint
-            decimal midPrice = 0;
-            if (maxSpreadPct.HasValue &&
-                orderbookDepth.Bids.Count > 0 &&
-                orderbookDepth.Asks.Count > 0)
-            {
-                midPrice = (orderbookDepth.Bids[0].Price + orderbookDepth.Asks[0].Price) / 2;
-            }
+            decimal midPrice = security.Cache.Price;
 
             decimal totalQuantity = 0;
             decimal totalCost = 0;
@@ -1993,6 +1999,7 @@ namespace QuantConnect.Algorithm
         /// <param name="symbol1">First symbol (e.g., crypto) - will be long if targetPercent > 0</param>
         /// <param name="symbol2">Second symbol (e.g., stock) - will be opposite direction to symbol1 for hedging</param>
         /// <param name="targetPercent">Target percentage of portfolio value (positive for long symbol1, negative for short symbol1)</param>
+        /// <param name="respectBuyingPower">If true, respects buying power constraints. If false, only considers portfolio values without buying power limits</param>
         /// <returns>
         /// Dictionary mapping Symbol to TARGET quantity (signed: positive = long, negative = short).
         /// These are absolute target positions, NOT incremental order quantities.
@@ -2002,14 +2009,15 @@ namespace QuantConnect.Algorithm
         public Dictionary<Symbol, decimal> CalculateOrderPair(
             Symbol symbol1,
             Symbol symbol2,
-            decimal targetPercent)
+            decimal targetPercent,
+            bool respectBuyingPower = false)
         {
-            // 1. Calculate max tradable market value (respects buying power constraints)
-            var maxTradableMarketValue = CalculateMaxTradableMarketValue(symbol1, symbol2, targetPercent);
+            // 1. Calculate max tradable market value
+            var maxTradableMarketValue = CalculateMaxTradableMarketValue(symbol1, symbol2, targetPercent, respectBuyingPower);
 
             if (maxTradableMarketValue <= 0)
             {
-                Debug($"CalculateOrderPair: No available buying power or target value is zero");
+                // Debug($"CalculateOrderPair: No available buying power or target value is zero");
                 return new Dictionary<Symbol, decimal>();
             }
 
@@ -2022,8 +2030,8 @@ namespace QuantConnect.Algorithm
             var targetPercent1 = maxTradableMarketValue / portfolio1.TotalPortfolioValue * Math.Sign(targetPercent);
             var targetPercent2 = maxTradableMarketValue / portfolio2.TotalPortfolioValue * -Math.Sign(targetPercent);
 
-            Debug($"CalculateOrderPair: Account target percents - " +
-                  $"{symbol1}: {targetPercent1:P2}, {symbol2}: {targetPercent2:P2}");
+            // Debug($"CalculateOrderPair: Account target percents - " +
+            //       $"{symbol1}: {targetPercent1:P2}, {symbol2}: {targetPercent2:P2}");
 
             // 5. Use PortfolioTarget.Percent to calculate target quantities
             var target1 = PortfolioTarget.Percent(this, symbol1, targetPercent1,
@@ -2037,15 +2045,14 @@ namespace QuantConnect.Algorithm
             // 6. Validate results
             if (target1 == null || target2 == null)
             {
-                Error($"CalculateOrderPair: Failed to calculate target quantities");
                 return null;
             }
 
             var qty1 = target1.Quantity;
             var qty2 = target2.Quantity;
 
-            Debug($"CalculateOrderPair: Target quantities - " +
-                  $"{symbol1}: {qty1:F4}, {symbol2}: {qty2:F4}");
+            // Debug($"CalculateOrderPair: Target quantities - " +
+            //       $"{symbol1}: {qty1:F4}, {symbol2}: {qty2:F4}");
 
             // 7. Return target quantities (execution layer will calculate delta)
             return new Dictionary<Symbol, decimal>
@@ -2053,6 +2060,41 @@ namespace QuantConnect.Algorithm
                 { symbol1, qty1 },
                 { symbol2, qty2 }
             };
+        }
+
+        /// <summary>
+        /// Check if a pair of positions are sufficiently filled based on fill percentage and market value error.
+        /// Returns true if both legs are >99% filled and the market value error is below the threshold.
+        /// Compatible with Python.NET - uses separate parameters instead of tuples.
+        /// </summary>
+        /// <param name="symbol1">First symbol</param>
+        /// <param name="target1">First target quantity</param>
+        /// <param name="filled1">First filled quantity</param>
+        /// <param name="symbol2">Second symbol</param>
+        /// <param name="target2">Second target quantity</param>
+        /// <param name="filled2">Second filled quantity</param>
+        /// <param name="maxValueErrorPct">Maximum acceptable market value error percentage (default 1.0%)</param>
+        /// <returns>True if both legs are near complete and value error is acceptable, False otherwise</returns>
+        [DocumentationAttribute(TradingAndOrders)]
+        public bool IsPairQuantityFilled(
+            Symbol symbol1, decimal target1, decimal filled1,
+            Symbol symbol2, decimal target2, decimal filled2,
+            decimal maxValueErrorPct = 1.0m)
+        {
+            // Prevent division by zero
+            if (target1 == 0 || target2 == 0)
+            {
+                return false;
+            }
+
+            // Check fill percentage (>99% considered near complete)
+            var filledPct1 = filled1 / target1;
+            var filledPct2 = filled2 / target2;
+
+            bool nearComplete1 = Math.Abs(filledPct1) > 0.99m;
+            bool nearComplete2 = Math.Abs(filledPct2) > 0.99m;
+
+            return nearComplete1 && nearComplete2;
         }
 
         /// <summary>
