@@ -25,6 +25,8 @@ SYMBOL_MAP = {
 # Configuration
 DEPTH_LEVELS = 10  # Output 10 levels of depth
 SNAPSHOT_INTERVAL_MS = 250  # Output snapshot every 250ms
+ALLOW_CROSSED_SPREAD = False  # If True, allow snapshots with crossed spreads (bid >= ask)
+                              # Set to True if you want to keep all data despite market anomalies
 
 
 class OrderbookBuilder:
@@ -63,9 +65,12 @@ class OrderbookBuilder:
         # Determine which side to update
         book = self.asks if side == 1 else self.bids
 
+        # Tolerance for floating point comparison (1e-10 for crypto amounts)
+        EPSILON = 1e-10
+
         if action == 'set':
             # Set baseline: replace current amount
-            if amount > 0:
+            if amount > EPSILON:
                 book[price] = amount
             else:
                 book.pop(price, None)
@@ -73,14 +78,14 @@ class OrderbookBuilder:
         elif action == 'make':
             # Add to existing amount
             book[price] = book.get(price, 0) + amount
-            if book[price] <= 0:
+            if book[price] <= EPSILON:
                 book.pop(price, None)
 
         elif action == 'take':
             # Subtract from existing amount
             current = book.get(price, 0)
             new_amount = current - amount
-            if new_amount > 0:
+            if new_amount > EPSILON:
                 book[price] = new_amount
             else:
                 book.pop(price, None)
@@ -120,6 +125,40 @@ class OrderbookBuilder:
         asks_sorted = sorted(self.asks.items(), key=lambda x: x[0])[:levels]
 
         return bids_sorted, asks_sorted
+
+    def validate_snapshot(self, bids, asks):
+        """
+        Validate orderbook snapshot for common errors
+
+        Args:
+            bids: List of (price, size) tuples
+            asks: List of (price, size) tuples
+
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None)
+        """
+        # Check if both sides have data
+        if not bids or not asks:
+            return False, "Empty orderbook - missing bids or asks"
+
+        # Check for crossed spread (bid >= ask)
+        best_bid_price = bids[0][0]
+        best_ask_price = asks[0][0]
+
+        if best_bid_price >= best_ask_price:
+            return False, f"Crossed spread detected: bid={best_bid_price}, ask={best_ask_price}"
+
+        # Validate bids are sorted descending
+        for i in range(len(bids) - 1):
+            if bids[i][0] <= bids[i + 1][0]:
+                return False, f"Bids not sorted descending: {bids[i][0]} <= {bids[i + 1][0]}"
+
+        # Validate asks are sorted ascending
+        for i in range(len(asks) - 1):
+            if asks[i][0] >= asks[i + 1][0]:
+                return False, f"Asks not sorted ascending: {asks[i][0]} >= {asks[i + 1][0]}"
+
+        return True, None
 
     def format_lean_row(self, timestamp_ms, bids, asks):
         """
@@ -247,6 +286,11 @@ def process_hourly_file(src_file, base_date):
     builder = OrderbookBuilder()
     snapshots = []
 
+    # Group updates by timestamp to ensure atomic processing
+    # This prevents outputting snapshots in the middle of processing updates for the same timestamp
+    current_timestamp = None
+    current_timestamp_ms = None
+
     # Use itertuples for better performance (10-100x faster than iterrows)
     for row in df.itertuples(index=False):
         timestamp = row.Timestamp
@@ -255,26 +299,58 @@ def process_hourly_file(src_file, base_date):
         price = float(row.Price)
         amount = float(row.Amount)
 
-        # Apply update to orderbook
-        builder.apply_update(timestamp, side, action, price, amount)
-
         # Convert timestamp to milliseconds since midnight
         timestamp_dt = pd.Timestamp(timestamp, unit='s', tz='UTC')
         time_delta = timestamp_dt - base_date
         timestamp_ms = int(time_delta.total_seconds() * 1000)
 
-        # Check if we should output a snapshot
-        if builder.should_output_snapshot(timestamp_ms):
-            # Get top N levels
+        # Check if we've moved to a new timestamp
+        if current_timestamp is not None and timestamp != current_timestamp:
+            # We've finished processing all updates for the previous timestamp
+            # Now check if we should output a snapshot for it
+            if builder.should_output_snapshot(current_timestamp_ms):
+                # Get top N levels
+                bids, asks = builder.get_snapshot(levels=DEPTH_LEVELS)
+
+                # Skip if orderbook is empty
+                if bids and asks:
+                    # Validate snapshot before writing
+                    is_valid, error_msg = builder.validate_snapshot(bids, asks)
+                    if not is_valid:
+                        if not ALLOW_CROSSED_SPREAD:
+                            logger.debug(f"  Skipping invalid snapshot at {current_timestamp_ms}ms: {error_msg}")
+                        else:
+                            # Allow crossed spreads if configured
+                            row_data = builder.format_lean_row(current_timestamp_ms, bids, asks)
+                            snapshots.append(row_data)
+                    else:
+                        # Format as LEAN row
+                        row_data = builder.format_lean_row(current_timestamp_ms, bids, asks)
+                        snapshots.append(row_data)
+
+        # Update current timestamp tracking
+        current_timestamp = timestamp
+        current_timestamp_ms = timestamp_ms
+
+        # Apply update to orderbook
+        builder.apply_update(timestamp, side, action, price, amount)
+
+    # Don't forget to process the last timestamp group
+    if current_timestamp is not None:
+        if builder.should_output_snapshot(current_timestamp_ms):
             bids, asks = builder.get_snapshot(levels=DEPTH_LEVELS)
 
-            # Skip if orderbook is empty
-            if not bids or not asks:
-                continue
-
-            # Format as LEAN row
-            row_data = builder.format_lean_row(timestamp_ms, bids, asks)
-            snapshots.append(row_data)
+            if bids and asks:
+                is_valid, error_msg = builder.validate_snapshot(bids, asks)
+                if not is_valid:
+                    if not ALLOW_CROSSED_SPREAD:
+                        logger.debug(f"  Skipping invalid snapshot at {current_timestamp_ms}ms: {error_msg}")
+                    else:
+                        row_data = builder.format_lean_row(current_timestamp_ms, bids, asks)
+                        snapshots.append(row_data)
+                else:
+                    row_data = builder.format_lean_row(current_timestamp_ms, bids, asks)
+                    snapshots.append(row_data)
 
     return snapshots
 
