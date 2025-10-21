@@ -256,7 +256,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
     """Test suite for _match_single_leg method"""
 
     def test_single_leg_long_s1_basic(self):
-        """Test LONG_S1 direction (buy symbol_ob, sell symbol_bp)"""
+        """Test LONG_SPREAD direction (buy symbol_ob, sell symbol_bp)"""
         algorithm = MockAlgorithm()
 
         # Create symbols
@@ -282,7 +282,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-2.5,
             fee_per_share=0.0,
             debug=False
@@ -307,7 +307,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         self.assertAlmostEqual(result.total_usd_buy, result.total_usd_sell, delta=25.0)
 
     def test_single_leg_short_s1_basic(self):
-        """Test SHORT_S1 direction (sell symbol_ob, buy symbol_bp)"""
+        """Test SHORT_SPREAD direction (sell symbol_ob, buy symbol_bp)"""
         algorithm = MockAlgorithm()
 
         symbol_ob = Mock()
@@ -331,7 +331,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="SHORT_S1",
+            direction="SHORT_SPREAD",
             min_spread_pct=-2.5,
             fee_per_share=0.0,
             debug=False
@@ -369,7 +369,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -401,7 +401,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=2000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=0.0,  # Only accept spreads >= 0%
             fee_per_share=0.0,
             debug=False
@@ -431,7 +431,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=500.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -458,7 +458,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-2.0,
             fee_per_share=0.0,
             debug=True
@@ -486,7 +486,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=15.0,  # Need at least 15% but we have 10%
             fee_per_share=0.0,
             debug=False
@@ -511,7 +511,7 @@ class TestSpreadMatcherSingleLeg(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.005,  # $0.005 per share
             debug=False
@@ -526,7 +526,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
     """Test suite for _match_dual_leg method"""
 
     def test_dual_leg_long_s1_basic(self):
-        """Test dual-leg LONG_S1 (buy symbol1, sell symbol2)"""
+        """Test dual-leg LONG_SPREAD (buy symbol1, sell symbol2)"""
         algorithm = MockAlgorithm()
 
         symbol1 = Mock()
@@ -551,7 +551,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -565,7 +565,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         self.assertLess(result.legs[1][1], 0)     # Sell symbol2
 
     def test_dual_leg_short_s1_basic(self):
-        """Test dual-leg SHORT_S1 (sell symbol1, buy symbol2)"""
+        """Test dual-leg SHORT_SPREAD (sell symbol1, buy symbol2)"""
         algorithm = MockAlgorithm()
 
         symbol1 = Mock()
@@ -589,7 +589,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="SHORT_S1",
+            direction="SHORT_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -626,7 +626,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-60.0,
             fee_per_share=0.0,
             debug=False
@@ -675,7 +675,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1200.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -709,7 +709,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -744,7 +744,7 @@ class TestSpreadMatcherDualLeg(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=0.0,  # Require positive spread
             fee_per_share=0.0,
             debug=False
@@ -760,7 +760,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
     """Test suite for _match_fallback method"""
 
     def test_fallback_long_s1(self):
-        """Test fallback with LONG_S1 direction"""
+        """Test fallback with LONG_SPREAD direction"""
         algorithm = MockAlgorithm()
 
         symbol1 = Mock()
@@ -776,7 +776,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         result = SpreadMatcher._match_fallback(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -797,7 +797,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         self.assertAlmostEqual(result.total_usd_sell, 1000.0, delta=100.0)
 
     def test_fallback_short_s1(self):
-        """Test fallback with SHORT_S1 direction"""
+        """Test fallback with SHORT_SPREAD direction"""
         algorithm = MockAlgorithm()
 
         symbol1 = Mock()
@@ -812,7 +812,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         result = SpreadMatcher._match_fallback(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="SHORT_S1",
+            direction="SHORT_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -838,7 +838,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         result = SpreadMatcher._match_fallback(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=True
@@ -863,7 +863,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         result = SpreadMatcher._match_fallback(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=15.0,
             fee_per_share=0.0,
             debug=False
@@ -888,7 +888,7 @@ class TestSpreadMatcherFallback(unittest.TestCase):
         result = SpreadMatcher._match_fallback(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -926,7 +926,7 @@ class TestSpreadMatcherMainEntry(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             debug=True
         )
@@ -958,7 +958,7 @@ class TestSpreadMatcherMainEntry(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             debug=True
         )
@@ -988,7 +988,7 @@ class TestSpreadMatcherMainEntry(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             debug=True
         )
@@ -1016,7 +1016,7 @@ class TestSpreadMatcherMainEntry(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             debug=True
         )
@@ -1047,7 +1047,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol_ob, symbol_bp,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0
         )
 
@@ -1070,7 +1070,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=0.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0
         )
 
@@ -1094,7 +1094,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher.match_pair(
             algorithm, symbol1, symbol2,
             target_usd=1000.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0
         )
 
@@ -1119,7 +1119,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=100.0,
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -1148,7 +1148,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher._match_single_leg(
             algorithm, symbol_ob, symbol_bp,
             target_usd=500.0,  # Only enough for 5 shares, but lot is 100
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
@@ -1192,7 +1192,7 @@ class TestSpreadMatcherEdgeCases(unittest.TestCase):
         result = SpreadMatcher._match_dual_leg(
             algorithm, symbol1, symbol2,
             target_usd=2000.0,  # More than available
-            direction="LONG_S1",
+            direction="LONG_SPREAD",
             min_spread_pct=-3.0,
             fee_per_share=0.0,
             debug=False
