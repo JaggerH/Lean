@@ -26,6 +26,7 @@ class MonitorLauncher:
         self.root = Path(__file__).parent
         self.monitor_proc = None
         self.monitor_port = None  # 将在启动时自动查找可用端口
+        self.log_handle = None  # uvicorn 日志文件句柄
 
     def check_docker(self):
         """检查Docker是否可用"""
@@ -134,8 +135,13 @@ class MonitorLauncher:
             print(f"⚠️ 依赖安装失败: {e}")
             print("   请手动运行: pip install -r monitoring/requirements.txt")
 
-    def start_monitor(self):
-        """启动监控服务器"""
+    def start_monitor(self, enable_reload=False):
+        """
+        启动监控服务器
+
+        Args:
+            enable_reload: 是否启用热重载（开发模式）
+        """
         print("\n[2/3] 启动监控服务器...")
 
         # self.install_dependencies()  # 注释掉自动安装依赖
@@ -168,40 +174,76 @@ class MonitorLauncher:
         env['UVICORN_PORT'] = str(self.monitor_port)
         env['MONITOR_LOG_LEVEL'] = 'DEBUG'  # 启用调试日志
 
+        # 构建 uvicorn 命令
+        uvicorn_cmd = [
+            'conda', 'run', '-n', 'lean', 'python', '-m', 'uvicorn', 'api_server:app',
+            '--host', '0.0.0.0',
+            '--port', str(self.monitor_port),
+            '--log-level', 'debug'
+        ]
+
+        # 如果启用热重载
+        if enable_reload:
+            uvicorn_cmd.append('--reload')
+            # uvicorn 默认会监控 .py 文件
+            # 注意：在 Windows 下通配符会被 shell 展开，所以不使用 reload-include
+            print("   🔄 热重载模式已启用 (修改代码将自动重启)")
+
+        # 准备日志文件（用于捕获启动错误）
+        log_file = monitor_dir / "uvicorn.log"
+
         # 使用conda环境启动uvicorn
         try:
+            # 始终重定向到日志文件，包括开发模式
+            log_handle = open(log_file, 'w', encoding='utf-8')
+
             if sys.platform == 'win32':
-                # Windows: 新窗口启动（显示日志）
+                # Windows: 后台启动
+                # 开发模式也不使用 CREATE_NEW_CONSOLE，避免窗口闪退问题
+                # 改用 CREATE_NO_WINDOW 在后台静默运行
+                creation_flags = subprocess.CREATE_NO_WINDOW if not enable_reload else 0
+
                 self.monitor_proc = subprocess.Popen(
-                    ['conda', 'run', '-n', 'lean', 'python', '-m', 'uvicorn', 'api_server:app',
-                     '--host', '0.0.0.0', '--port', str(self.monitor_port), '--log-level', 'debug'],
+                    uvicorn_cmd,
                     cwd=monitor_dir,
                     env=env,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    creationflags=creation_flags
                 )
             else:
                 # Linux/Mac: 后台启动
                 self.monitor_proc = subprocess.Popen(
-                    ['conda', 'run', '-n', 'lean', 'python', '-m', 'uvicorn', 'api_server:app',
-                     '--host', '0.0.0.0', '--port', str(self.monitor_port)],
+                    uvicorn_cmd,
                     cwd=monitor_dir,
                     env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stdout=log_handle,
+                    stderr=log_handle
                 )
+
+            # 保存日志句柄，cleanup时关闭
+            self.log_handle = log_handle
+            print(f"   日志文件: {log_file}")
+
         except Exception as e:
             raise Exception(f"启动监控服务器失败: {e}")
 
         # 等待服务器就绪
         print("   等待监控服务器启动...", end='', flush=True)
-        for i in range(10):
+        max_wait = 20 if enable_reload else 10  # 热重载模式需要更长的启动时间
+        for i in range(max_wait):
             try:
                 import urllib.request
-                urllib.request.urlopen(f'http://localhost:{self.monitor_port}/api/health', timeout=1)
-                print(" ✓")
-                print("✓ 监控服务器启动完成")
-                return
-            except:
+                import http.client
+                response = urllib.request.urlopen(f'http://localhost:{self.monitor_port}/api/health', timeout=2)
+                if response.status == 200:
+                    print(" ✓")
+                    print("✓ 监控服务器启动完成")
+                    return
+            except (urllib.error.URLError, http.client.HTTPException, ConnectionRefusedError) as e:
+                print('.', end='', flush=True)
+                time.sleep(1)
+            except Exception as e:
                 print('.', end='', flush=True)
                 time.sleep(1)
 
@@ -234,6 +276,13 @@ class MonitorLauncher:
     def cleanup(self):
         """清理进程"""
         print("\n停止服务...")
+
+        # 关闭日志文件
+        if hasattr(self, 'log_handle') and self.log_handle:
+            try:
+                self.log_handle.close()
+            except:
+                pass
 
         # 停止监控服务器
         if self.monitor_proc:
@@ -279,10 +328,17 @@ class MonitorLauncher:
         print("\n✓ Redis容器保持运行 (用于交易系统)")
         print("✓ 清理完成!")
 
-    def run(self):
-        """主流程"""
+    def run(self, enable_reload=False):
+        """
+        主流程
+
+        Args:
+            enable_reload: 是否启用热重载（开发模式）
+        """
         print("\n" + "=" * 70)
         print("  LEAN交易系统实时监控")
+        if enable_reload:
+            print("  模式: 开发模式 (Hot Reload 已启用)")
         print("=" * 70 + "\n")
 
         try:
@@ -295,7 +351,7 @@ class MonitorLauncher:
             self.start_redis()
 
             # 2. 启动监控服务器
-            self.start_monitor()
+            self.start_monitor(enable_reload=enable_reload)
 
             # 3. 打开浏览器
             self.open_browser()
@@ -304,6 +360,8 @@ class MonitorLauncher:
             print("\n" + "=" * 70)
             print("  监控服务已启动!")
             print(f"  监控界面: http://localhost:{self.monitor_port or 8000}")
+            if enable_reload:
+                print("  开发模式: 修改代码会自动重启服务器")
             print("  按 Ctrl+C 停止服务")
             print("=" * 70 + "\n")
 
@@ -324,5 +382,32 @@ class MonitorLauncher:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='LEAN 交易系统监控启动器',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用示例:
+  python start_monitor.py              # 正常模式启动
+  python start_monitor.py --dev        # 开发模式启动（Hot Reload）
+  python start_monitor.py --reload     # 同上（别名）
+
+开发模式特性:
+  - 修改 *.py 文件会自动重启服务器
+  - 修改 *.html, *.css, *.js 文件也会触发重启
+  - 适合前端/后端开发调试
+        """
+    )
+
+    parser.add_argument(
+        '--dev', '--reload',
+        dest='enable_reload',
+        action='store_true',
+        help='启用热重载（开发模式）'
+    )
+
+    args = parser.parse_args()
+
     launcher = MonitorLauncher()
-    launcher.run()
+    launcher.run(enable_reload=args.enable_reload)
