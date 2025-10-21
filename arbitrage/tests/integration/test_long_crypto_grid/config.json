@@ -10,6 +10,9 @@
 
   "close-automatically": true,
 
+  "ignoreErrors": false,
+  "quitOnException": true,
+
   "debugging": false,
   "debugging-method": "LocalCmdline",
 

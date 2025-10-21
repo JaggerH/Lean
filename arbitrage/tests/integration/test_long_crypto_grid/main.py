@@ -49,7 +49,7 @@ class LongCryptoGridTest(QCAlgorithm):
         """初始化算法"""
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 5)
+        self.set_end_date(2025, 9, 27)
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
@@ -139,6 +139,11 @@ class LongCryptoGridTest(QCAlgorithm):
 
         # 委托给 Strategy 的 on_order_event 处理订单事件
         self.strategy.on_order_event(order_event)
+        
+        if order_event.Status == OrderStatus.Invalid:
+            self.error(f"Order failed: {order_event.Message}")
+            # 🚨 关键：退出算法
+            sys.exit(1)
 
     def error(self, error: str):
         """捕获错误消息（特别是买入力不足的错误）"""

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # Import AlgorithmImports (will be available when run via PythonTestRunner)
 from AlgorithmImports import QCAlgorithm, Symbol, SecurityType, Market
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
+from strategy.grid_models import GridPosition
 
 
 class TestAlgorithm(QCAlgorithm):
@@ -255,7 +256,7 @@ class TestLongCryptoGridStrategyDirectionRestriction(unittest.TestCase):
     """Test that strategy only trades long crypto direction"""
 
     def test_only_long_crypto_direction(self):
-        """Test grid levels have LONG_SPREAD direction"""
+        """Test grid levels have correct directions (ENTRY=LONG_SPREAD, EXIT=SHORT_SPREAD)"""
         algo = TestAlgorithm()
         strategy = LongCryptoGridStrategy(algo)
 
@@ -268,12 +269,18 @@ class TestLongCryptoGridStrategyDirectionRestriction(unittest.TestCase):
         # Get grid levels
         levels = strategy.grid_level_manager.get_all_levels(pair_symbol)
 
-        # Verify all levels are LONG_SPREAD
+        # Verify ENTRY level is LONG_SPREAD (buy crypto, sell stock)
+        # Verify EXIT level is SHORT_SPREAD (sell crypto, buy stock)
         for level in levels:
             if hasattr(level, 'direction'):
-                self.assertEqual(level.direction, "LONG_SPREAD")
+                if level.type == "ENTRY":
+                    self.assertEqual(level.direction, "LONG_SPREAD",
+                                   "ENTRY level should be LONG_SPREAD (buy crypto, sell stock)")
+                elif level.type == "EXIT":
+                    self.assertEqual(level.direction, "SHORT_SPREAD",
+                                   "EXIT level should be SHORT_SPREAD (sell crypto, buy stock)")
 
-        print("✅ Direction restriction test passed")
+        print("✅ Direction test passed: ENTRY=LONG_SPREAD, EXIT=SHORT_SPREAD")
 
     def test_no_short_crypto_entry(self):
         """Test that positive spread (short crypto opportunity) does not trigger entry"""
@@ -292,6 +299,193 @@ class TestLongCryptoGridStrategyDirectionRestriction(unittest.TestCase):
         strategy.on_spread_update(pair_symbol, spread_pct)
 
         print("✅ No short crypto entry test passed")
+
+
+class TestGridStrategyShouldOpenPosition(unittest.TestCase):
+    """Test should_open_position decision logic"""
+
+    def setUp(self):
+        """Set up test fixtures"""
+        self.algo = TestAlgorithm()
+        self.strategy = LongCryptoGridStrategy(self.algo)
+
+        # Create real Symbol objects
+        self.crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        self.stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+        self.pair_symbol = (self.crypto_symbol, self.stock_symbol)
+
+        # Initialize pair to set up grid levels
+        self.strategy.initialize_pair(self.pair_symbol)
+        self.algo.clear_messages()
+
+        # Get the initialized grid levels for testing
+        levels = self.strategy.grid_level_manager.get_all_levels(self.pair_symbol)
+        self.entry_level = levels[0]  # type="ENTRY"
+
+    def test_should_open_returns_true_no_constraints(self):
+        """Test should_open_position returns True when no constraints"""
+        # Arrange: Mock dependencies to allow opening
+        self.strategy.execution_manager.has_active_execution = lambda level: False
+        self.strategy.grid_position_manager.has_reached_target = lambda level: False
+
+        # Act: Call the method
+        result = self.strategy.should_open_position(self.entry_level)
+
+        # Assert: Should return True
+        self.assertTrue(
+            result,
+            "should_open_position should return True when no active execution and not reached target"
+        )
+
+        print("✅ should_open_position returns True with no constraints")
+
+    def test_should_open_returns_false_has_active_execution(self):
+        """Test should_open_position returns False when has active execution"""
+        # Arrange: Mock active execution exists
+        self.strategy.execution_manager.has_active_execution = lambda level: True
+        self.strategy.grid_position_manager.has_reached_target = lambda level: False
+
+        # Act: Call the method
+        result = self.strategy.should_open_position(self.entry_level)
+
+        # Assert: Should return False
+        self.assertFalse(
+            result,
+            "should_open_position should return False when has active execution"
+        )
+
+        print("✅ should_open_position returns False with active execution")
+
+    def test_should_open_returns_false_reached_target(self):
+        """Test should_open_position returns False when position reached target"""
+        # Arrange: Mock position reached target
+        self.strategy.execution_manager.has_active_execution = lambda level: False
+        self.strategy.grid_position_manager.has_reached_target = lambda level: True
+
+        # Act: Call the method
+        result = self.strategy.should_open_position(self.entry_level)
+
+        # Assert: Should return False
+        self.assertFalse(
+            result,
+            "should_open_position should return False when position reached target"
+        )
+
+        print("✅ should_open_position returns False when reached target")
+
+    def test_should_open_returns_false_both_constraints(self):
+        """Test should_open_position returns False when both constraints active"""
+        # Arrange: Mock both constraints active (edge case)
+        self.strategy.execution_manager.has_active_execution = lambda level: True
+        self.strategy.grid_position_manager.has_reached_target = lambda level: True
+
+        # Act: Call the method
+        result = self.strategy.should_open_position(self.entry_level)
+
+        # Assert: Should return False
+        self.assertFalse(
+            result,
+            "should_open_position should return False when both constraints active"
+        )
+
+        print("✅ should_open_position returns False with both constraints")
+
+
+class TestGridStrategyShouldClosePosition(unittest.TestCase):
+    """Test should_close_position decision logic"""
+
+    def setUp(self):
+        """Set up test fixtures"""
+        self.algo = TestAlgorithm()
+        self.strategy = LongCryptoGridStrategy(self.algo)
+
+        # Create real Symbol objects
+        self.crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        self.stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+        self.pair_symbol = (self.crypto_symbol, self.stock_symbol)
+
+        # Initialize pair to set up grid levels
+        self.strategy.initialize_pair(self.pair_symbol)
+        self.algo.clear_messages()
+
+        # Get the initialized grid levels for testing
+        levels = self.strategy.grid_level_manager.get_all_levels(self.pair_symbol)
+        self.entry_level = levels[0]  # type="ENTRY"
+        self.exit_level = levels[1]   # type="EXIT"
+
+        # Create a mock GridPosition for testing
+        self.mock_position = GridPosition(
+            pair_symbol=self.pair_symbol,
+            level=self.entry_level
+        )
+
+    def test_should_close_returns_true_has_position_no_execution(self):
+        """Test should_close_position returns True when has position and no active execution"""
+        # Arrange: Mock position exists and no active execution
+        self.strategy.grid_position_manager.get_grid_position = lambda level: self.mock_position
+        self.strategy.execution_manager.has_active_execution = lambda level: False
+
+        # Act: Call the method
+        result = self.strategy.should_close_position(self.exit_level)
+
+        # Assert: Should return True
+        self.assertTrue(
+            result,
+            "should_close_position should return True when has position and no active execution"
+        )
+
+        print("✅ should_close_position returns True with position and no execution")
+
+    def test_should_close_returns_false_no_position(self):
+        """Test should_close_position returns False when no position exists"""
+        # Arrange: Mock no position exists
+        self.strategy.grid_position_manager.get_grid_position = lambda level: None
+        self.strategy.execution_manager.has_active_execution = lambda level: False
+
+        # Act: Call the method
+        result = self.strategy.should_close_position(self.exit_level)
+
+        # Assert: Should return False
+        self.assertFalse(
+            result,
+            "should_close_position should return False when no position exists"
+        )
+
+        print("✅ should_close_position returns False with no position")
+
+    def test_should_close_returns_false_has_active_execution(self):
+        """Test should_close_position returns False when has active execution"""
+        # Arrange: Mock position exists but has active execution
+        self.strategy.grid_position_manager.get_grid_position = lambda level: self.mock_position
+        self.strategy.execution_manager.has_active_execution = lambda level: True
+
+        # Act: Call the method
+        result = self.strategy.should_close_position(self.exit_level)
+
+        # Assert: Should return False
+        self.assertFalse(
+            result,
+            "should_close_position should return False when has active execution"
+        )
+
+        print("✅ should_close_position returns False with active execution")
+
+    def test_should_close_returns_false_no_position_and_execution(self):
+        """Test should_close_position returns False when no position and has execution"""
+        # Arrange: Mock no position and has active execution (edge case)
+        self.strategy.grid_position_manager.get_grid_position = lambda level: None
+        self.strategy.execution_manager.has_active_execution = lambda level: True
+
+        # Act: Call the method
+        result = self.strategy.should_close_position(self.exit_level)
+
+        # Assert: Should return False (short-circuits on no position)
+        self.assertFalse(
+            result,
+            "should_close_position should return False when no position exists"
+        )
+
+        print("✅ should_close_position returns False with no position and execution")
 
 
 if __name__ == '__main__':

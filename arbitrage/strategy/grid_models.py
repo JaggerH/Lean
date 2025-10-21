@@ -58,6 +58,54 @@ class GridLevel:
         if self.position_size_pct <= 0 or self.position_size_pct > 1:
             raise ValueError(f"Invalid position_size_pct: {self.position_size_pct}, must be in (0, 1]")
 
+    def __hash__(self):
+        """
+        基于网格线本质属性计算 hash
+
+        只包含核心标识字段（不可变的本质属性）：
+        - pair_symbol: 交易对
+        - type: ENTRY/EXIT
+        - spread_pct: 触发价差（本质属性）
+        - direction: 方向
+
+        不包含：
+        - level_id: 仅用于人类可读标识
+        - position_size_pct: 可动态调整的执行参数
+        - paired_exit_level_id: 配对关系由 Manager 维护
+        - 运行时状态字段（is_valid 等）
+        """
+        return hash((
+            self.pair_symbol,      # Tuple[Symbol, Symbol]
+            self.type,             # "ENTRY" or "EXIT"
+            self.spread_pct,       # 触发条件
+            self.direction         # "LONG_SPREAD" or "SHORT_SPREAD"
+        ))
+
+    def __eq__(self, other):
+        """
+        基于网格线本质属性判断相等
+
+        只比较核心标识字段，保证：
+        - 相同触发条件的网格线被视为同一个
+        - level_id 改名不影响相等性判断
+        - position_size_pct 调整不影响相等性判断
+        """
+        if not isinstance(other, GridLevel):
+            return False
+        return (
+            self.pair_symbol == other.pair_symbol and
+            self.type == other.type and
+            self.spread_pct == other.spread_pct and
+            self.direction == other.direction
+        )
+
+    def __repr__(self):
+        """增强调试输出（同时显示 level_id 和 hash）"""
+        return (
+            f"GridLevel(id='{self.level_id}', hash={hash(self)}, "
+            f"type={self.type}, spread={self.spread_pct*100:.2f}%)"
+        )
+
 
 @dataclass
 class GridPosition:

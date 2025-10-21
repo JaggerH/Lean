@@ -21,7 +21,7 @@ class GridLevelManager:
     - 根据当前价差查找被触发的网格线
     """
 
-    def __init__(self, algorithm: QCAlgorithm):
+    def __init__(self, algorithm: QCAlgorithm, debug=False):
         """
         初始化 GridLevelManager
 
@@ -29,18 +29,27 @@ class GridLevelManager:
             algorithm: QCAlgorithm 实例
         """
         self.algorithm = algorithm
+        self.debug = debug
 
-        # 网格线定义
+        # 核心存储：按 pair 分组的网格线定义
         # {pair_symbol: List[GridLevel]}
         self.grid_levels: Dict[Tuple[Symbol, Symbol], List[GridLevel]] = {}
 
-        # 网格线配对关系缓存（entry -> exit）
-        # {pair_symbol: {entry_level_id: exit_level_id}}
-        self.entry_exit_pairs: Dict[Tuple[Symbol, Symbol], Dict[str, str]] = {}
+        # Hash 索引：用于订单反向查找
+        # {hash(level): GridLevel}
+        self.level_by_hash: Dict[int, GridLevel] = {}
+
+        # 配对关系索引：Entry ↔ Exit
+        self.entry_to_exit: Dict[GridLevel, GridLevel] = {}
+        self.exit_to_entry: Dict[GridLevel, GridLevel] = {}
 
     def add_grid_levels(self, pair_symbol: Tuple[Symbol, Symbol], levels: List[GridLevel]):
         """
         添加交易对的网格线配置
+
+        自动建立索引：
+        - Hash 索引（用于订单反向查找）
+        - 配对关系索引（Entry ↔ Exit）
 
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
@@ -58,7 +67,15 @@ class GridLevelManager:
 
         self.grid_levels[pair_symbol].extend(levels)
 
-        # 建立进场线和出场线的配对关系
+        # 建立 hash 索引
+        for level in levels:
+            hash_value = hash(level)
+            self.level_by_hash[hash_value] = level
+            self.algorithm.debug(
+                f"  📋 Indexed: {level.level_id} → hash={hash_value}"
+            )
+
+        # 建立配对关系索引
         self._build_entry_exit_pairs(pair_symbol)
 
         self.algorithm.debug(
@@ -69,17 +86,27 @@ class GridLevelManager:
         """
         建立进场线和出场线的配对关系
 
+        通过 paired_exit_level_id 查找对应的 Exit GridLevel，
+        建立双向索引：entry_to_exit 和 exit_to_entry
+
         Args:
             pair_symbol: (crypto_symbol, stock_symbol)
         """
-        if pair_symbol not in self.entry_exit_pairs:
-            self.entry_exit_pairs[pair_symbol] = {}
-
         levels = self.grid_levels.get(pair_symbol, [])
 
-        for level in levels:
-            if level.type == "ENTRY" and level.paired_exit_level_id:
-                self.entry_exit_pairs[pair_symbol][level.level_id] = level.paired_exit_level_id
+        for entry in [l for l in levels if l.type == "ENTRY"]:
+            if entry.paired_exit_level_id:
+                # 通过 level_id 找到对应的 Exit GridLevel
+                exit_level = next(
+                    (l for l in levels if l.level_id == entry.paired_exit_level_id),
+                    None
+                )
+                if exit_level:
+                    self.entry_to_exit[entry] = exit_level
+                    self.exit_to_entry[exit_level] = entry
+                    self.algorithm.debug(
+                        f"  🔗 Paired: {entry.level_id} (Entry) ↔ {exit_level.level_id} (Exit)"
+                    )
 
     def validate_grid_levels(self, pair_symbol: Tuple[Symbol, Symbol],
                             crypto_fee_pct: float = 0.0026,
@@ -248,6 +275,21 @@ class GridLevelManager:
         levels = self.grid_levels.get(pair_symbol, [])
         valid_levels = [l for l in levels if l.is_valid]
 
+        if self.debug:
+            # Debug: 输入参数
+            crypto_symbol, stock_symbol = pair_symbol
+            self.algorithm.debug(
+                f"🔍 get_active_level | Pair: {crypto_symbol.value}/{stock_symbol.value} | "
+                f"Spread: {spread_pct*100:.2f}% | Total levels: {len(levels)} | Valid levels: {len(valid_levels)}"
+            )
+
+            # Debug: 显示所有 valid_levels 的详细信息
+            for level in valid_levels:
+                self.algorithm.debug(
+                    f"  📋 Level: {level.level_id} | Type: {level.type} | Direction: {level.direction} | "
+                    f"Spread: {level.spread_pct*100:.2f}% | Valid: {level.is_valid}"
+                )
+
         triggered_levels = []
 
         for level in valid_levels:
@@ -260,7 +302,7 @@ class GridLevelManager:
                     is_triggered = spread_pct <= level.spread_pct
                 elif level.type == "EXIT":
                     # 做多价差：价差回正时触发出场（spread_pct >= trigger）
-                    is_triggered = spread_pct >= level.spread_pct
+                    is_triggered = spread_pct <= level.spread_pct
 
             elif level.direction == "SHORT_SPREAD":
                 if level.type == "ENTRY":
@@ -268,17 +310,36 @@ class GridLevelManager:
                     is_triggered = spread_pct >= level.spread_pct
                 elif level.type == "EXIT":
                     # 做空价差：价差回负时触发出场（spread_pct <= trigger）
-                    is_triggered = spread_pct <= level.spread_pct
+                    is_triggered = spread_pct >= level.spread_pct
 
+            # Debug: 显示每个 level 的触发判断结果
             if is_triggered:
+                if self.debug:
+                    self.algorithm.debug(
+                        f"  ✅ Triggered: {level.level_id} | Type: {level.type} | "
+                        f"Condition: {spread_pct*100:.2f}% vs {level.spread_pct*100:.2f}%"
+                    )
                 triggered_levels.append(level)
+            else:
+                if self.debug:
+                    self.algorithm.debug(
+                        f"  ❌ Not triggered: {level.level_id} | Type: {level.type} | "
+                        f"Condition: {spread_pct*100:.2f}% vs {level.spread_pct*100:.2f}%"
+                    )
 
         # 如果有多个触发，返回最接近当前价差的（最激进的）
         if triggered_levels:
             # 按距离排序（距离 = |spread_pct - level.spread_pct|）
             triggered_levels.sort(key=lambda l: abs(spread_pct - l.spread_pct))
-            return triggered_levels[0]
+            selected_level = triggered_levels[0]
+            if self.debug:
+                self.algorithm.debug(
+                    f"  🎯 Selected: {selected_level.level_id} | Type: {selected_level.type}"
+                )
+            return selected_level
 
+        if self.debug:
+            self.algorithm.debug("  ⚠️ No level triggered, returning None")
         return None
 
     def get_triggered_entry_level(self, pair_symbol: Tuple[Symbol, Symbol],
@@ -348,6 +409,46 @@ class GridLevelManager:
             GridLevel 列表
         """
         return self.grid_levels.get(pair_symbol, [])
+
+    def find_paired_level(self, level: GridLevel) -> Optional[GridLevel]:
+        """
+        查找配对的网格线
+
+        - Entry → Exit: 返回对应的出场线
+        - Exit → Entry: 返回对应的进场线
+
+        Args:
+            level: GridLevel 对象（Entry 或 Exit）
+
+        Returns:
+            配对的 GridLevel，如果没有则返回 None
+
+        Example:
+            >>> entry = GridLevel(...)
+            >>> exit_level = manager.find_paired_level(entry)
+        """
+        if level.type == "ENTRY":
+            return self.entry_to_exit.get(level)
+        else:
+            return self.exit_to_entry.get(level)
+
+    def find_level_by_hash(self, hash_value: int) -> Optional[GridLevel]:
+        """
+        通过 hash 值查找 GridLevel
+
+        用于订单反向查找：order.tag → hash → GridLevel
+
+        Args:
+            hash_value: GridLevel 的 hash 值
+
+        Returns:
+            GridLevel 对象，如果找不到返回 None
+
+        Example:
+            >>> hash_value = int(order.tag)
+            >>> level = manager.find_level_by_hash(hash_value)
+        """
+        return self.level_by_hash.get(hash_value)
 
     def get_summary(self, pair_symbol: Tuple[Symbol, Symbol]) -> str:
         """

@@ -8,8 +8,9 @@ Grid Position Manager - 网格持仓追踪管理器
 4. 处理订单事件，更新对应网格线的持仓
 """
 from AlgorithmImports import QCAlgorithm, Symbol, OrderEvent, OrderStatus
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 from .grid_models import GridLevel, GridPosition
+from .grid_level_manager import GridLevelManager
 
 
 class GridPositionManager:
@@ -17,26 +18,28 @@ class GridPositionManager:
     网格持仓追踪管理器
 
     职责:
-    - 管理每个交易对的多个网格线持仓
+    - 管理每个交易对的多个网格线持仓（以 Entry GridLevel 为索引）
     - 追踪订单组到网格线的映射
     - 根据订单事件更新网格线持仓
     - 提供持仓状态查询接口（持仓数量、是否达到目标等）
     """
 
-    def __init__(self, algorithm: QCAlgorithm, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, grid_level_manager: GridLevelManager, debug: bool = False):
         """
         初始化 GridPositionManager
 
         Args:
             algorithm: QCAlgorithm 实例
+            grid_level_manager: GridLevelManager 实例（用于配对查找和 hash 查找）
             debug: 是否启用调试日志
         """
         self.algorithm = algorithm
+        self.grid_level_manager = grid_level_manager
         self.debug_enabled = debug
 
-        # 网格线持仓追踪
-        # {pair_symbol: {grid_id: GridPosition}}
-        self.grid_positions: Dict[Tuple[Symbol, Symbol], Dict[str, GridPosition]] = {}
+        # 核心索引：Entry GridLevel → GridPosition
+        # 只用 Entry GridLevel 作为键，Exit 通过配对关系查找
+        self.grid_positions: Dict[GridLevel, GridPosition] = {}
 
     def debug(self, message: str):
         """条件debug输出"""
@@ -125,38 +128,17 @@ class GridPositionManager:
         order_id = order_event.order_id
         event_time = self.algorithm.time  # 获取事件触发时间
 
-        # 从订单 ticket 获取 tag 来解析 grid_id
-        ticket = self.algorithm.transactions.get_order_ticket(order_id)
-        if not ticket or not ticket.tag:
-            # 不是网格订单，忽略
-            return
+        # 使用新方法查找对应的 GridPosition
+        grid_position = self.get_grid_position_by_order_event(order_event)
 
-        # Tag 就是 grid_id（唯一标识）
-        if not ticket.tag:
-            # 没有 tag，忽略
-            return
-
-        grid_id = ticket.tag
-
-        # 查找包含此订单symbol的所有pair_symbol
-        # 遍历所有已知的 grid_positions 查找匹配的 grid_id
-        grid_position = None
-        pair_symbol = None
-
-        for ps, positions in self.grid_positions.items():
-            if grid_id in positions:
-                # 检查订单symbol是否属于这个pair
-                if order_event.symbol in ps:
-                    pair_symbol = ps
-                    grid_position = positions[grid_id]
-                    break
-
-        if not grid_position or not pair_symbol:
-            # 未找到对应的网格持仓，可能是新的网格线
+        if not grid_position:
+            # 未找到对应的网格持仓，可能是新的网格线或非网格订单
             # 这种情况下无法更新持仓，跳过
             return
 
+        pair_symbol = grid_position.pair_symbol
         crypto_symbol, stock_symbol = pair_symbol
+        grid_id = grid_position.level.level_id
 
         # === 处理成交事件 ===
         if order_event.status in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
@@ -199,34 +181,34 @@ class GridPositionManager:
         """
         获取或创建 GridPosition
 
-        如果网格线不存在，创建新的 GridPosition
-        所有需要的信息都从 level 中获取
+        重要：只接受 Entry GridLevel 作为参数
+        - Entry GridLevel 直接作为索引键
+        - Exit GridLevel 需要先通过配对关系找到 Entry
 
         Args:
-            level: 网格线配置（包含 pair_symbol 和 level_id）
+            level: Entry GridLevel（必须是 ENTRY 类型）
 
         Returns:
             GridPosition 对象
+
+        Raises:
+            AssertionError: 如果传入的不是 Entry GridLevel
         """
-        # 从 level 中提取需要的信息
-        pair_symbol = level.pair_symbol
-        level_id = level.level_id  # 直接使用 level_id
+        assert level.type == "ENTRY", f"Must use Entry GridLevel as key, got {level.type}"
 
-        if pair_symbol not in self.grid_positions:
-            self.grid_positions[pair_symbol] = {}
-
-        if level_id in self.grid_positions[pair_symbol]:
-            return self.grid_positions[pair_symbol][level_id]
+        # 直接用 GridLevel 作为键查找
+        if level in self.grid_positions:
+            return self.grid_positions[level]
 
         # 创建新的 GridPosition
         position = GridPosition(
-            pair_symbol=pair_symbol,
+            pair_symbol=level.pair_symbol,
             level=level
         )
 
-        self.grid_positions[pair_symbol][level_id] = position
+        self.grid_positions[level] = position
 
-        self.debug(f"🆕 Created grid position {level_id}")
+        self.debug(f"🆕 Created grid position {level.level_id} (hash={hash(level)})")
 
         return position
 
@@ -234,30 +216,32 @@ class GridPositionManager:
         """
         获取指定网格线的持仓
 
-        可以通过 entry_level 或 exit_level 找到对应的持仓
-        - 如果是 ENTRY level，直接通过 level_id 查找
-        - 如果是 EXIT level，通过 paired_exit_level_id 反向查找
+        支持 Entry 和 Exit GridLevel：
+        - Entry: 直接查找 self.grid_positions[entry_level]
+        - Exit: 先通过配对关系找到 Entry，再查找持仓
 
         Args:
-            level: 网格线配置（ENTRY 或 EXIT）
+            level: GridLevel（ENTRY 或 EXIT）
 
         Returns:
             GridPosition 或 None
-        """
-        pair_symbol = level.pair_symbol
-        pair_positions = self.grid_positions.get(pair_symbol, {})
 
+        Example:
+            >>> # 通过 Entry 查找
+            >>> position = manager.get_grid_position(entry_level)
+
+            >>> # 通过 Exit 查找
+            >>> position = manager.get_grid_position(exit_level)
+        """
         if level.type == "ENTRY":
-            # 如果是进场线，直接通过 level_id 查找
-            level_id = level.level_id
-            return pair_positions.get(level_id)
+            # Entry: 直接查找
+            return self.grid_positions.get(level)
 
         elif level.type == "EXIT":
-            # 如果是出场线，需要找到配对的进场线的 level_id
-            # 遍历所有持仓，查找 paired_exit_level_id 匹配的
-            for level_id, position in pair_positions.items():
-                if position.level.paired_exit_level_id == level.level_id:
-                    return position
+            # Exit: 先找配对的 Entry，再查找持仓
+            entry_level = self.grid_level_manager.find_paired_level(level)
+            if entry_level:
+                return self.grid_positions.get(entry_level)
 
         return None
 
@@ -276,7 +260,7 @@ class GridPositionManager:
         """
         return self.get_grid_position(level)
 
-    def get_all_grid_positions(self, pair_symbol: Tuple[Symbol, Symbol]) -> Dict[str, GridPosition]:
+    def get_all_grid_positions(self, pair_symbol: Tuple[Symbol, Symbol]) -> Dict[GridLevel, GridPosition]:
         """
         获取交易对的所有网格持仓
 
@@ -284,9 +268,13 @@ class GridPositionManager:
             pair_symbol: (crypto_symbol, stock_symbol)
 
         Returns:
-            {grid_id: GridPosition} 字典
+            {Entry GridLevel: GridPosition} 字典
         """
-        return self.grid_positions.get(pair_symbol, {})
+        return {
+            entry_level: position
+            for entry_level, position in self.grid_positions.items()
+            if entry_level.pair_symbol == pair_symbol
+        }
 
     def get_active_grids(self, pair_symbol: Tuple[Symbol, Symbol]) -> List[str]:
         """
@@ -296,34 +284,18 @@ class GridPositionManager:
             pair_symbol: (crypto_symbol, stock_symbol)
 
         Returns:
-            grid_id 列表
+            level_id 列表（返回 level_id 方便日志阅读）
         """
-        pair_positions = self.grid_positions.get(pair_symbol, {})
         active_grids = []
 
-        for grid_id, position in pair_positions.items():
-            crypto_qty, stock_qty = position.quantity
-            # 如果有任何一边持仓>0.01，认为是活跃的
-            if abs(crypto_qty) > 0.01 or abs(stock_qty) > 0.01:
-                active_grids.append(grid_id)
+        for entry_level, position in self.grid_positions.items():
+            if entry_level.pair_symbol == pair_symbol:
+                crypto_qty, stock_qty = position.quantity
+                # 如果有任何一边持仓>0.01，认为是活跃的
+                if abs(crypto_qty) > 0.01 or abs(stock_qty) > 0.01:
+                    active_grids.append(entry_level.level_id)
 
         return active_grids
-
-    def close_grid_position(self, pair_symbol: Tuple[Symbol, Symbol], grid_id: str):
-        """
-        清除网格线持仓（将持仓归零）
-
-        Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            grid_id: 网格线ID
-        """
-        position = self.get_grid_position(pair_symbol, grid_id)
-        if position:
-            # 将持仓归零（通过更新负数量）
-            crypto_qty, stock_qty = position.quantity
-            position.update_filled_qty(-crypto_qty, -stock_qty)
-
-            self.debug(f"✅ Closed grid position {grid_id}")
 
     # ============================================================================
     #                      统计和报告
@@ -339,7 +311,7 @@ class GridPositionManager:
         Returns:
             格式化的摘要字符串
         """
-        pair_positions = self.grid_positions.get(pair_symbol, {})
+        pair_positions = self.get_all_grid_positions(pair_symbol)
 
         if not pair_positions:
             return f"No grid positions for {pair_symbol[0].value} <-> {pair_symbol[1].value}"
@@ -350,16 +322,80 @@ class GridPositionManager:
             ""
         ]
 
-        for grid_id, position in pair_positions.items():
+        for entry_level, position in pair_positions.items():
             crypto_qty, stock_qty = position.quantity
             summary_lines.append(
-                f"  {grid_id}:"
+                f"  {entry_level.level_id} (hash={hash(entry_level)}):"
             )
             summary_lines.append(
                 f"    Holdings: {crypto_qty:.2f} / {stock_qty:.2f}"
             )
 
         return "\n".join(summary_lines)
+
+    # ============================================================================
+    #                      对冲敞口检测
+    # ============================================================================
+
+    def get_grid_position_by_order_event(self, order_event: OrderEvent) -> Optional[GridPosition]:
+        """
+        通过订单事件查找对应的 GridPosition
+
+        流程：
+        1. 从 order.tag 提取 hash 值
+        2. 通过 hash 查找 GridLevel（可能是 Entry 或 Exit）
+        3. 如果是 Exit，找到配对的 Entry
+        4. 用 Entry GridLevel 查找 GridPosition
+
+        Args:
+            order_event: OrderEvent 对象
+
+        Returns:
+            GridPosition 对象，如果找不到返回 None
+        """
+        order_id = order_event.order_id
+
+        # 通过 Transactions 获取 Order 对象
+        order = self.algorithm.transactions.get_order_by_id(order_id)
+
+        # Order.tag 现在是 hash(GridLevel) 的字符串形式
+        try:
+            hash_value = int(order.tag)
+        except (ValueError, AttributeError, TypeError):
+            self.algorithm.error(
+                f"❌ Order {order_id} has invalid tag: {order.tag} (expected hash value)"
+            )
+            return None
+
+        # 1. 通过 hash 查找 GridLevel
+        level = self.grid_level_manager.find_level_by_hash(hash_value)
+        if not level:
+            self.algorithm.error(
+                f"❌ Cannot find GridLevel for hash {hash_value} "
+                f"(order {order_id}, symbol {order_event.symbol.value})"
+            )
+            return None
+
+        # 2. 如果是 Exit，找到配对的 Entry
+        if level.type == "EXIT":
+            entry_level = self.grid_level_manager.find_paired_level(level)
+            if not entry_level:
+                self.algorithm.error(
+                    f"❌ Cannot find paired Entry for {level.level_id} "
+                    f"(hash={hash_value}, order {order_id})"
+                )
+                return None
+            level = entry_level
+
+        # 3. 用 Entry GridLevel 查找 GridPosition
+        position = self.grid_positions.get(level)
+        if not position:
+            self.algorithm.error(
+                f"❌ CRITICAL: GridPosition not found for {level.level_id} "
+                f"(hash={hash(level)}, order {order_id})"
+            )
+
+        return position
 
     # ============================================================================
     #                      对冲敞口检测
@@ -395,7 +431,7 @@ class GridPositionManager:
         stock_price = self.algorithm.securities[stock_symbol].price
 
         if crypto_price <= 0 or stock_price <= 0:
-            # 价格无效，无法判断，保守起见认为有敞口
+            # 价格无效，无法判断,保守起见认为有敞口
             return True
 
         crypto_value = crypto_qty * crypto_price

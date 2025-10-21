@@ -11,7 +11,7 @@ from .grid_models import GridLevel, GridPosition, generate_order_tag
 from .grid_level_manager import GridLevelManager
 from .grid_position_manager import GridPositionManager
 from .execution_manager import ExecutionManager
-from .execution_models import ExecutionTarget
+from .execution_models import ExecutionTarget, ExecutionStatus
 
 if TYPE_CHECKING:
     from spread_manager import SpreadManager
@@ -53,8 +53,12 @@ class GridStrategy(BaseStrategy):
         self.spread_manager = spread_manager
 
         # 初始化网格管理器
-        self.grid_level_manager = GridLevelManager(algorithm)
-        self.grid_position_manager = GridPositionManager(algorithm, debug=debug)
+        self.grid_level_manager = GridLevelManager(algorithm, debug=False)
+        self.grid_position_manager = GridPositionManager(
+            algorithm,
+            self.grid_level_manager,  # 注入依赖
+            debug=debug
+        )
 
         # 初始化执行管理器
         # self.execution_manager = ExecutionManager(algorithm, debug=debug)
@@ -99,8 +103,7 @@ class GridStrategy(BaseStrategy):
             self.algorithm.error(f"❌ Grid level validation failed: {e}")
             raise
 
-    def should_open_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                            spread_pct: float, level: GridLevel) -> Optional[str]:
+    def should_open_position(self, level: GridLevel) -> Optional[str]:
         """
         判断是否需要开仓（策略层协调）
 
@@ -117,34 +120,22 @@ class GridStrategy(BaseStrategy):
         Returns:
             True if should open, False otherwise
         """
-        crypto_symbol, stock_symbol = pair_symbol
+        crypto_symbol, stock_symbol = level.pair_symbol
         level_id = level.level_id
 
-        # === 1. 市场开盘检查 ===
-        crypto_exchange_open = self.algorithm.securities[crypto_symbol].exchange.exchange_open
-        stock_exchange_open = self.algorithm.securities[stock_symbol].exchange.exchange_open
-
-        if not (crypto_exchange_open and stock_exchange_open):
-            self.algorithm.debug(
-                f"⚠️ Market not open | Level: {level_id} | "
-                f"Crypto: {crypto_exchange_open}, Stock: {stock_exchange_open}"
-            )
-            return False
-
-        # === 2. 挂单检查（ExecutionManager）===
+        # === 1. 挂单检查（ExecutionManager）===
         if self.execution_manager.has_active_execution(level):
             # self.algorithm.debug(f"⚠️ Level {level_id} has active execution, skipping open")
             return False
 
-        # === 3. 持仓检查（GridPositionManager）===
+        # === 2. 持仓检查（GridPositionManager）===
         if self.grid_position_manager.has_reached_target(level):
             self.algorithm.debug(f"⚠️ Level {level_id} position reached target, skipping open")
             return False
 
         return True
 
-    def should_close_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                             spread_pct: float, level: GridLevel) -> bool:
+    def should_close_position(self, level: GridLevel) -> bool:
         """
         判断是否需要平仓（策略层协调）
 
@@ -154,57 +145,131 @@ class GridStrategy(BaseStrategy):
         3. 是否有active ExecutionTarget（挂单检查 - ExecutionManager）
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            spread_pct: 当前价差百分比
             level: 触发的出场线配置 (EXIT level)
 
         Returns:
             True if should close, False otherwise
         """
-        crypto_symbol, stock_symbol = pair_symbol
+        crypto_symbol, stock_symbol = level.pair_symbol
 
-        # === 1. 市场开盘检查 ===
-        crypto_exchange_open = self.algorithm.securities[crypto_symbol].exchange.exchange_open
-        stock_exchange_open = self.algorithm.securities[stock_symbol].exchange.exchange_open
-
-        if not (crypto_exchange_open and stock_exchange_open):
-            self.algorithm.debug(
-                f"⚠️ Market not open for exit | "
-                f"Crypto: {crypto_exchange_open}, Stock: {stock_exchange_open}"
-            )
-            return False
-
-        # === 2. 检查是否有对应的持仓 ===
+        # === 1. 检查是否有对应的持仓 ===
         position = self.grid_position_manager.get_grid_position(level)
         if not position:
-            # 没有持仓，无需平仓
+            return False
+        elif abs(position.quantity[0]) < 1e-8 and abs(position.quantity[1]) < 1e-8:
             return False
 
-        level_id = level.level_id
-
         # === 3. 挂单检查（ExecutionManager）===
-        if self.execution_manager.has_active_execution(level):
-            self.algorithm.debug(f"⚠️ Level {level_id} has active execution, skipping close")
+        has_active = self.execution_manager.has_active_execution(level)
+        if has_active:
             return False
 
         return True
 
-    def on_data(self, data):
+    def _open_grid_position(self, level: GridLevel, spread_pct):
         """
-        处理数据更新 - 重新触发 active ExecutionTargets
-
-        每个 tick 检查所有 PENDING 状态的 ExecutionTarget：
-        - 重新检查 orderbook 深度
-        - 重新检查价差是否满足条件
-        - 尝试提交订单
+        开仓 - 委托给执行层
 
         Args:
-            data: Slice 数据
+            pair_symbol: (crypto_symbol, stock_symbol)
+            level: 网格线配置
+            spread_pct: 当前价差百分比
         """
-        # 重新触发所有 New 状态的 ExecutionTargets
-        for execution_key, target in list(self.execution_manager.active_targets.items()):
-            if target.is_active():
-                self.execution_manager.execute(target)
+        crypto_symbol, stock_symbol = level.pair_symbol
+
+        # ✅ 计算目标数量（Strategy职责）
+        position_size_pct = level.position_size_pct
+        if level.direction == "SHORT_SPREAD":
+            position_size_pct = -position_size_pct
+
+        target_order_pair = self.algorithm.calculate_order_pair(
+            crypto_symbol,
+            stock_symbol,
+            position_size_pct
+        )
+
+        # ✅ 计算增量数量（delta = 目标 - 当前持仓）
+        grid_position = self.grid_position_manager.get_or_create_grid_position(level)
+        current_crypto_qty, current_stock_qty = grid_position.quantity
+
+        delta_order_pair = {
+            crypto_symbol: target_order_pair[crypto_symbol] - current_crypto_qty,
+            stock_symbol: target_order_pair[stock_symbol] - current_stock_qty
+        }
+
+        self.algorithm.debug(
+            f"📥 _open_grid_position | ENTRY Level: {level.level_id} | "
+            f"Current Position: {current_crypto_qty:.2f}/{current_stock_qty:.2f} | "
+            f"Delta: {delta_order_pair[crypto_symbol]:.2f}/{delta_order_pair[stock_symbol]:.2f} | "
+            f"current Spread Pct: {spread_pct}"
+        )
+
+        # ✅ 构建执行目标
+        execution_target = ExecutionTarget(
+            pair_symbol=level.pair_symbol,
+            grid_id=level.level_id,  # 人类可读标识（用于日志）
+            level=level,  # GridLevel 对象（用于订单 tag = hash(level)）
+            target_qty=delta_order_pair,
+            expected_spread_pct=level.spread_pct,
+            spread_direction=level.direction,  # 直接使用 LONG_SPREAD/SHORT_SPREAD
+            algorithm=self.algorithm
+        )
+
+        # register execution in active target
+        self.execution_manager.register_execution_target(execution_target)
+        # ✅ 委托给执行层（完全交给 ExecutionManager）
+        self.execution_manager.execute(execution_target)
+
+    def _close_grid_position(self, exit_level: GridLevel, spread_pct):
+        """
+        平仓 - 委托给执行层
+
+        根据 GridPosition 的实际持仓数量平仓
+
+        Args:
+            position: GridPosition 对象
+            exit_level: 触发平仓的 EXIT GridLevel（用于生成 ExecutionTarget 的 grid_id）
+            spread_pct: 当前价差百分比
+        """
+        position = self.grid_position_manager.get_grid_position(exit_level)
+        pair_symbol = position.pair_symbol
+        level_id = exit_level.level_id  # 使用 EXIT level 的 ID（而不是 position.grid_id）
+
+        self.algorithm.debug(
+            f"📤 _close_grid_position | EXIT Level: {level_id} | "
+            f"ENTRY Position: {position.grid_id} | Qty: {position.quantity[0]:.2f}/{position.quantity[1]:.2f} | "
+            f"current Spread Pct: {spread_pct}"
+        )
+        # 🐛 DEBUG: 打印 ExecutionTarget 初始化参数和持仓
+        crypto_symbol, stock_symbol = pair_symbol
+        crypto_holdings = self.algorithm.Portfolio[crypto_symbol].Quantity
+        stock_holdings = self.algorithm.Portfolio[stock_symbol].Quantity
+        self.algorithm.debug(
+            f"expected_spread_pct={exit_level.spread_pct:.4f} | spread_direction={exit_level.direction} | "
+            f"Portfolio Holdings: {crypto_symbol.value}={crypto_holdings:.4f}, {stock_symbol.value}={stock_holdings:.4f}"
+        )
+        
+        # ✅ 构建执行目标（平仓目标 = 0）
+        target_order_pair = {
+            exit_level.pair_symbol[0]: -position.quantity[0],
+            exit_level.pair_symbol[1]: -position.quantity[1]
+        }
+
+
+        # 直接使用 exit_level.direction（已在初始化时设置为正确的平仓方向）
+        execution_target = ExecutionTarget(
+            pair_symbol=pair_symbol,
+            grid_id=level_id,  # 人类可读标识（用于日志）
+            level=exit_level,  # GridLevel 对象（用于订单 tag）
+            target_qty=target_order_pair,
+            expected_spread_pct=exit_level.spread_pct,
+            spread_direction=exit_level.direction,  # 直接使用 EXIT level 的方向
+            algorithm=self.algorithm
+        )
+
+        self.execution_manager.register_execution_target(execution_target)
+        # ✅ 委托给执行层
+        self.execution_manager.execute(execution_target)
 
     def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
         """
@@ -229,120 +294,59 @@ class GridStrategy(BaseStrategy):
         # 根据 level 类型执行相应操作
         if level.type == "ENTRY":
             # 检查是否应该开仓
-            if self.should_open_position(pair_symbol, spread_pct, level):
-                self._open_grid_position(pair_symbol, level, spread_pct)
+            if self.should_open_position(level):
+                self._open_grid_position(level, spread_pct)
 
         elif level.type == "EXIT":
             # 检查是否应该平仓
-            if self.should_close_position(pair_symbol, spread_pct, level):
-                # 通过 level 找到对应的持仓
-                position = self.grid_position_manager.get_grid_position(level)
-                if position:
-                    self._close_grid_position(position, spread_pct)
-
-    def _open_grid_position(self, pair_symbol: Tuple[Symbol, Symbol],
-                           level: GridLevel, spread_pct: float):
+            if self.should_close_position(level):
+                self._close_grid_position(level, spread_pct)
+                
+    def on_data(self, data):
         """
-        开仓 - 委托给执行层
+        处理数据更新 - 重新触发 active ExecutionTargets + 超时检查
+
+        每个 tick 执行：
+        1. 超时检查：检查 ExecutionTarget 是否超时
+        2. 重新触发：重新检查 orderbook 深度并尝试提交订单
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            level: 网格线配置
-            spread_pct: 当前价差百分比
+            data: Slice 数据
         """
-        crypto_symbol, stock_symbol = pair_symbol
-        level_id = level.level_id
+        current_time = self.algorithm.UtcTime
 
-        # ✅ 计算目标数量（Strategy职责）
-        position_size_pct = level.position_size_pct
-        if level.direction == "SHORT_SPREAD":
-            position_size_pct = -position_size_pct
+        # 遍历所有 active targets
+        for execution_key, target in list(self.execution_manager.active_targets.items()):
 
-        target_order_pair = self.algorithm.calculate_order_pair(
-            crypto_symbol,
-            stock_symbol,
-            position_size_pct
-        )
+            # === 步骤 1: 超时检查 ===
+            if target.is_expired(current_time):
+                if target.is_quantity_filled():
+                    # 超时但已经足够接近目标，标记完成
+                    target.status = ExecutionStatus.Filled
+                    crypto_symbol, stock_symbol = target.pair_symbol
+                    crypto_remaining, stock_remaining = target.quantity_remaining
+                    self.algorithm.debug(
+                        f"⏰ ExecutionTarget {target.grid_id} expired but close enough to target, marked as Filled | "
+                        f"Remaining: {crypto_symbol.value}={crypto_remaining:.4f}, {stock_symbol.value}={stock_remaining:.4f}"
+                    )
+                else:
+                    # 超时且未完成，取消并等待下次触发
+                    target.status = ExecutionStatus.Canceled
+                    crypto_symbol, stock_symbol = target.pair_symbol
+                    crypto_remaining, stock_remaining = target.quantity_remaining
+                    self.algorithm.debug(
+                        f"⏰ ExecutionTarget {target.grid_id} expired and canceled | "
+                        f"Remaining: {crypto_symbol.value}={crypto_remaining:.4f}, {stock_symbol.value}={stock_remaining:.4f}"
+                    )
 
-        # ✅ 计算增量数量（delta = 目标 - 当前持仓）
-        grid_position = self.grid_position_manager.get_or_create_grid_position(level)
-        current_crypto_qty, current_stock_qty = grid_position.quantity
+                # 从 active_targets 移除
+                del self.execution_manager.active_targets[execution_key]
+                continue
 
-        delta_order_pair = {
-            crypto_symbol: target_order_pair[crypto_symbol] - current_crypto_qty,
-            stock_symbol: target_order_pair[stock_symbol] - current_stock_qty
-        }
-
-        # ✅ 构建执行目标
-        # 转换方向：LONG_SPREAD -> LONG_CRYPTO, SHORT_SPREAD -> SHORT_CRYPTO
-        execution_direction = "LONG_CRYPTO" if level.direction == "LONG_SPREAD" else "SHORT_CRYPTO"
-
-        execution_target = ExecutionTarget(
-            pair_symbol=pair_symbol,
-            grid_id=level_id,  # 直接使用 level_id
-            target_qty=delta_order_pair,
-            expected_spread_pct=spread_pct,
-            spread_direction=execution_direction,
-            algorithm=self.algorithm
-        )
-
-        # register execution in active target
-        self.execution_manager.register_execution_target(execution_target)
-        # ✅ 委托给执行层（完全交给 ExecutionManager）
-        self.execution_manager.execute(execution_target)
-
-    def _close_grid_position(self, position: GridPosition, spread_pct: float):
-        """
-        平仓 - 委托给执行层
-
-        根据 GridPosition 的实际持仓数量平仓
-
-        Args:
-            position: GridPosition 对象
-            spread_pct: 当前价差百分比
-        """
-        pair_symbol = position.pair_symbol
-        crypto_symbol, stock_symbol = pair_symbol
-        level_id = position.grid_id  # grid_id 现在就是 level_id
-
-        # 获取当前持仓数量
-        crypto_qty, stock_qty = position.quantity
-
-        # 检查是否有足够的仓位可以平仓
-        if abs(crypto_qty) < 1e-8 or abs(stock_qty) < 1e-8:
-            self.algorithm.debug(
-                f"⚠️ Level {level_id} position too small to close | "
-                f"Crypto: {crypto_qty:.4f}, Stock: {stock_qty:.4f}"
-            )
-            return
-
-        self.algorithm.debug(
-            f"🔍 Closing grid position | Level: {level_id} | "
-            f"Spread: {spread_pct*100:.2f}% | "
-            f"Crypto: {crypto_qty:.2f} | Stock: {stock_qty:.2f}"
-        )
-
-        # ✅ 构建执行目标（平仓目标 = 0）
-        target_order_pair = {
-            crypto_symbol: 0.0,
-            stock_symbol: 0.0
-        }
-
-        # 转换方向：LONG_SPREAD -> LONG_CRYPTO, SHORT_SPREAD -> SHORT_CRYPTO
-        execution_direction = "LONG_CRYPTO" if position.level.direction == "LONG_SPREAD" else "SHORT_CRYPTO"
-
-        execution_target = ExecutionTarget(
-            pair_symbol=pair_symbol,
-            grid_id=level_id,  # 直接使用 level_id
-            target_qty=target_order_pair,
-            expected_spread_pct=spread_pct,
-            spread_direction=execution_direction,
-            grid_position_manager=self.grid_position_manager
-        )
-
-        # ✅ 委托给执行层
-        self.execution_manager.execute(execution_target)
-
+            # === 步骤 2: 重新触发活跃的 ExecutionTarget ===
+            if target.is_active():
+                self.execution_manager.execute(target)
+                
     def on_order_event(self, order_event):
         """
         处理订单事件 - 扩展版本
@@ -358,11 +362,13 @@ class GridStrategy(BaseStrategy):
         # 调用父类的订单事件处理（更新 positions）
         super().on_order_event(order_event)
 
+        # 调用 GridPositionManager 的订单事件处理（更新网格持仓）
+        self.grid_position_manager.on_order_event(order_event)
+        
         # 调用 ExecutionManager 的订单事件处理（更新 ExecutionTarget）
         self.execution_manager.on_order_event(order_event)
 
-        # 调用 GridPositionManager 的订单事件处理（更新网格持仓）
-        self.grid_position_manager.on_order_event(order_event)
+
 
     # ============================================================================
     #                      统计和报告

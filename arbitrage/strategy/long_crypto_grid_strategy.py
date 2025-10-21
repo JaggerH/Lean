@@ -89,7 +89,7 @@ class LongCryptoGridStrategy(GridStrategy):
             type="EXIT",
             pair_symbol=pair_symbol,
             spread_pct=self.exit_threshold,
-            direction="LONG_SPREAD"
+            direction="SHORT_SPREAD"  # 平仓方向：卖crypto + 买stock
         )
 
         # 使用GridStrategy的setup方法配置grid levels

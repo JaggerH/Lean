@@ -40,56 +40,67 @@ class ExecutionManager:
         """
         self.algorithm = algorithm
         self.debug_enabled = debug
-        # Track active ExecutionTargets: key = (pair_symbol, level_id)
-        self.active_targets: Dict[Tuple[Tuple[Symbol, Symbol], str], ExecutionTarget] = {}
+        # Track active ExecutionTargets: key = hash(GridLevel)
+        self.active_targets: Dict[int, ExecutionTarget] = {}
         
     # ============================================================================
     #                      注册和查找
     # ============================================================================
     
     def register_execution_target(self, target: ExecutionTarget):
-        level_id = target.grid_id  # grid_id 现在就是 level_id
-        execution_key = target.get_execution_key()
-        target.created_time = self.algorithm.UtcTime
-        self.active_targets[execution_key] = target
-        self._debug(f"📝 Registered ExecutionTarget for level {level_id}")
-        self._debug(f"📝 Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}")
+        """
+        注册 ExecutionTarget 到活跃列表
 
-    def get_active_target_by_order_event(self, order_event: OrderEvent) -> Optional[Tuple[ExecutionTarget, Tuple]]:
+        使用 hash(level) 作为索引键
+
+        Args:
+            target: ExecutionTarget 对象
+        """
+        hash_key = hash(target.level)
+        target.created_time = self.algorithm.UtcTime
+        self.active_targets[hash_key] = target
+        self._debug(
+            f"📝 Registered ExecutionTarget | Level: {target.grid_id} (hash={hash_key}) | "
+            f"Active count: {len(self.active_targets)} \n"
+            f"📝 Total Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}"
+        )
+
+    def get_active_target_by_order_event(self, order_event: OrderEvent) -> Optional[ExecutionTarget]:
         """
         通过订单事件查找对应的 ExecutionTarget
 
-        使用 Order.Tag (level_id) 直接查找，避免异步时序问题
+        使用 Order.Tag (hash(GridLevel)) 直接查找
 
         Args:
             order_event: OrderEvent对象
 
         Returns:
-            (ExecutionTarget, execution_key) 元组，如果找不到返回 None
+            ExecutionTarget 对象，如果找不到返回 None
         """
         order_id = order_event.order_id
 
         # 通过 Transactions 获取 Order 对象
         order = self.algorithm.transactions.get_order_by_id(order_id)
 
-        # Order.Tag 就是 level_id
-        level_id = order.tag
-        if not level_id:
-            self.algorithm.error(f"❌ Order {order_id} has no tag")
+        # Order.tag 现在是 hash(GridLevel) 的字符串形式
+        try:
+            hash_key = int(order.tag)
+        except (ValueError, AttributeError, TypeError):
+            self.algorithm.error(
+                f"❌ Order {order_id} has invalid tag: {order.tag} (expected hash value)"
+            )
             return None
 
-        # 遍历 active_targets 查找匹配的 level_id
-        for execution_key, target in self.active_targets.items():
-            if target.grid_id == level_id:
-                return (target, execution_key)
+        # 直接通过 hash 查找 ExecutionTarget
+        target = self.active_targets.get(hash_key)
+        if not target:
+            self.algorithm.error(
+                f"❌ CRITICAL: Cannot find ExecutionTarget for order {order_id} | "
+                f"Hash: {hash_key} | Symbol: {order_event.symbol.value} | "
+                f"Status: {order_event.status} | Active targets: {len(self.active_targets)}"
+            )
 
-        # 找不到说明逻辑出现问题，记录错误
-        self.algorithm.error(
-            f"❌ CRITICAL: Cannot find ExecutionTarget for order {order_id} | "
-            f"Level ID: {level_id} | Symbol: {order_event.symbol.value} | "
-            f"Status: {order_event.status} | Active targets: {len(self.active_targets)}"
-        )
-        return None
+        return target
 
     def execute(self, target: ExecutionTarget):
         """
@@ -105,36 +116,42 @@ class ExecutionManager:
             target: ExecutionTarget对象，包含目标数量和执行参数
         """
         pair_symbol = target.pair_symbol
-        level_id = target.grid_id  # grid_id 现在就是 level_id
+        level_id = target.grid_id  # 人类可读标识（用于日志）
         crypto_symbol, stock_symbol = pair_symbol
 
-        execution_key = target.get_execution_key()
+        hash_key = hash(target.level)
 
         # 注册新的ExecutionTarget
-        self.active_targets[execution_key] = target
+        self.active_targets[hash_key] = target
 
         # === 步骤 1: 验证前置条件 ===
         if not self._validate_preconditions(pair_symbol):
             return
 
-        # === 步骤 2: 单腿满填检测（最高优先级）===
-        if target.is_one_leg_filled():
-            # self._debug(f"🎯 Detected one-leg filled for level {level_id}, handling sweep order")
-            target.handle_one_leg_order()
+        # === 步骤 1.5: 记录锚定时间（首次执行时）===
+        if target.anchor_time is None:
+            target.anchor_time = self.algorithm.UtcTime
+            # self._debug(f"⏱️ Anchored ExecutionTarget for level {level_id} at {target.anchor_time}")
+
+        # === 步骤 2: 填补剩余订单（最高优先级）===
+        if target.should_fill_remaining_orders():
+            self._debug(f"🎯 Detected should_fill_remaining_orders filled for level {level_id}, handling sweep order")
+            target.fill_remaining_orders()
             return
 
         # === 步骤 3: 双腿市值误差检测 ===
         if target.is_quantity_filled():
-            self._debug(f"✅ Level {level_id} reached target with acceptable error, marking as completed")
+            # self._debug(f"✅ Level {level_id} reached target with acceptable error, marking as completed")
             target.status = ExecutionStatus.Filled
-            del self.active_targets[execution_key]
+            del self.active_targets[hash_key]
             return
 
         # === 步骤 4: 计算可执行数量（委托给 ExecutionTarget）===
         result = target.calculate_executable_quantity(self.debug_enabled)
 
         if not result:
-            # self._debug(f"⏸️ Level {level_id} no valid execution opportunity this tick")
+            # if target.spread_direction == "SHORT_SPREAD":
+                # self._debug(f"⏸️ Level {level_id} no valid execution opportunity this tick")
             return
 
         leg1, leg2 = result
@@ -152,7 +169,7 @@ class ExecutionManager:
         target.order_groups.append(order_group)  # 立即添加
 
         # === 步骤 6: 提交订单（不保存 tickets 返回值）===
-        self._place_order(leg1, leg2, level_id)
+        self._place_order(leg1, leg2, target.level)
 
         # === 步骤 7: 更新ExecutionTarget状态 ===
         target.status = ExecutionStatus.Submitted
@@ -203,23 +220,30 @@ class ExecutionManager:
         self,
         leg1: Tuple[Symbol, float],
         leg2: Tuple[Symbol, float],
-        level_id: str
+        level
     ):
         """
         提交订单对
+
+        使用 hash(level) 作为订单 tag，实现语义化的订单追踪
 
         注意：不再返回 tickets，tickets 在 on_order_event 中动态绑定
 
         Args:
             leg1: (Symbol, Quantity) 第一腿
             leg2: (Symbol, Quantity) 第二腿
-            level_id: 网格线ID（level_id）
+            level: GridLevel 对象（用于生成订单 tag）
         """
         symbol1, qty1 = leg1
         symbol2, qty2 = leg2
 
-        # 直接使用 level_id 作为 tag（唯一标识）
-        tag = level_id
+        # 使用 hash(GridLevel) 作为 tag（语义化标识）
+        tag = str(hash(level))
+
+        self.algorithm.debug(
+            f"📝 Placing orders | Level: {level.level_id} (hash={hash(level)}) | "
+            f"{symbol1.value} x {qty1:.2f}, {symbol2.value} x {qty2:.2f}"
+        )
 
         self.algorithm.market_order(
             symbol1,
@@ -245,10 +269,8 @@ class ExecutionManager:
         Returns:
             True if has active ExecutionTarget, False otherwise
         """
-        pair_symbol = level.pair_symbol
-        level_id = level.level_id  # 直接使用 level_id
-        execution_key = (pair_symbol, level_id)
-        return execution_key in self.active_targets
+        hash_key = hash(level)
+        return hash_key in self.active_targets
 
     def on_order_event(self, order_event: OrderEvent):
         """
@@ -261,12 +283,12 @@ class ExecutionManager:
             order_event: OrderEvent对象
         """
         # === 步骤 1: 查找 ExecutionTarget ===
-        result = self.get_active_target_by_order_event(order_event)
-        if result is None:
+        target = self.get_active_target_by_order_event(order_event)
+        if target is None:
             # 找不到对应的 ExecutionTarget，错误已记录
             return
 
-        target, execution_key = result
+        hash_key = hash(target.level)
 
         # === 步骤 2: 添加 ticket 到 OrderGroup（解决异步竞态条件）===
         target.add_ticket(order_event)
@@ -276,18 +298,20 @@ class ExecutionManager:
             # 委托给 ExecutionTarget 检查状态
             if target.is_completely_filled():
                 target.status = ExecutionStatus.Filled
-                del self.active_targets[execution_key]
+                del self.active_targets[hash_key]
                 self._debug(f"✅ ExecutionTarget for level {target.grid_id} completed (Filled)")
             else:
                 # 至少有一个 OrderGroup 部分成交
                 target.status = ExecutionStatus.PartiallyFilled
-                self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
+                # self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
+                
+            
 
         elif order_event.status in [OrderStatus.Canceled, OrderStatus.Invalid]:
             # 订单失败 - 检查对冲敞口
-            self._handle_order_failure(target, order_event, execution_key)
+            self._handle_order_failure(target, order_event)
 
-    def _handle_order_failure(self, target: ExecutionTarget, order_event: OrderEvent, execution_key: Tuple):
+    def _handle_order_failure(self, target: ExecutionTarget, order_event: OrderEvent):
         """
         处理订单失败情况
 
@@ -296,9 +320,9 @@ class ExecutionManager:
         Args:
             target: ExecutionTarget对象
             order_event: OrderEvent对象
-            execution_key: ExecutionTarget的唯一键
         """
-        level_id = target.grid_id  # grid_id 现在就是 level_id
+        hash_key = hash(target.level)
+        level_id = target.grid_id  # 人类可读标识（用于日志）
         pair_symbol = target.pair_symbol
 
         self.algorithm.debug(

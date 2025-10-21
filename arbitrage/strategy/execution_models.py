@@ -17,6 +17,7 @@ from .spread_matcher import SpreadMatcher
 
 if TYPE_CHECKING:
     from .grid_position_manager import GridPositionManager
+    from .grid_models import GridLevel
 
 
 class ExecutionStatus(Enum):
@@ -296,26 +297,34 @@ class ExecutionTarget:
 
     Attributes:
         pair_symbol: (crypto_symbol, stock_symbol)
-        grid_id: 网格线ID
+        grid_id: 网格线ID（用于日志，人类可读）
+        level: GridLevel 对象（用于生成订单 tag = hash(level)）
         target_qty: 目标数量字典 {Symbol: float}（从calculate_order_pair返回）
         expected_spread_pct: 预期价差百分比
-        spread_direction: "LONG_CRYPTO" or "SHORT_CRYPTO"
+        spread_direction: "LONG_SPREAD" or "SHORT_SPREAD"
         algorithm: QCAlgorithm实例（依赖注入）
         status: 执行状态（默认 PENDING）
         created_time: 创建时间
         order_group_id: 关联的订单组ID
+        anchor_time: 首次提交时间（用于超时检查）
+        timeout_minutes: 超时时间（默认5分钟）
     """
     pair_symbol: Tuple[Symbol, Symbol]
-    grid_id: str
+    grid_id: str  # 人类可读标识（用于日志）
+    level: 'GridLevel'  # GridLevel 对象（用于订单标记）
     target_qty: Dict[Symbol, float]  # 从calculate_order_pair返回
     expected_spread_pct: float
-    spread_direction: str  # "LONG_CRYPTO" or "SHORT_CRYPTO"
+    spread_direction: str  # "LONG_SPREAD" or "SHORT_SPREAD"
     algorithm: QCAlgorithm  # 依赖注入
 
     # 状态字段
     status: ExecutionStatus = field(default=ExecutionStatus.New)
     created_time: Optional[datetime] = field(default=None)
     order_groups: List['OrderGroup'] = field(default_factory=list)  # 关联的订单组列表（支持多次提交）
+
+    # 超时控制字段
+    anchor_time: Optional[datetime] = field(default=None)  # 首次提交时间
+    timeout_minutes: int = 5  # 超时时间（默认5分钟）
 
     @property
     def quantity_filled(self) -> Tuple[float, float]:
@@ -357,14 +366,6 @@ class ExecutionTarget:
 
         return (crypto_remaining, stock_remaining)
 
-    def get_execution_key(self) -> Tuple[Tuple[Symbol, Symbol], str]:
-        """
-        获取执行唯一键
-
-        Returns:
-            (pair_symbol, grid_id) 作为唯一标识
-        """
-        return (self.pair_symbol, self.grid_id)
 
     def is_active(self) -> bool:
         """是否为活跃状态（New/Submitted/PartiallyFilled）"""
@@ -373,6 +374,24 @@ class ExecutionTarget:
     def is_terminal(self) -> bool:
         """是否为终止状态（Filled/Canceled/Invalid/Failed）"""
         return self.status in [ExecutionStatus.Filled, ExecutionStatus.Canceled, ExecutionStatus.Invalid, ExecutionStatus.Failed]
+
+    def is_expired(self, current_time: datetime) -> bool:
+        """
+        检查 ExecutionTarget 是否超时
+
+        超时策略：从首次提交时间（anchor_time）开始计时，超过 timeout_minutes 视为超时
+
+        Args:
+            current_time: 当前时间
+
+        Returns:
+            True if expired, False otherwise
+        """
+        if not self.anchor_time:
+            return False
+
+        elapsed_minutes = (current_time - self.anchor_time).total_seconds() / 60
+        return elapsed_minutes > self.timeout_minutes
 
     def is_all_orders_filled(self) -> bool:
         """
@@ -384,25 +403,6 @@ class ExecutionTarget:
         if not self.order_groups:
             return False
         return all(order_group.is_filled() for order_group in self.order_groups)
-
-    def is_one_leg_filled(self) -> bool:
-        """
-        检查是否单腿满填
-
-        前提条件：所有订单都已成交（避免订单pending时误判）
-        判断逻辑：任意一腿的 remaining == 0
-
-        Returns:
-            True if one leg is completely filled (remaining == 0)
-        """
-        # 前提：所有订单都已成交
-        if not self.is_all_orders_filled():
-            return False
-
-        crypto_remaining, stock_remaining = self.quantity_remaining
-
-        # 任意一腿 remaining == 0
-        return (crypto_remaining == 0.0) or (stock_remaining == 0.0)
 
     def add_ticket(self, order_event: OrderEvent) -> bool:
         """
@@ -438,9 +438,47 @@ class ExecutionTarget:
 
         return True
 
-    def handle_one_leg_order(self):
+    def should_fill_remaining_orders(self) -> bool:
         """
-        处理单腿追单
+        检查是否应该执行剩余订单填充（基于市值判断）
+
+        前提条件：所有订单都已成交（避免订单pending时误判）
+        判断逻辑：
+        1. 计算两腿的剩余市值
+        2. 计算最小对冲单位市值 = max(crypto_lot_mv, stock_lot_mv)
+        3. 如果任意一腿的剩余市值 < 最小对冲单位市值，则触发填充
+
+        Returns:
+            True if any leg's remaining market value is below min hedge unit
+        """
+        # 前提：所有订单都已成交
+        if not self.is_all_orders_filled():
+            return False
+
+        crypto_symbol, stock_symbol = self.pair_symbol
+        crypto_remaining, stock_remaining = self.quantity_remaining
+
+        # 获取价格和 lot size
+        crypto_price = self.algorithm.securities[crypto_symbol].price
+        stock_price = self.algorithm.securities[stock_symbol].price
+        crypto_lot = self.algorithm.securities[crypto_symbol].symbol_properties.lot_size
+        stock_lot = self.algorithm.securities[stock_symbol].symbol_properties.lot_size
+
+        # 计算剩余市值
+        crypto_remaining_mv = abs(crypto_remaining) * crypto_price
+        stock_remaining_mv = abs(stock_remaining) * stock_price
+
+        # 计算最小对冲单位市值（取两个 lot size 市值的较大值）
+        crypto_lot_mv = crypto_lot * crypto_price
+        stock_lot_mv = stock_lot * stock_price
+        min_hedge_unit_mv = max(crypto_lot_mv, stock_lot_mv)
+
+        # 任意一腿剩余市值小于最小对冲单位时，触发填充
+        return crypto_remaining_mv < min_hedge_unit_mv or stock_remaining_mv < min_hedge_unit_mv
+    
+    def fill_remaining_orders(self):
+        """
+        填充剩余订单（单腿追单）
 
         逻辑：
         1. 检查哪一腿还有剩余
@@ -461,12 +499,12 @@ class ExecutionTarget:
                 if self.order_groups:
                     self.order_groups[-1].expected_ticket_count += 1
 
-                # 直接使用 grid_id 作为 tag（唯一标识）
+                # 使用 level hash 作为 tag（唯一标识）
                 self.algorithm.market_order(
                     crypto_symbol,
                     crypto_qty,
                     asynchronous=True,
-                    tag=self.grid_id
+                    tag=str(hash(self.level))
                 )
                 self.algorithm.debug(
                     f"🎯 One-leg sweep | {crypto_symbol.value}: {crypto_qty:.4f} | "
@@ -483,44 +521,29 @@ class ExecutionTarget:
                 if self.order_groups:
                     self.order_groups[-1].expected_ticket_count += 1
 
-                # 直接使用 grid_id 作为 tag（唯一标识）
+                # 使用 level hash 作为 tag（唯一标识）
                 self.algorithm.market_order(
                     stock_symbol,
                     stock_qty,
                     asynchronous=True,
-                    tag=self.grid_id
+                    tag=str(hash(self.level))
                 )
                 self.algorithm.debug(
                     f"🎯 One-leg sweep | {stock_symbol.value}: {stock_qty:.4f} | "
                     f"Reason: {crypto_symbol.value} filled"
                 )
             
-    def is_quantity_filled(self, max_value_error_pct: float = 1.0) -> bool:
+    def is_quantity_filled(self) -> bool:
         """
-        检查是否可以视为完成（基于填充比例和市值误差）
+        检查是否完全填充（严格判定）
 
-        使用新的 IsPairQuantityFilled 方法，检查：
-        1. 双腿填充比例是否 >99%
-        2. 剩余市值误差是否 < max_value_error_pct
-
-        Args:
-            max_value_error_pct: 最大市值误差百分比（默认1%）
+        直接检查 quantity_remaining 元组的两个值是否都为 0
 
         Returns:
-            True if both legs are >99% filled and value error < threshold
+            True if both crypto_remaining and stock_remaining are exactly 0
         """
-        crypto_symbol, stock_symbol = self.pair_symbol
-
-        crypto_target = self.target_qty[crypto_symbol]
-        stock_target = self.target_qty[stock_symbol]
-
-        crypto_filled, stock_filled = self.quantity_filled
-
-        return self.algorithm.is_pair_quantity_filled(
-            crypto_symbol, crypto_target, crypto_filled,
-            stock_symbol, stock_target, stock_filled,
-            max_value_error_pct
-        )
+        crypto_remaining, stock_remaining = self.quantity_remaining
+        return crypto_remaining == 0.0 and stock_remaining == 0.0
 
     def calculate_executable_quantity(
         self,
@@ -552,19 +575,14 @@ class ExecutionTarget:
         crypto_price = self.algorithm.securities[crypto_symbol].price
         target_usd = abs(crypto_remaining) * crypto_price
 
-        # 将方向映射到 SpreadMatcher 的方向格式
-        # "LONG_CRYPTO" -> "LONG_S1" (买入crypto, 卖出stock)
-        # "SHORT_CRYPTO" -> "SHORT_S1" (卖出crypto, 买入stock)
-        spread_matcher_direction = "LONG_S1" if self.spread_direction == "LONG_CRYPTO" else "SHORT_S1"
-
         match_result = SpreadMatcher.match_pair(
             algorithm=self.algorithm,
             symbol1=crypto_symbol,
             symbol2=stock_symbol,
             target_usd=target_usd,
-            direction=spread_matcher_direction,
-            min_spread_pct=self.expected_spread_pct * 100,  # 转换为百分比
-            debug=debug
+            direction=self.spread_direction,  # 直接使用 LONG_SPREAD/SHORT_SPREAD
+            expected_spread_pct=self.expected_spread_pct,  # 转换为百分比
+            debug=False
         )
 
         if not match_result or not match_result.executable:

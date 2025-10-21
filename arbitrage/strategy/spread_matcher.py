@@ -16,13 +16,14 @@ SpreadMatcher - 配对交易价差撮合器（纯静态方法实现）
 使用方式：
     from arbitrage.strategy.spread_matcher import SpreadMatcher
 
+    # 做多价差：期望 crypto 便宜 1%
     result = SpreadMatcher.match_pair(
         algorithm=self,
-        symbol1=aaplxusd_symbol,
-        symbol2=aapl_symbol,
+        symbol1=btcusd_symbol,
+        symbol2=btc_symbol,
         target_usd=3000,
-        direction="LONG_S1",
-        min_spread_pct=-1.0
+        direction="LONG_SPREAD",
+        expected_spread_pct=-1.0
     )
 
     if result and result.executable:
@@ -74,9 +75,8 @@ class SpreadMatcher:
         symbol1: Symbol,
         symbol2: Symbol,
         target_usd: float,
-        direction: str,  # "LONG_S1" 或 "SHORT_S1"
-        min_spread_pct: float,
-        fee_per_share: float = 0.0,
+        direction: str,  # "LONG_SPREAD" 或 "SHORT_SPREAD"
+        expected_spread_pct: float,
         debug: bool = False
     ) -> Optional[MatchResult]:
         """
@@ -84,26 +84,38 @@ class SpreadMatcher:
 
         Args:
             algorithm: QCAlgorithm 实例
-            symbol1: 第一个 Symbol（通常是 orderbook 侧，如 AAPLXUSD）
-            symbol2: 第二个 Symbol（对手侧，如 AAPL）
-            target_usd: 目标市值（美元）
-            direction: "LONG_S1" 表示买入 symbol1, 卖出 symbol2
-                      "SHORT_S1" 表示卖出 symbol1, 买入 symbol2
-            min_spread_pct: 最小可接受价差（%），例如 -1.0 表示 -1%
-            fee_per_share: 每股手续费（可选）
+            symbol1: 第一个 Symbol（通常是 crypto，如 BTCUSD）
+            symbol2: 第二个 Symbol（通常是 stock，如 BTC）
+            target_usd: 目标市值（美元，正数）
+            direction: "LONG_SPREAD" 表示买入 symbol1, 卖出 symbol2（期望 crypto 便宜）
+                      "SHORT_SPREAD" 表示卖出 symbol1, 买入 symbol2（期望 crypto 贵）
+            expected_spread_pct: 预期价差百分比
+                               - LONG_SPREAD: 期望 spread <= expected_spread_pct（负值，crypto 便宜）
+                               - SHORT_SPREAD: 期望 spread >= expected_spread_pct（正值，crypto 贵）
             debug: 是否输出调试信息
 
         Returns:
             MatchResult 或 None（如果无法撮合）
 
         Example:
+            # 做多价差：期望 crypto 便宜 1%
             result = SpreadMatcher.match_pair(
                 algorithm=self,
-                symbol1=aaplxusd,
-                symbol2=aapl,
+                symbol1=btcusd_symbol,
+                symbol2=btc_symbol,
                 target_usd=3000,
-                direction="LONG_S1",
-                min_spread_pct=-1.0
+                direction="LONG_SPREAD",
+                expected_spread_pct=-1.0
+            )
+
+            # 做空价差：期望 crypto 贵 1%
+            result = SpreadMatcher.match_pair(
+                algorithm=self,
+                symbol1=btcusd_symbol,
+                symbol2=btc_symbol,
+                target_usd=3000,
+                direction="SHORT_SPREAD",
+                expected_spread_pct=1.0
             )
 
             if result and result.executable:
@@ -113,26 +125,23 @@ class SpreadMatcher:
         has_ob1 = SpreadMatcher._has_orderbook_depth(algorithm, symbol1)
         has_ob2 = SpreadMatcher._has_orderbook_depth(algorithm, symbol2)
 
-        if debug:
-            algorithm.debug(f"[SpreadMatcher] OrderbookDepth: {symbol1} = {has_ob1}, {symbol2} = {has_ob2}")
-
         # 2. 根据检测结果选择撮合算法
         if has_ob1 and has_ob2:
             # 双腿场景
             return SpreadMatcher._match_dual_leg(
-                algorithm, symbol1, symbol2, target_usd, direction, min_spread_pct, fee_per_share, debug
+                algorithm, symbol1, symbol2, target_usd, direction, expected_spread_pct, debug
             )
         elif has_ob1 and not has_ob2:
             # 单腿场景：symbol1 有 orderbook，symbol2 只有 BestPrice
             return SpreadMatcher._match_single_leg(
-                algorithm, symbol1, symbol2, target_usd, direction, min_spread_pct, fee_per_share, debug
+                algorithm, symbol1, symbol2, target_usd, direction, expected_spread_pct, debug
             )
         elif not has_ob1 and has_ob2:
             # 单腿场景：symbol2 有 orderbook，symbol1 只有 BestPrice
             # 交换 symbol 顺序，反转方向
-            reversed_direction = "SHORT_S1" if direction == "LONG_S1" else "LONG_S1"
+            reversed_direction = "SHORT_SPREAD" if direction == "LONG_SPREAD" else "LONG_SPREAD"
             result = SpreadMatcher._match_single_leg(
-                algorithm, symbol2, symbol1, target_usd, reversed_direction, min_spread_pct, fee_per_share, debug
+                algorithm, symbol2, symbol1, target_usd, reversed_direction, expected_spread_pct, debug
             )
 
             # 交换回来
@@ -142,7 +151,7 @@ class SpreadMatcher:
         else:
             # 两侧都没有 orderbook，使用简化逻辑（BestBid/Ask）
             return SpreadMatcher._match_fallback(
-                algorithm, symbol1, symbol2, target_usd, direction, min_spread_pct, fee_per_share, debug
+                algorithm, symbol1, symbol2, target_usd, direction, expected_spread_pct, debug
             )
 
     @staticmethod
@@ -178,27 +187,25 @@ class SpreadMatcher:
         symbol_bp: Symbol,      # 只有 BestPrice 的一侧（流动性无限假设）
         target_usd: float,
         direction: str,
-        min_spread_pct: float,
-        fee_per_share: float,
+        expected_spread_pct: float,
         debug: bool
     ) -> Optional[MatchResult]:
         """
         单腿撮合：一侧 OrderbookDepth，另一侧 BestPrice（流动性无限）
 
         核心逻辑：
-        1. 遍历 orderbook 侧的深度档位
-        2. 检查每档价格与 BestPrice 的价差
-        3. 累积满足条件的股数（以 orderbook 侧为准）
-        4. 计算对手侧的对冲数量（市值相等原则）
+        1. 根据 direction 选择 orderbook 的正确档位（asks/bids）
+        2. 遍历 orderbook 深度，计算每档与对手价格的市场价差
+        3. 验证价差是否符合预期（根据 direction）
+        4. 累积满足条件的股数并计算对冲数量（市值相等原则）
 
         Args:
             algorithm: QCAlgorithm 实例
-            symbol_ob: 有 OrderbookDepth 的 Symbol
-            symbol_bp: 只有 BestPrice 的 Symbol
-            target_usd: 目标市值
-            direction: "LONG_S1" 或 "SHORT_S1"
-            min_spread_pct: 最小可接受价差
-            fee_per_share: 每股手续费
+            symbol_ob: 有 OrderbookDepth 的 Symbol（symbol1，通常是 crypto）
+            symbol_bp: 只有 BestPrice 的 Symbol（symbol2，通常是 stock）
+            target_usd: 目标市值（正数）
+            direction: "LONG_SPREAD"（买 symbol1 卖 symbol2）或 "SHORT_SPREAD"（卖 symbol1 买 symbol2）
+            expected_spread_pct: 预期价差百分比
             debug: 调试开关
 
         Returns:
@@ -208,13 +215,16 @@ class SpreadMatcher:
         security_ob = algorithm.securities[symbol_ob]
         orderbook = security_ob.cache.orderbook_depth
 
-        # 2. 根据方向选择 asks 或 bids
-        is_buying_ob = (direction == "LONG_S1")
+        # 2. 根据方向选择正确的档位和对手价格
+        # LONG_SPREAD: 买 symbol1 (asks)，卖 symbol2 (bid_price)
+        # SHORT_SPREAD: 卖 symbol1 (bids)，买 symbol2 (ask_price)
+        is_buying_ob = (direction == "LONG_SPREAD")
         levels_ob = orderbook.asks if is_buying_ob else orderbook.bids
 
         # 3. 获取对手侧的 BestPrice（流动性无限假设）
         security_bp = algorithm.securities[symbol_bp]
-        is_buying_bp = not is_buying_ob  # 对手侧方向相反
+        # 对手侧方向相反
+        is_buying_bp = not is_buying_ob
         price_bp = security_bp.ask_price if is_buying_bp else security_bp.bid_price
 
         # Fallback to last price
@@ -244,17 +254,16 @@ class SpreadMatcher:
             price_ob = float(level.price)
             size_ob = float(level.size)
 
-            # 5a. 计算价差
-            buy_price = price_ob if is_buying_ob else price_bp
-            sell_price = price_bp if is_buying_ob else price_ob
-            spread_pct = SpreadMatcher._calc_spread_pct(buy_price, sell_price)
+            # 5a. 计算市场价差（始终基于 symbol 位置）
+            # symbol_ob 是 symbol1 (crypto), symbol_bp 是 symbol2 (stock)
+            spread_pct = SpreadMatcher._calc_spread_pct(price_ob, price_bp)
 
-            # 5b. 验证价差
-            if not SpreadMatcher._validate_spread(spread_pct, min_spread_pct):
+            # 5b. 验证价差是否符合预期
+            if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
                 if debug:
                     algorithm.debug(
-                        f"[SpreadMatcher] ⏩ Skip level: price={price_ob:.2f}, "
-                        f"spread={spread_pct:.2f}% < {min_spread_pct:.2f}%"
+                        f"[SpreadMatcher] ⏩ Skip level: price_ob={price_ob:.2f}, price_bp={price_bp:.2f}, "
+                        f"spread={spread_pct:.2f}%, expected={expected_spread_pct:.2f}%, direction={direction}"
                     )
                 break  # 价差不满足，停止累积
 
@@ -263,13 +272,13 @@ class SpreadMatcher:
             max_supported_value_ob += size_ob * price_ob
             valid_levels_count += 1
 
-            # 5c. 计算可消耗的股数（按 orderbook 侧）
+            # 5c. 计算可消耗的股数（按 orderbook 侧的市值）
             remaining_usd = max(0.0, target_usd - total_usd_ob)
             if remaining_usd <= 1e-9:
                 break
 
-            # 按 orderbook 侧的价格计算剩余可买入股数
-            max_shares_by_usd = remaining_usd / buy_price if is_buying_ob else remaining_usd / sell_price
+            # 按 orderbook 侧的价格计算剩余可用股数
+            max_shares_by_usd = remaining_usd / price_ob
             available_shares = SpreadMatcher._round_to_lot(size_ob, lot_ob)
             consumable_shares = min(available_shares, max_shares_by_usd)
             consumable_shares = SpreadMatcher._round_to_lot(consumable_shares, lot_ob)
@@ -277,22 +286,22 @@ class SpreadMatcher:
             if consumable_shares <= 0:
                 continue
 
-            # 5d. 计算本层的市值（买入侧）
-            usd_buy_layer = consumable_shares * buy_price + consumable_shares * fee_per_share
-            usd_sell_layer = consumable_shares * sell_price - consumable_shares * fee_per_share
+            # 5d. 计算本层的市值
+            usd_ob_layer = consumable_shares * price_ob
+            usd_bp_layer = consumable_shares * price_bp
 
             # 5e. 累积
             matched.append({
-                "buy_price": buy_price,
-                "sell_price": sell_price,
+                "price_ob": price_ob,
+                "price_bp": price_bp,
                 "qty_ob": consumable_shares,
-                "usd_buy": usd_buy_layer,
-                "usd_sell": usd_sell_layer,
+                "usd_ob": usd_ob_layer,
+                "usd_bp": usd_bp_layer,
                 "spread_pct": spread_pct
             })
 
             total_shares_ob += consumable_shares
-            total_usd_ob += consumable_shares * price_ob
+            total_usd_ob += usd_ob_layer
 
             # 检查是否达到目标
             if total_usd_ob >= target_usd - 1e-6:
@@ -300,8 +309,6 @@ class SpreadMatcher:
 
         # 6. 如果没有成功撮合任何股数
         if total_shares_ob <= 0:
-            if debug:
-                algorithm.debug("[SpreadMatcher] ❌ No shares matched")
             return None
 
         # 7. 计算对手侧的对冲数量（市值相等原则）
@@ -310,11 +317,16 @@ class SpreadMatcher:
         total_shares_bp = total_usd_ob / price_bp
         total_shares_bp = SpreadMatcher._round_to_lot(total_shares_bp, lot_bp)
 
+        # 检查对冲侧数量是否为零（_round_to_lot 可能将小数量舍入为0）
+        if total_shares_bp <= 0:
+            return None
+
         # 8. 计算统计数据
-        total_usd_buy = sum(m["usd_buy"] for m in matched)
-        total_usd_sell = sum(m["usd_sell"] for m in matched)
-        avg_buy_price = total_usd_buy / total_shares_ob if total_shares_ob > 0 else 0
-        avg_sell_price = total_usd_sell / total_shares_ob if total_shares_ob > 0 else 0
+        # 加权平均价格
+        avg_price_ob = total_usd_ob / total_shares_ob if total_shares_ob > 0 else 0
+        avg_price_bp = price_bp  # BestPrice 侧没有加权，直接使用 BestPrice
+
+        # 加权平均价差
         avg_spread_pct = sum(m["spread_pct"] * m["qty_ob"] for m in matched) / total_shares_ob if total_shares_ob > 0 else 0
 
         # 9. 组装返回结果（带符号）
@@ -326,10 +338,10 @@ class SpreadMatcher:
             matched_details=matched,
             total_shares_ob=total_shares_ob,
             total_shares_counter=total_shares_bp,
-            total_usd_buy=total_usd_buy,
-            total_usd_sell=total_usd_sell,
-            avg_buy_price=avg_buy_price,
-            avg_sell_price=avg_sell_price,
+            total_usd_buy=total_usd_ob if is_buying_ob else total_shares_bp * price_bp,
+            total_usd_sell=total_shares_bp * price_bp if is_buying_ob else total_usd_ob,
+            avg_buy_price=avg_price_ob if is_buying_ob else avg_price_bp,
+            avg_sell_price=avg_price_bp if is_buying_ob else avg_price_ob,
             avg_spread_pct=avg_spread_pct,
             reached_target=total_usd_ob >= target_usd - 1e-6,
             remaining_usd=max(0.0, target_usd - total_usd_ob),
@@ -343,8 +355,8 @@ class SpreadMatcher:
 
             algorithm.debug(
                 f"[SpreadMatcher] ✅ Single-leg matched | "
-                f"{symbol_ob}: {qty_ob_signed:.4f} @ ${avg_buy_price:.2f} | "
-                f"{symbol_bp}: {qty_bp_signed:.4f} @ ${price_bp:.2f} | "
+                f"{symbol_ob}: {qty_ob_signed:.4f} @ ${avg_price_ob:.2f} | "
+                f"{symbol_bp}: {qty_bp_signed:.4f} @ ${avg_price_bp:.2f} | "
                 f"Spread: {avg_spread_pct:.2f}%"
             )
             algorithm.debug(
@@ -363,27 +375,26 @@ class SpreadMatcher:
         symbol2: Symbol,
         target_usd: float,
         direction: str,
-        min_spread_pct: float,
-        fee_per_share: float,
+        expected_spread_pct: float,
         debug: bool
     ) -> Optional[MatchResult]:
         """
         双腿撮合：两侧都有 OrderbookDepth
 
         核心逻辑：
-        1. 双指针遍历两侧 orderbook
-        2. 逐层匹配满足价差条件的档位
-        3. 撮合时确保市值相等（不是股数相等）
-        4. 直到达到目标市值或深度耗尽
+        1. 根据 direction 选择两侧 orderbook 的正确档位
+        2. 双指针遍历两侧 orderbook，计算市场价差
+        3. 验证价差是否符合预期（根据 direction）
+        4. 撮合时确保市值相等（不是股数相等）
+        5. 直到达到目标市值或深度耗尽
 
         Args:
             algorithm: QCAlgorithm 实例
-            symbol1: 第一个 Symbol
-            symbol2: 第二个 Symbol
-            target_usd: 目标市值
-            direction: "LONG_S1" 或 "SHORT_S1"
-            min_spread_pct: 最小可接受价差
-            fee_per_share: 每股手续费
+            symbol1: 第一个 Symbol（通常是 crypto）
+            symbol2: 第二个 Symbol（通常是 stock）
+            target_usd: 目标市值（正数）
+            direction: "LONG_SPREAD"（买 symbol1 卖 symbol2）或 "SHORT_SPREAD"（卖 symbol1 买 symbol2）
+            expected_spread_pct: 预期价差百分比
             debug: 调试开关
 
         Returns:
@@ -395,8 +406,10 @@ class SpreadMatcher:
         orderbook1 = security1.cache.orderbook_depth
         orderbook2 = security2.cache.orderbook_depth
 
-        # 2. 根据方向选择 asks 或 bids
-        is_buying_s1 = (direction == "LONG_S1")
+        # 2. 根据方向选择正确的档位
+        # LONG_SPREAD: 买 symbol1 (asks)，卖 symbol2 (bids)
+        # SHORT_SPREAD: 卖 symbol1 (bids)，买 symbol2 (asks)
+        is_buying_s1 = (direction == "LONG_SPREAD")
         levels1 = list(orderbook1.asks) if is_buying_s1 else list(orderbook1.bids)
         levels2 = list(orderbook2.bids) if is_buying_s1 else list(orderbook2.asks)
 
@@ -419,13 +432,11 @@ class SpreadMatcher:
             price2 = float(levels2[j].price)
             size2 = float(levels2[j].size)
 
-            # 4a. 计算价差
-            buy_price = price1 if is_buying_s1 else price2
-            sell_price = price2 if is_buying_s1 else price1
-            spread_pct = SpreadMatcher._calc_spread_pct(buy_price, sell_price)
+            # 4a. 计算市场价差（始终基于 symbol 位置）
+            spread_pct = SpreadMatcher._calc_spread_pct(price1, price2)
 
-            # 4b. 验证价差
-            if not SpreadMatcher._validate_spread(spread_pct, min_spread_pct):
+            # 4b. 验证价差是否符合预期
+            if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
                 # 尝试移动对手侧指针以寻找更优价格
                 j += 1
                 continue
@@ -471,24 +482,29 @@ class SpreadMatcher:
                 break
 
             # 4d. 计算本层的市值
-            usd_buy_layer = match_qty1 * buy_price + match_qty1 * fee_per_share
-            usd_sell_layer = match_qty2 * sell_price - match_qty2 * fee_per_share
+            usd1_layer = match_qty1 * price1
+            usd2_layer = match_qty2 * price2
 
             matched.append({
-                "buy_price": buy_price,
-                "sell_price": sell_price,
+                "price1": price1,
+                "price2": price2,
                 "qty1": match_qty1,
                 "qty2": match_qty2,
-                "usd_buy": usd_buy_layer,
-                "usd_sell": usd_sell_layer,
+                "usd1": usd1_layer,
+                "usd2": usd2_layer,
                 "spread_pct": spread_pct
             })
 
             # 4e. 更新累积值
             total_shares1 += match_qty1
             total_shares2 += match_qty2
-            total_usd_buy += usd_buy_layer
-            total_usd_sell += usd_sell_layer
+            # 根据方向计算买入/卖出市值
+            if is_buying_s1:
+                total_usd_buy += usd1_layer
+                total_usd_sell += usd2_layer
+            else:
+                total_usd_buy += usd2_layer
+                total_usd_sell += usd1_layer
 
             # 4f. 更新档位剩余量
             size1 -= match_qty1
@@ -511,8 +527,15 @@ class SpreadMatcher:
             return None
 
         # 6. 计算统计数据
-        avg_buy_price = total_usd_buy / total_shares1 if total_shares1 > 0 else 0
-        avg_sell_price = total_usd_sell / total_shares2 if total_shares2 > 0 else 0
+        total_usd1 = sum(m["usd1"] for m in matched)
+        total_usd2 = sum(m["usd2"] for m in matched)
+
+        avg_price1 = total_usd1 / total_shares1 if total_shares1 > 0 else 0
+        avg_price2 = total_usd2 / total_shares2 if total_shares2 > 0 else 0
+
+        avg_buy_price = avg_price1 if is_buying_s1 else avg_price2
+        avg_sell_price = avg_price2 if is_buying_s1 else avg_price1
+
         avg_spread_pct = sum(m["spread_pct"] * m["qty1"] for m in matched) / total_shares1 if total_shares1 > 0 else 0
 
         # 7. 组装返回结果（带符号）
@@ -550,8 +573,7 @@ class SpreadMatcher:
         symbol2: Symbol,
         target_usd: float,
         direction: str,
-        min_spread_pct: float,
-        fee_per_share: float,
+        expected_spread_pct: float,
         debug: bool
     ) -> Optional[MatchResult]:
         """
@@ -560,12 +582,11 @@ class SpreadMatcher:
 
         Args:
             algorithm: QCAlgorithm 实例
-            symbol1: 第一个 Symbol
-            symbol2: 第二个 Symbol
-            target_usd: 目标市值
-            direction: "LONG_S1" 或 "SHORT_S1"
-            min_spread_pct: 最小可接受价差
-            fee_per_share: 每股手续费
+            symbol1: 第一个 Symbol（通常是 crypto）
+            symbol2: 第二个 Symbol（通常是 stock）
+            target_usd: 目标市值（正数）
+            direction: "LONG_SPREAD"（买 symbol1 卖 symbol2）或 "SHORT_SPREAD"（卖 symbol1 买 symbol2）
+            expected_spread_pct: 预期价差百分比
             debug: 调试开关
 
         Returns:
@@ -574,12 +595,15 @@ class SpreadMatcher:
         security1 = algorithm.securities[symbol1]
         security2 = algorithm.securities[symbol2]
 
-        is_buying_s1 = (direction == "LONG_S1")
+        is_buying_s1 = (direction == "LONG_SPREAD")
 
+        # 根据方向选择正确的价格
+        # LONG_SPREAD: 买 symbol1 (ask)，卖 symbol2 (bid)
+        # SHORT_SPREAD: 卖 symbol1 (bid)，买 symbol2 (ask)
         price1 = security1.ask_price if is_buying_s1 else security1.bid_price
         price2 = security2.bid_price if is_buying_s1 else security2.ask_price
 
-        # Fallback
+        # Fallback to last price
         if price1 == 0:
             price1 = security1.price
         if price2 == 0:
@@ -590,14 +614,16 @@ class SpreadMatcher:
                 algorithm.debug(f"[SpreadMatcher] ❌ Invalid prices: {symbol1}={price1}, {symbol2}={price2}")
             return None
 
-        # 验证价差
-        buy_price = price1 if is_buying_s1 else price2
-        sell_price = price2 if is_buying_s1 else price1
-        spread_pct = SpreadMatcher._calc_spread_pct(buy_price, sell_price)
+        # 计算市场价差（始终基于 symbol 位置）
+        spread_pct = SpreadMatcher._calc_spread_pct(price1, price2)
 
-        if not SpreadMatcher._validate_spread(spread_pct, min_spread_pct):
+        # 验证价差是否符合预期
+        if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
             if debug:
-                algorithm.debug(f"[SpreadMatcher] ❌ Spread {spread_pct:.2f}% < {min_spread_pct:.2f}%")
+                algorithm.debug(
+                    f"[SpreadMatcher] ❌ Spread {spread_pct:.2f}% does not meet expected {expected_spread_pct:.2f}% "
+                    f"for direction {direction}"
+                )
             return None
 
         # 计算数量（市值相等）
@@ -614,13 +640,17 @@ class SpreadMatcher:
         qty1_signed = qty1 if is_buying_s1 else -qty1
         qty2_signed = -qty2 if is_buying_s1 else qty2
 
+        # 计算买入/卖出价格和市值
+        buy_price = price1 if is_buying_s1 else price2
+        sell_price = price2 if is_buying_s1 else price1
+
         result = MatchResult(
             legs=[(symbol1, qty1_signed), (symbol2, qty2_signed)],
             matched_details=[],
             total_shares_ob=qty1,
             total_shares_counter=qty2,
-            total_usd_buy=qty1 * buy_price,
-            total_usd_sell=qty2 * sell_price,
+            total_usd_buy=qty1 * price1 if is_buying_s1 else qty2 * price2,
+            total_usd_sell=qty2 * price2 if is_buying_s1 else qty1 * price1,
             avg_buy_price=buy_price,
             avg_sell_price=sell_price,
             avg_spread_pct=spread_pct,
@@ -632,44 +662,56 @@ class SpreadMatcher:
         if debug:
             algorithm.debug(
                 f"[SpreadMatcher] ✅ Fallback matched | "
-                f"{symbol1}: {qty1_signed:.4f} @ ${buy_price:.2f} | "
-                f"{symbol2}: {qty2_signed:.4f} @ ${sell_price:.2f} | "
+                f"{symbol1}: {qty1_signed:.4f} @ ${price1:.2f} | "
+                f"{symbol2}: {qty2_signed:.4f} @ ${price2:.2f} | "
                 f"Spread: {spread_pct:.2f}%"
             )
 
         return result
 
     @staticmethod
-    def _calc_spread_pct(buy_price: float, sell_price: float) -> float:
+    def _calc_spread_pct(symbol1_price: float, symbol2_price: float) -> float:
         """
-        计算价差百分比
+        计算市场价差百分比（始终基于 symbol 位置）
 
-        Formula: (buy_price / sell_price - 1) * 100
+        Formula: (symbol1_price - symbol2_price) / symbol1_price
+
+        符合 SpreadManager.calculate_spread_pct 的逻辑：
+        - 正值：symbol1 (crypto) 贵于 symbol2 (stock)，适合 SHORT_SPREAD
+        - 负值：symbol1 (crypto) 便宜于 symbol2 (stock)，适合 LONG_SPREAD
 
         Args:
-            buy_price: 买入价格
-            sell_price: 卖出价格
+            symbol1_price: symbol1 的价格（通常是 crypto）
+            symbol2_price: symbol2 的价格（通常是 stock）
 
         Returns:
-            价差百分比（例如 -1.5 表示 -1.5%）
+            价差百分比（例如 -1.5 表示 crypto 便宜 1.5%）
         """
-        if sell_price == 0:
+        if symbol1_price == 0:
             return float("-inf")
-        return (buy_price / sell_price - 1.0) * 100.0
+        return (symbol1_price - symbol2_price) / symbol1_price
 
     @staticmethod
-    def _validate_spread(spread_pct: float, min_spread_pct: float) -> bool:
+    def _validate_spread(spread_pct: float, expected_spread_pct: float, direction: str) -> bool:
         """
-        验证价差是否满足阈值
+        验证价差是否满足预期（根据方向判断）
+
+        逻辑：
+        - LONG_SPREAD（买 crypto，卖 stock）：期望 crypto 便宜，spread_pct <= expected_spread_pct
+        - SHORT_SPREAD（卖 crypto，买 stock）：期望 crypto 贵，spread_pct >= expected_spread_pct
 
         Args:
-            spread_pct: 实际价差百分比
-            min_spread_pct: 最小可接受价差百分比
+            spread_pct: 实际市场价差百分比
+            expected_spread_pct: 预期价差百分比
+            direction: 交易方向 "LONG_SPREAD" 或 "SHORT_SPREAD"
 
         Returns:
-            True if spread_pct >= min_spread_pct, False otherwise
+            True if 价差符合预期, False otherwise
         """
-        return spread_pct >= min_spread_pct
+        if direction == "LONG_SPREAD":
+            return spread_pct <= expected_spread_pct
+        else:  # SHORT_SPREAD
+            return spread_pct >= expected_spread_pct
 
     @staticmethod
     def _round_to_lot(qty: float, lot_size: float) -> float:
