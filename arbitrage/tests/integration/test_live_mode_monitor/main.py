@@ -44,6 +44,7 @@ from spread_manager import SpreadManager
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
 from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 from monitoring.redis_writer import TradingRedis
+from monitoring.spread_monitor import RedisSpreadMonitor
 
 class LiveModeMonitorTest(QCAlgorithm):
     """Live Mode Monitor 集成测试 - Backtest 环境 + Live 监控"""
@@ -85,11 +86,23 @@ class LiveModeMonitorTest(QCAlgorithm):
 
         self.debug("=" * 60)
 
-        # === 1. 初始化 SpreadManager ===
-        self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(algorithm=self)
+        # === 1. 初始化 RedisSpreadMonitor (如果 Redis 可用) ===
+        spread_monitor = None
+        if self.redis_client:
+            try:
+                spread_monitor = RedisSpreadMonitor(self, self.redis_client)
+                self.debug("✅ RedisSpreadMonitor initialized")
+            except Exception as e:
+                self.debug(f"⚠️ Failed to initialize RedisSpreadMonitor: {e}")
 
-        # === 2. 初始化 Long Crypto Grid Strategy ===
+        # === 2. 初始化 SpreadManager ===
+        self.debug("📊 Initializing SpreadManager...")
+        self.spread_manager = SpreadManager(
+            algorithm=self,
+            monitor_adapter=spread_monitor  # 注入监控适配器
+        )
+
+        # === 3. 初始化 Long Crypto Grid Strategy ===
         self.debug("📋 Initializing LongCryptoGridStrategy...")
         self.strategy = LongCryptoGridStrategy(
             algorithm=self,
@@ -101,11 +114,11 @@ class LiveModeMonitorTest(QCAlgorithm):
         # 启用debug模式
         self.strategy.debug = True
 
-        # === 3. 使用 Observer 模式连接 SpreadManager 和 Strategy ===
+        # === 4. 使用 Observer 模式连接 SpreadManager 和 Strategy ===
         self.debug("🔗 Registering strategy as spread observer...")
         self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 4. 订阅交易对（使用 subscribe_trading_pair 简化代码）===
+        # === 5. 订阅交易对（使用 subscribe_trading_pair 简化代码）===
         self.debug("📡 Subscribing to trading pairs...")
 
         # 订阅 AAPL 交易对
@@ -128,12 +141,12 @@ class LiveModeMonitorTest(QCAlgorithm):
 
         self.debug(f"✅ Subscribed: {tsla_crypto_symbol.value} <-> {tsla_stock_symbol.value}")
 
-        # === 4.5. 初始化Grid Levels（Grid策略的新需求）===
+        # === 6. 初始化Grid Levels（Grid策略的新需求）===
         self.debug("🔧 Initializing grid levels for trading pairs...")
         self.strategy.initialize_pair((aapl_crypto_symbol, aapl_stock_symbol))
         self.strategy.initialize_pair((tsla_crypto_symbol, tsla_stock_symbol))
 
-        # === 5. 初始化订单追踪器（LIVE 监控模式）===
+        # === 7. 初始化订单追踪器（LIVE 监控模式）===
         self.debug("=" * 60)
         self.debug("📊 Initializing GridOrderTracker in LIVE MONITORING MODE")
         self.debug("=" * 60)

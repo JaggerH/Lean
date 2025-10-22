@@ -1,12 +1,25 @@
 # region imports
 from AlgorithmImports import *
+from QuantConnect.Orders.Fees import KrakenFeeModel
+from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel
+
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 from data_source import KrakenSymbolManager
-from SpreadManager import SpreadManager
+from spread_manager import SpreadManager
 from strategy.long_crypto_strategy import LongCryptoStrategy
-from order_tracker import OrderTracker as EnhancedOrderTracker
+from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
+
+# 监控模块 (Live模式需要)
+try:
+    from monitoring.redis_writer import TradingRedis
+    from monitoring.spread_monitor import RedisSpreadMonitor
+    from monitoring.state_persistence import StatePersistence
+    REDIS_AVAILABLE = True
+except ImportError as e:
+    REDIS_AVAILABLE = False
+    REDIS_IMPORT_ERROR = str(e)
 # endregion
 
 class Arbitrage(QCAlgorithm):
@@ -31,6 +44,45 @@ class Arbitrage(QCAlgorithm):
         # 设置时区为UTC
         self.set_time_zone("UTC")
 
+        # === 诊断: 检查运行模式 ===
+        self.debug("="*60)
+        self.debug("🔍 诊断运行模式")
+        self.debug("="*60)
+        self.debug(f"self.live_mode = {self.live_mode}")
+        self.debug(f"type(self.live_mode) = {type(self.live_mode)}")
+
+        # 尝试多种方式检测 Live 模式
+        is_live = self.live_mode
+        if not is_live:
+            # 备用检测方式
+            try:
+                is_live = hasattr(self, 'Transactions') and hasattr(self.Transactions, 'GetOpenOrders')
+            except:
+                pass
+
+        self.debug(f"最终判定 is_live = {is_live}")
+        self.debug("="*60)
+
+        # === 0. 初始化监控适配器 (Live模式) ===
+        # 使用更宽松的判断：只要不是明确的 False，就尝试连接 Redis
+        spread_monitor = None
+        state_persistence = None
+        self.redis_client = None  # 保存TradingRedis实例（供OrderTracker使用）
+
+        if is_live or self.live_mode is None:
+            self.debug("→ 初始化监控适配器 (检测到Live/Paper模式)")
+            trading_redis, raw_redis = self._init_monitoring_adapters()
+            if trading_redis and raw_redis:
+                # 创建监控适配器
+                self.redis_client = trading_redis  # 供OrderTracker使用
+                spread_monitor = RedisSpreadMonitor(self, trading_redis)
+                state_persistence = StatePersistence(self, 'LongCryptoStrategy', raw_redis)
+                self.debug("✅ 监控适配器初始化成功")
+            else:
+                self.debug("⚠️ 监控适配器初始化失败，监控功能将不可用")
+        else:
+            self.debug("→ 跳过监控适配器 (Backtest模式)")
+
         # === 杠杆配置 ===
         self.leverage_config = {
             'stock': 2.0,   # 股票2x杠杆
@@ -43,38 +95,42 @@ class Arbitrage(QCAlgorithm):
             "kraken": KrakenSymbolManager()
         }
 
-        # === 2. 动态订阅交易对 ===
-        self.debug("🔗 Fetching and subscribing to trading pairs...")
-        self._subscribe_trading_pairs()
-
-        # === 3. 验证多账户配置 ===
-        self._verify_multi_account_config()
-
-        # === 4. 验证Margin模式 ===
-        self._verify_margin_mode()
-
-        # === 5. 初始化 SpreadManager ===
+        # === 2. 初始化 SpreadManager (在订阅交易对之前) ===
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(
             algorithm=self,
-            strategy=None,  # Will set later
-            aggression=0.6
+            monitor_adapter=spread_monitor  # 注入监控适配器
         )
 
-        # === 6. 初始化做多加密货币策略 ===
+        # === 3. 初始化做多加密货币策略 ===
         self.debug("📋 Initializing LongCryptoStrategy...")
         self.strategy = LongCryptoStrategy(
             algorithm=self,
-            spread_manager=self.spread_manager,
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
-            position_size_pct=0.80  # 80% (考虑杠杆和费用)
+            position_size_pct=0.80,  # 80% (考虑杠杆和费用)
+            state_persistence=state_persistence  # 注入状态持久化适配器
         )
 
-        # 链接策略到 SpreadManager
-        self.spread_manager.strategy = self.strategy
+        # === 4. 注册策略到 SpreadManager（观察者模式）===
+        self.debug("🔗 Registering strategy as spread observer...")
+        self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 7. 数据追踪 ===
+        # === 5. 动态订阅交易对 ===
+        # self.debug("🔗 Fetching and subscribing to trading pairs...")
+        # self._subscribe_trading_pairs()
+
+        # === 5. 手动订阅 AMBRXUSD 交易对 ===
+        self.debug("🔗 Manually subscribing to AMBRXUSD...")
+        self._subscribe_ambr_pair()
+
+        # === 6. 验证多账户配置 ===
+        self._verify_multi_account_config()
+
+        # === 7. 验证Margin模式 ===
+        self._verify_margin_mode()
+
+        # === 8. 数据追踪 ===
         self.tick_count = 0
         self.order_events = []
 
@@ -85,13 +141,73 @@ class Arbitrage(QCAlgorithm):
             'Unknown': []
         }
 
-        # === 8. 初始化独立的订单追踪器 (Enhanced Version) ===
+        # === 9. 初始化独立的订单追踪器 (Enhanced Version) ===
         self.debug("📊 Initializing EnhancedOrderTracker...")
-        self.order_tracker = EnhancedOrderTracker(self, self.strategy)
+        self.order_tracker = EnhancedOrderTracker(
+            self,
+            self.strategy,
+            debug=False,
+            realtime_mode=(is_live or self.live_mode is None),  # 启用实时监控在Live模式
+            redis_client=self.redis_client  # 传递Redis客户端
+        )
 
         self.debug("✅ Initialization complete!")
         self.debug(f"📈 Subscribed to {len(self.spread_manager.pairs)} crypto-stock pairs")
+
+        # === 10. 捕获初始快照 ===
+        self.debug("📸 Capturing initial portfolio snapshot...")
+        self.order_tracker.capture_initial_snapshot()
+
+        # === 11. 调试追踪器 ===
+        self.last_cashbook_debug_time = self.time  # 上次打印 CashBook 的时间
+
         self.debug("="*60)
+
+    def _subscribe_ambr_pair(self):
+        """手动订阅 AMBRxUSD 交易对"""
+        try:
+            # === 添加加密货币数据 (Kraken) ===
+            crypto_security = self.add_crypto(
+                "AMBRxUSD",
+                Resolution.TICK,
+                Market.Kraken
+            )
+            crypto_security.data_normalization_mode = DataNormalizationMode.RAW
+
+            # 为加密货币设置Margin模式 (5x杠杆)
+            self._set_margin_mode(crypto_security, 'crypto')
+
+            # 为加密货币设置 Kraken Fee Model
+            crypto_security.fee_model = KrakenFeeModel()
+
+            # ⚠️ 注册数据类型 (手动订阅时必须手动注册)
+            self.spread_manager.data_types[crypto_security.Symbol] = Tick
+
+            # === 添加股票数据 (IBKR) ===
+            equity_security = self.add_equity(
+                "AMBR",
+                Resolution.TICK,
+                Market.USA,
+                extended_market_hours=True
+            )
+            equity_security.data_normalization_mode = DataNormalizationMode.RAW
+
+            # 为股票设置Margin模式 (2x杠杆)
+            self._set_margin_mode(equity_security, 'stock')
+
+            # 为股票设置 IBKR Fee Model
+            equity_security.fee_model = InteractiveBrokersFeeModel()
+
+            # ⚠️ 注册数据类型 (手动订阅时必须手动注册)
+            self.spread_manager.data_types[equity_security.Symbol] = Tick
+
+            # Register the pair in SpreadManager
+            self.spread_manager.add_pair(crypto_security, equity_security)
+
+            self.debug(f"✅ Subscribed: AMBRxUSD <-> AMBR")
+
+        except Exception as e:
+            self.debug(f"❌ Failed to subscribe to AMBRxUSD/AMBR: {str(e)}")
 
     def _subscribe_trading_pairs(self):
         """动态订阅交易对 - 使用与测试一致的初始化方法"""
@@ -106,7 +222,7 @@ class Arbitrage(QCAlgorithm):
                 self.debug(f"Found {len(trade_pairs)} trading pairs from {exchange}")
 
                 # Subscribe to each pair (limit to 5 for testing)
-                for crypto_symbol, equity_symbol in trade_pairs[:5]:
+                for crypto_symbol, equity_symbol in trade_pairs:
                     try:
                         # === 添加加密货币数据 (Kraken) - 应路由到 Kraken 账户 ===
                         crypto_security = self.add_crypto(
@@ -120,8 +236,10 @@ class Arbitrage(QCAlgorithm):
                         self._set_margin_mode(crypto_security, 'crypto')
 
                         # 为加密货币设置 Kraken Fee Model
-                        from QuantConnect.Orders.Fees import KrakenFeeModel
                         crypto_security.fee_model = KrakenFeeModel()
+
+                        # ⚠️ 注册数据类型 (手动订阅时必须手动注册)
+                        self.spread_manager.data_types[crypto_security.Symbol] = Tick
 
                         # === 添加股票数据 (Databento/IBKR) - 应路由到 IBKR 账户 ===
                         # Check if stock is already subscribed
@@ -132,7 +250,7 @@ class Arbitrage(QCAlgorithm):
                                 equity_symbol.value,
                                 Resolution.TICK,
                                 Market.USA,
-                                extended_market_hours=False  # 保持与测试一致
+                                extended_market_hours=True
                             )
                             equity_security.data_normalization_mode = DataNormalizationMode.RAW
 
@@ -140,8 +258,10 @@ class Arbitrage(QCAlgorithm):
                             self._set_margin_mode(equity_security, 'stock')
 
                             # 为股票设置 IBKR Fee Model
-                            from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel
                             equity_security.fee_model = InteractiveBrokersFeeModel()
+
+                            # ⚠️ 注册数据类型 (手动订阅时必须手动注册)
+                            self.spread_manager.data_types[equity_security.Symbol] = Tick
 
                         # Register the pair in SpreadManager
                         self.spread_manager.add_pair(crypto_security, equity_security)
@@ -153,6 +273,61 @@ class Arbitrage(QCAlgorithm):
 
             except Exception as e:
                 self.debug(f"❌ Error initializing {exchange} data source: {str(e)}")
+
+    def _init_monitoring_adapters(self):
+        """
+        初始化监控适配器 (Live模式专用)
+
+        Returns:
+            (TradingRedis, redis.StrictRedis):
+                - TradingRedis 实例（用于监控数据）
+                - 原始 Redis 客户端（用于状态持久化）
+                失败返回 (None, None)
+        """
+        self.debug("="*60)
+        self.debug("🔍 Initializing Monitoring Adapters")
+        self.debug("="*60)
+
+        # 检查监控模块是否可用
+        if not REDIS_AVAILABLE:
+            error_msg = (
+                f"❌ 监控模块导入失败: {REDIS_IMPORT_ERROR}\n"
+                f"   Live模式需要Redis监控以避免数据丢失\n"
+                f"   请检查:\n"
+                f"   1. monitoring目录是否存在\n"
+                f"   2. 依赖是否已安装: pip install -r arbitrage/monitoring/requirements.txt"
+            )
+            self.debug(error_msg)
+            raise RuntimeError(error_msg)
+
+        # 验证Redis连接
+        try:
+            _, message = TradingRedis.verify_connection(raise_on_failure=True)
+            self.debug(message)
+
+            # 创建 TradingRedis 客户端（用于监控）
+            trading_redis = TradingRedis()
+            if not trading_redis.is_connected():
+                raise RuntimeError("TradingRedis客户端初始化失败")
+
+            # 创建原始 Redis 客户端（用于状态持久化）
+            raw_redis = StatePersistence.init_redis_connection(self)
+            if not raw_redis:
+                raise RuntimeError("原始Redis客户端初始化失败")
+
+            self.debug("✅ Redis客户端已就绪 (TradingRedis + Raw)")
+            self.debug("="*60)
+            return (trading_redis, raw_redis)
+
+        except Exception as e:
+            error_msg = (
+                f"❌ Redis连接验证失败\n"
+                f"   错误: {e}\n"
+                f"   Live模式需要Redis以避免监控数据丢失\n"
+                f"   请先启动Redis: docker compose up -d redis"
+            )
+            self.debug(error_msg)
+            raise RuntimeError(error_msg)
 
     def _set_margin_mode(self, security, asset_type):
         """为Security设置Margin模式的BuyingPowerModel"""
@@ -218,12 +393,61 @@ class Arbitrage(QCAlgorithm):
 
         self.debug("="*60)
 
+    def debug_cashbook(self):
+        """打印 CashBook 详细信息，包括所有货币的 ConversionRate"""
+        self.debug("=" * 60)
+        self.debug(f"📊 CashBook Debug @ {self.time}")
+        self.debug("=" * 60)
+
+        # 检查是否是多账户模式
+        if hasattr(self.portfolio, 'GetAccount'):
+            try:
+                # === 打印 Kraken 账户 CashBook ===
+                self.debug("🔹 Kraken Account CashBook:")
+                kraken_account = self.portfolio.GetAccount("Kraken")
+                for currency_symbol, cash in kraken_account.CashBook.items():
+                    conversion_rate = cash.conversion_rate
+                    amount = cash.amount
+                    value_in_account_currency = cash.value_in_account_currency
+
+                    self.debug(
+                        f"  {currency_symbol}: "
+                        f"Amount={amount:.8f} | "
+                        f"ConversionRate={conversion_rate:.8f} | "
+                        f"Value=${value_in_account_currency:.2f}"
+                    )
+
+            except Exception as e:
+                self.debug(f"❌ Error accessing sub-account CashBooks: {e}")
+
+        # === 打印聚合 CashBook ===
+        self.debug("🔹 Aggregated Portfolio CashBook:")
+        for currency_symbol, cash in self.portfolio.cash_book.items():
+            conversion_rate = cash.conversion_rate
+            amount = cash.amount
+            value_in_account_currency = cash.value_in_account_currency
+
+            self.debug(
+                f"  {currency_symbol}: "
+                f"Amount={amount:.8f} | "
+                f"ConversionRate={conversion_rate:.8f} | "
+                f"Value=${value_in_account_currency:.2f}"
+            )
+
+        self.debug(f"Total Portfolio Value: ${self.portfolio.total_portfolio_value:,.2f}")
+        self.debug("=" * 60)
+
     def on_data(self, data: Slice):
         """处理数据 - 委托给SpreadManager处理"""
-        if not data.ticks or len(data.ticks) == 0:
+        if not data.Ticks or len(data.Ticks) == 0:
             return
 
         self.tick_count += 1
+
+        # === 定期打印 CashBook 信息（每 5 秒） ===
+        if (self.time - self.last_cashbook_debug_time).total_seconds() >= 5:
+            self.debug_cashbook()
+            self.last_cashbook_debug_time = self.time
 
         # 委托给SpreadManager处理数据并监控价差
         self.spread_manager.on_data(data)
@@ -285,7 +509,7 @@ class Arbitrage(QCAlgorithm):
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
             # 生成 HTML 可视化报告
-            from visualization.html_generator import generate_html_report
+            from monitoring.html_generator import generate_html_report
             html_filepath = "order_tracker_report_live.html"
             generate_html_report(json_filepath, html_filepath)
             self.debug(f"✅ HTML report generated: {html_filepath}")
