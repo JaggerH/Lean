@@ -898,6 +898,167 @@
                 max-height: 300px;
             }
         }
+
+        /* === 活跃订单执行 (Execution Targets) 样式 === */
+        .execution-targets-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 15px;
+        }
+
+        .execution-target-card {
+            background: #1e1e1e;
+            border-radius: 6px;
+            padding: 16px;
+            border-left: 4px solid #4ec9b0;
+            transition: all 0.2s ease;
+        }
+
+        .execution-target-card:hover {
+            background: #2d2d30;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .execution-target-card.entry {
+            border-left-color: #4fc3f7;
+        }
+
+        .execution-target-card.exit {
+            border-left-color: #f48771;
+        }
+
+        .execution-target-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .target-title {
+            color: #4ec9b0;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .execution-target-card.entry .target-title {
+            color: #4fc3f7;
+        }
+
+        .execution-target-card.exit .target-title {
+            color: #f48771;
+        }
+
+        .status-badge.active,
+        .status-badge.pending {
+            background: #1a472a;
+            color: #4ec9b0;
+        }
+
+        .status-badge.completed {
+            background: #37373d;
+            color: #858585;
+        }
+
+        .status-badge.canceled,
+        .status-badge.cancelled {
+            background: #5a1d1d;
+            color: #f48771;
+        }
+
+        .target-meta {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .target-pair {
+            color: #dcdcaa;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .level-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .target-progress {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .progress-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .progress-label {
+            color: #858585;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .progress-value {
+            color: #d4d4d4;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: 'Consolas', monospace;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #2d2d30;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ec9b0, #569cd6);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .execution-target-card.entry .progress-fill {
+            background: linear-gradient(90deg, #4fc3f7, #569cd6);
+        }
+
+        .execution-target-card.exit .progress-fill {
+            background: linear-gradient(90deg, #f48771, #ce9178);
+        }
+
+        .target-timestamp {
+            color: #666;
+            font-size: 11px;
+            text-align: right;
+            margin-top: 8px;
+        }
+
+        /* 响应式：小屏幕单列显示 */
+        @media (max-width: 768px) {
+            .execution-targets-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -954,7 +1115,13 @@
 
         <!-- 网格持仓追踪（完整宽度） -->
         <div class="card positions-row">
-            <h2>📊 网格持仓追踪</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin: 0;">📊 网格持仓追踪</h2>
+                <label style="font-size: 13px; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="grid-position-filter-checkbox" checked style="margin-right: 8px;">
+                    隐藏空持仓
+                </label>
+            </div>
             <div id="grid-positions-container" class="loader">加载中...</div>
         </div>
 
@@ -972,7 +1139,13 @@
 
         <!-- 价差卡片 -->
         <div class="card" style="margin-bottom: 20px;">
-            <h2>📈 交易对价差</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin: 0;">📈 交易对价差</h2>
+                <label style="font-size: 13px; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="spread-filter-checkbox" style="margin-right: 8px;">
+                    只显示 |价差| > 1%
+                </label>
+            </div>
             <div id="spreads-container" class="loader">加载中...</div>
         </div>
 

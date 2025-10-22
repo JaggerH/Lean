@@ -22,6 +22,17 @@ class TradingMonitor {
         // 当前模式: 'live' 或 'backtest'
         this.currentMode = 'live';
 
+        // 价差过滤状态
+        this.spreadFilter = {
+            enabled: false,
+            threshold: 1.0  // 1%
+        };
+
+        // 网格持仓过滤状态
+        this.gridPositionFilter = {
+            enabled: true  // 默认启用过滤
+        };
+
         // 当前选中的回测ID
         this.selectedBacktestId = null;
 
@@ -61,6 +72,8 @@ class TradingMonitor {
         this.connectWebSocket();
         this.initialLoad();
         this.startHeartbeat();
+        this.setupSpreadFilter();
+        this.setupGridPositionFilter();
 
         // 3秒后如果WebSocket还没连接，启动轮询
         setTimeout(() => {
@@ -69,6 +82,30 @@ class TradingMonitor {
                 this.startPolling();
             }
         }, 3000);
+    }
+
+    setupSpreadFilter() {
+        const checkbox = document.getElementById('spread-filter-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('change', (e) => {
+                this.spreadFilter.enabled = e.target.checked;
+                console.log(`[INFO] 价差过滤已${this.spreadFilter.enabled ? '启用' : '禁用'}`);
+                // 立即重新渲染价差数据
+                this.renderSpreads(this.spreadsCache);
+            });
+        }
+    }
+
+    setupGridPositionFilter() {
+        const checkbox = document.getElementById('grid-position-filter-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('change', (e) => {
+                this.gridPositionFilter.enabled = e.target.checked;
+                console.log(`[INFO] 网格持仓过滤已${this.gridPositionFilter.enabled ? '启用' : '禁用'}`);
+                // 立即重新加载网格持仓数据
+                this.loadGridPositions();
+            });
+        }
     }
 
     // === WebSocket连接 ===
@@ -459,10 +496,31 @@ class TradingMonitor {
             return;
         }
 
+        // 过滤价差数据
+        let filteredSpreads = spreads;
+        if (this.spreadFilter.enabled) {
+            filteredSpreads = {};
+            for (const [pair, spread] of Object.entries(spreads)) {
+                const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
+                const threshold = this.spreadFilter.threshold;
+
+                // 只显示 spread_pct > threshold% 或 < -threshold% 的交易对
+                if (Math.abs(spreadPct) > threshold) {
+                    filteredSpreads[pair] = spread;
+                }
+            }
+        }
+
+        // 检查过滤后是否有数据
+        if (Object.keys(filteredSpreads).length === 0) {
+            container.innerHTML = '<div class="loader">没有符合条件的价差数据</div>';
+            return;
+        }
+
         // 使用网格布局包裹所有交易对
         let html = '<div class="spreads-grid">';
 
-        for (const [pair, spread] of Object.entries(spreads)) {
+        for (const [pair, spread] of Object.entries(filteredSpreads)) {
             const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
             const spreadClass = spreadPct >= 0 ? 'positive' : 'negative';
 
@@ -551,52 +609,76 @@ class TradingMonitor {
             return;
         }
 
-        let html = '';
-        // 使用 hash 作为 key 遍历，从数据中获取 grid_id 用于显示
-        for (const [hashKey, target] of Object.entries(targets)) {
-            const gridId = target.grid_id;  // 人类可读的 grid_id（用于 UI 显示）
+        let html = '<div class="execution-targets-grid">';
 
+        // 使用 hash 作为 key 遍历
+        for (const [hashKey, target] of Object.entries(targets)) {
             // 安全获取数量，避免 undefined
             const cryptoFilled = target.filled_qty_crypto || 0;
             const stockFilled = target.filled_qty_stock || 0;
             const cryptoTarget = target.target_qty_crypto || 0;
             const stockTarget = target.target_qty_stock || 0;
 
+            // 计算填充百分比
+            const cryptoPercent = cryptoTarget > 0 ? (cryptoFilled / cryptoTarget * 100) : 0;
+            const stockPercent = stockTarget > 0 ? (stockFilled / stockTarget * 100) : 0;
+
+            // 根据level_type设置颜色
+            const levelClass = target.level_type === 'ENTRY' ? 'entry' : 'exit';
+            const levelColor = target.level_type === 'ENTRY' ? '#4fc3f7' : '#f48771';
+
+            // 格式化预期价差显示：根据方向显示 >= 或 <=
+            let spreadDisplay = 'N/A';
+            if (target.expected_spread_pct !== undefined && target.direction) {
+                const spreadPct = (target.expected_spread_pct * 100).toFixed(2);
+                const operator = target.direction === 'LONG_SPREAD' ? '<=' : '>=';
+                spreadDisplay = `${operator} ${spreadPct}%`;
+            }
+
             html += `
-                <div class="active-target-item" data-hash="${hashKey}" style="
-                    padding: 15px;
-                    background: #1e1e1e;
-                    border-radius: 4px;
-                    margin-bottom: 10px;
-                    border-left: 3px solid #4ec9b0;
-                ">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <strong style="color: #4ec9b0; font-size: 14px;">${gridId}</strong>
-                        <span style="
-                            padding: 2px 8px;
-                            border-radius: 3px;
-                            background: #569cd633;
-                            color: #569cd6;
-                            font-weight: 600;
-                            font-size: 12px;
-                        ">${target.status}</span>
+                <div class="execution-target-card ${levelClass}" data-hash="${hashKey}">
+                    <div class="execution-target-header">
+                        <div class="target-title">${target.pair_symbol}</div>
+                        <span class="status-badge ${target.status.toLowerCase()}">${target.status}</span>
                     </div>
-                    <div style="font-size: 12px; color: #888; margin-bottom: 6px;">
-                        ${target.pair_symbol} | ${target.level_type}
+
+                    <div class="target-meta">
+                        <span class="level-badge" style="background: ${levelColor}33; color: ${levelColor}">
+                            ${target.level_type}
+                        </span>
+                        <span style="color: #dcdcaa; font-size: 12px;">
+                            ${spreadDisplay}
+                        </span>
                     </div>
-                    <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 4px;">
-                        Crypto: ${cryptoFilled.toFixed(2)} / ${cryptoTarget.toFixed(2)}
+
+                    <div class="target-progress">
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="progress-label">Crypto</span>
+                                <span class="progress-value">${cryptoFilled.toFixed(2)} / ${cryptoTarget.toFixed(2)}</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${Math.min(cryptoPercent, 100)}%"></div>
+                            </div>
+                        </div>
+
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="progress-label">Stock</span>
+                                <span class="progress-value">${stockFilled.toFixed(2)} / ${stockTarget.toFixed(2)}</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${Math.min(stockPercent, 100)}%"></div>
+                            </div>
+                        </div>
                     </div>
-                    <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 6px;">
-                        Stock: ${stockFilled.toFixed(2)} / ${stockTarget.toFixed(2)}
-                    </div>
-                    <div style="font-size: 11px; color: #666;">
-                        ${target.timestamp}
-                    </div>
+
+                    <div class="target-timestamp">${target.timestamp}</div>
                 </div>
             `;
         }
 
+        html += '</div>';
         container.innerHTML = html;
     }
 
@@ -608,10 +690,31 @@ class TradingMonitor {
             return;
         }
 
+        // 过滤空持仓
+        let filteredPositions = positions;
+        if (this.gridPositionFilter.enabled) {
+            filteredPositions = {};
+            for (const [hashKey, pos] of Object.entries(positions)) {
+                const leg1Qty = parseFloat(pos.leg1_qty || 0);
+                const leg2Qty = parseFloat(pos.leg2_qty || 0);
+
+                // 只保留至少有一个持仓不为空的记录
+                if (leg1Qty > 0 || leg2Qty > 0) {
+                    filteredPositions[hashKey] = pos;
+                }
+            }
+        }
+
+        // 检查过滤后是否有数据
+        if (Object.keys(filteredPositions).length === 0) {
+            container.innerHTML = '<div class="loader">没有符合条件的网格持仓</div>';
+            return;
+        }
+
         let html = '<table><thead><tr><th>Grid ID</th><th>Pair</th><th>Type</th><th>Spread</th><th>Leg1 Qty</th><th>Leg2 Qty</th><th>Time</th></tr></thead><tbody>';
 
         // 使用 hash 作为 key 遍历，从数据中获取 grid_id 用于显示
-        for (const [hashKey, pos] of Object.entries(positions)) {
+        for (const [hashKey, pos] of Object.entries(filteredPositions)) {
             const gridId = pos.grid_id;  // 人类可读的 grid_id（用于 UI 显示）
             const spreadClass = pos.spread_pct >= 0 ? 'positive' : 'negative';
             html += `
