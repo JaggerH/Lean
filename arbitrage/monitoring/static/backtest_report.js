@@ -79,9 +79,15 @@ class BacktestReportRenderer {
             <div class="meta-grid">
                 <div class="meta-card">
                     <div class="label">Test Period</div>
-                    <div class="value" style="font-size: 14px;">
-                        ${this.meta.start_time || 'N/A'} <br>
-                        to ${this.meta.end_time || 'N/A'}
+                    <div class="value" style="font-size: 12px; line-height: 1.6;">
+                        <div style="margin-bottom: 4px;">
+                            <span style="color: #858585; font-size: 11px;">Start Time:</span>
+                            <span style="color: #d4d4d4;">${this.meta.start_time || 'N/A'}</span>
+                        </div>
+                        <div>
+                            <span style="color: #858585; font-size: 11px;">End Time:</span>
+                            <span style="color: #d4d4d4;">${this.meta.end_time || 'N/A'}</span>
+                        </div>
                     </div>
                 </div>
                 <div class="meta-card">
@@ -174,6 +180,9 @@ class BacktestReportRenderer {
         const totalFee = target.total_fee || 0;
         const orderGroups = target.order_groups || [];
 
+        // 从第一个OrderGroup获取预期价差 (所有OrderGroup的预期价差应该相同)
+        const expectedSpreadPct = orderGroups.length > 0 ? (orderGroups[0].expected_spread_pct || 0) : 0;
+
         // CSS类
         const typeClass = levelType.toLowerCase();
         const statusClass = statusName === 'Canceled' ? 'canceled' : '';
@@ -190,6 +199,17 @@ class BacktestReportRenderer {
         // 填充进度
         const cryptoFillPct = targetCrypto !== 0 ? (Math.abs(filledCrypto) / Math.abs(targetCrypto) * 100) : 0;
         const stockFillPct = targetStock !== 0 ? (Math.abs(filledStock) / Math.abs(targetStock) * 100) : 0;
+
+        // 计算所有OrderGroups的加权平均成交价
+        const avgPrices = this.calculateTargetAvgPrices(orderGroups);
+        const cryptoAvgPrice = avgPrices[cryptoSymbol] || 0;
+        const stockAvgPrice = avgPrices[stockSymbol] || 0;
+
+        // 计算实际价差百分比 (如果有成交价)
+        let actualSpreadPct = null;
+        if (cryptoAvgPrice > 0 && stockAvgPrice > 0) {
+            actualSpreadPct = (cryptoAvgPrice - stockAvgPrice) / stockAvgPrice;
+        }
 
         // ExecutionTarget信息
         const infoHtml = `
@@ -225,12 +245,29 @@ class BacktestReportRenderer {
                 </div>
             </div>
             <div class="info-item">
+                <div class="label">AVG Prices</div>
+                <div class="value" style="font-size: 12px;">
+                    ${cryptoAvgPrice > 0 ? `${cryptoSymbol}: $${cryptoAvgPrice.toFixed(2)}<br>` : ''}
+                    ${stockAvgPrice > 0 ? `${stockSymbol}: $${stockAvgPrice.toFixed(2)}` : 'N/A'}
+                </div>
+            </div>
+            <div class="info-item">
+                <div class="label">Spread (Expected / Actual)</div>
+                <div class="value" style="font-size: 12px; line-height: 1.5;">
+                    <span style="color: #dcdcaa;">${(expectedSpreadPct * 100).toFixed(2)}%</span>
+                    <span style="color: #666;"> / </span>
+                    <span style="color: ${actualSpreadPct !== null ? (actualSpreadPct >= 0 ? '#4ec9b0' : '#f48771') : '#858585'};">
+                        ${actualSpreadPct !== null ? `${(actualSpreadPct * 100).toFixed(2)}%` : 'N/A'}
+                    </span>
+                </div>
+            </div>
+            <div class="info-item">
                 <div class="label">Total Cost</div>
                 <div class="value">$${totalCost.toFixed(2)}</div>
             </div>
             <div class="info-item">
                 <div class="label">Total Fee</div>
-                <div class="value" style="color: #f48771;">$${totalFee.toFixed(4)}</div>
+                <div class="value" style="color: #f48771;">$${totalFee.toFixed(2)}</div>
             </div>
             <div class="info-item">
                 <div class="label">OrderGroups</div>
@@ -246,10 +283,11 @@ class BacktestReportRenderer {
                 this.buildOrderGroupCard(i + 1, og)
             ).join('');
 
+            const collapseId = `collapse-${gridId.replace(/[^a-zA-Z0-9]/g, '_')}`;
             orderGroupsHtml = `
             <div class="order-groups">
-                <h3 class="collapsible" onclick="window.reportRenderer.toggleCollapse(event)">Order Groups Details</h3>
-                <div class="collapsible-content">
+                <h3 class="collapsible collapsed" data-collapse-id="${collapseId}">Order Groups Details</h3>
+                <div class="collapsible-content hidden" id="${collapseId}">
                     ${groupCards}
                 </div>
             </div>
@@ -473,7 +511,7 @@ class BacktestReportRenderer {
     }
 
     /**
-     * 计算每个symbol的加权平均价格
+     * 计算每个symbol的加权平均价格 (从单个OrderGroup的orders)
      */
     calculateAvgPrices(orders) {
         const symbolTotals = {};
@@ -489,6 +527,38 @@ class BacktestReportRenderer {
 
             symbolTotals[symbol].total_value += quantity * fillPrice;
             symbolTotals[symbol].total_qty += quantity;
+        });
+
+        const avgPrices = {};
+        Object.entries(symbolTotals).forEach(([symbol, totals]) => {
+            if (totals.total_qty > 0) {
+                avgPrices[symbol] = totals.total_value / totals.total_qty;
+            }
+        });
+
+        return avgPrices;
+    }
+
+    /**
+     * 计算整个ExecutionTarget的加权平均价格 (从所有OrderGroups)
+     */
+    calculateTargetAvgPrices(orderGroups) {
+        const symbolTotals = {};
+
+        orderGroups.forEach(og => {
+            const orders = og.orders || [];
+            orders.forEach(order => {
+                const symbol = order.symbol || '';
+                const quantity = Math.abs(order.quantity || 0);
+                const fillPrice = order.fill_price || 0;
+
+                if (!symbolTotals[symbol]) {
+                    symbolTotals[symbol] = { total_value: 0, total_qty: 0 };
+                }
+
+                symbolTotals[symbol].total_value += quantity * fillPrice;
+                symbolTotals[symbol].total_qty += quantity;
+            });
         });
 
         const avgPrices = {};
@@ -520,6 +590,17 @@ class BacktestReportRenderer {
         if (showEntry) showEntry.addEventListener('change', () => this.applyFilters());
         if (showExit) showExit.addEventListener('change', () => this.applyFilters());
         if (showCanceled) showCanceled.addEventListener('change', () => this.applyFilters());
+
+        // 折叠事件 - 使用事件委托
+        const container = document.getElementById(this.containerId);
+        if (container) {
+            container.addEventListener('click', (event) => {
+                const collapsible = event.target.closest('.collapsible');
+                if (collapsible) {
+                    this.toggleCollapse(collapsible);
+                }
+            });
+        }
     }
 
     /**
@@ -555,11 +636,20 @@ class BacktestReportRenderer {
     /**
      * 切换折叠状态
      */
-    toggleCollapse(event) {
-        const element = event.target;
+    toggleCollapse(element) {
         element.classList.toggle('collapsed');
-        const content = element.nextElementSibling;
-        if (content) {
+
+        // 通过data属性或nextElementSibling找到内容
+        const collapseId = element.getAttribute('data-collapse-id');
+        let content;
+
+        if (collapseId) {
+            content = document.getElementById(collapseId);
+        } else {
+            content = element.nextElementSibling;
+        }
+
+        if (content && content.classList.contains('collapsible-content')) {
             content.classList.toggle('hidden');
         }
     }

@@ -878,8 +878,8 @@ class TradingMonitor {
             if (jsonData && !jsonData.error) {
                 // 确保backtest_report.js已加载
                 if (!window.BacktestReportRenderer) {
-                    // 动态加载backtest_report.js
-                    await this.loadScript('/static/backtest_report.js');
+                    // 动态加载backtest_report.js (添加时间戳防止缓存)
+                    await this.loadScript(`/static/backtest_report.js?v=${Date.now()}`);
                 }
 
                 // 直接在容器中渲染报告
