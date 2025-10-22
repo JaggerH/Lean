@@ -42,9 +42,7 @@ sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
-from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
-from monitoring.redis_writer import TradingRedis
-from monitoring.spread_monitor import RedisSpreadMonitor
+from monitoring.monitoring_context import MonitoringContext
 
 class LiveModeMonitorTest(QCAlgorithm):
     """Live Mode Monitor 集成测试 - Backtest 环境 + Live 监控"""
@@ -63,43 +61,26 @@ class LiveModeMonitorTest(QCAlgorithm):
         self.settings.minimum_order_margin_portfolio_percentage = 0
         self.debug("⚙️ Disabled minimum order margin filter")
 
-        # === 0. 初始化 Redis 连接（模拟 Live 环境）===
+        # === 0. 初始化监控上下文（统一管理监控组件）===
         self.debug("=" * 60)
-        self.debug("🔗 Initializing Redis for Live Mode Monitoring Test")
+        self.debug("🔗 Initializing Monitoring Context for Live Mode Test")
         self.debug("=" * 60)
 
-        try:
-            # 验证 Redis 连接
-            success, msg = TradingRedis.verify_connection(raise_on_failure=False)
-            if success:
-                self.redis_client = TradingRedis()
-                self.debug("✅ Redis connected - Live monitoring enabled")
-                self.debug(f"   {msg}")
-            else:
-                self.debug(f"⚠️ Redis unavailable: {msg}")
-                self.debug("   Test will run without Redis monitoring")
-                self.redis_client = None
-        except Exception as e:
-            self.debug(f"⚠️ Redis initialization failed: {e}")
-            self.debug("   Test will run without Redis monitoring")
-            self.redis_client = None
+        # 创建监控上下文（测试模式：强制启用 Live 监控）
+        self.monitoring = MonitoringContext(
+            algorithm=self,
+            mode='live',           # 强制启用 Live 监控（模拟实盘环境）
+            fail_on_error=False    # 测试模式允许 Redis 失败
+        )
 
         self.debug("=" * 60)
 
-        # === 1. 初始化 RedisSpreadMonitor (如果 Redis 可用) ===
-        spread_monitor = None
-        if self.redis_client:
-            try:
-                spread_monitor = RedisSpreadMonitor(self, self.redis_client)
-                self.debug("✅ RedisSpreadMonitor initialized")
-            except Exception as e:
-                self.debug(f"⚠️ Failed to initialize RedisSpreadMonitor: {e}")
-
-        # === 2. 初始化 SpreadManager ===
+        # === 1. 初始化 SpreadManager ===
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(
             algorithm=self,
-            monitor_adapter=spread_monitor  # 注入监控适配器
+            # 测试环境不给，影响回测性能
+            # monitor_adapter=self.monitoring.get_spread_monitor()  # 从监控上下文获取
         )
 
         # === 3. 初始化 Long Crypto Grid Strategy ===
@@ -146,25 +127,22 @@ class LiveModeMonitorTest(QCAlgorithm):
         self.strategy.initialize_pair((aapl_crypto_symbol, aapl_stock_symbol))
         self.strategy.initialize_pair((tsla_crypto_symbol, tsla_stock_symbol))
 
-        # === 7. 初始化订单追踪器（LIVE 监控模式）===
+        # === 7. 初始化订单追踪器（通过监控上下文创建）===
         self.debug("=" * 60)
         self.debug("📊 Initializing GridOrderTracker in LIVE MONITORING MODE")
         self.debug("=" * 60)
 
-        self.order_tracker = EnhancedOrderTracker(
-            self,
+        self.order_tracker = self.monitoring.create_order_tracker(
             self.strategy,
-            debug=True,
-            realtime_mode=True,  # ← 强制启用 Live 模式监控
-            redis_client=self.redis_client  # ← 传递 Redis 客户端
+            debug=True  # 测试模式开启调试
         )
 
-        self.debug(f"  → realtime_mode: {self.order_tracker.realtime_mode}")
-        self.debug(f"  → redis_client: {'Connected' if self.redis_client else 'None'}")
-        self.debug("=" * 60)
-
-        # 注入到 Strategy 中（让 Strategy 能够调用 tracker）
+        # 注入到 Strategy 中
         self.strategy.order_tracker = self.order_tracker
+
+        self.debug(f"  → realtime_mode: {self.order_tracker.realtime_mode}")
+        self.debug(f"  → redis_client: {'Connected' if self.monitoring.is_enabled() else 'None'}")
+        self.debug("=" * 60)
 
         # 追踪 spread 更新
         self.spread_count = 0
@@ -228,14 +206,17 @@ class LiveModeMonitorTest(QCAlgorithm):
         self.debug(tsla_grid_summary)
 
         # === 验证 Redis 数据写入 ===
-        if self.redis_client:
+        if self.monitoring.is_enabled():
             self.debug("=" * 60)
             self.debug("🔍 Verifying Redis Data")
             self.debug("=" * 60)
 
             try:
+                # 获取 Redis 客户端
+                redis_client = self.monitoring.redis_client
+
                 # 检查活跃 targets（应该为空，因为都已完成）
-                active_targets = self.redis_client.client.hgetall("trading:active_targets")
+                active_targets = redis_client.client.hgetall("trading:active_targets")
                 self.debug(f"✓ Active Targets in Redis: {len(active_targets)}")
 
                 if len(active_targets) > 0:
@@ -246,7 +227,7 @@ class LiveModeMonitorTest(QCAlgorithm):
                     self.debug("  ✅ All ExecutionTargets completed and removed from Redis")
 
                 # 检查 grid positions
-                grid_positions = self.redis_client.client.hgetall("trading:grid_positions")
+                grid_positions = redis_client.client.hgetall("trading:grid_positions")
                 self.debug(f"✓ Grid Positions in Redis: {len(grid_positions)}")
 
                 if len(grid_positions) > 0:

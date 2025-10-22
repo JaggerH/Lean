@@ -13,13 +13,11 @@ from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 # 监控模块 (Live模式需要)
 try:
-    from monitoring.redis_writer import TradingRedis
-    from monitoring.spread_monitor import RedisSpreadMonitor
-    from monitoring.state_persistence import StatePersistence
-    REDIS_AVAILABLE = True
+    from monitoring.monitoring_context import MonitoringContext
+    MONITORING_AVAILABLE = True
 except ImportError as e:
-    REDIS_AVAILABLE = False
-    REDIS_IMPORT_ERROR = str(e)
+    MONITORING_AVAILABLE = False
+    MONITORING_IMPORT_ERROR = str(e)
 # endregion
 
 class Arbitrage(QCAlgorithm):
@@ -44,44 +42,33 @@ class Arbitrage(QCAlgorithm):
         # 设置时区为UTC
         self.set_time_zone("UTC")
 
-        # === 诊断: 检查运行模式 ===
+        # === 0. 初始化监控上下文 (统一管理监控组件) ===
         self.debug("="*60)
-        self.debug("🔍 诊断运行模式")
-        self.debug("="*60)
-        self.debug(f"self.live_mode = {self.live_mode}")
-        self.debug(f"type(self.live_mode) = {type(self.live_mode)}")
-
-        # 尝试多种方式检测 Live 模式
-        is_live = self.live_mode
-        if not is_live:
-            # 备用检测方式
-            try:
-                is_live = hasattr(self, 'Transactions') and hasattr(self.Transactions, 'GetOpenOrders')
-            except:
-                pass
-
-        self.debug(f"最终判定 is_live = {is_live}")
+        self.debug("🔍 Initializing Monitoring Context")
         self.debug("="*60)
 
-        # === 0. 初始化监控适配器 (Live模式) ===
-        # 使用更宽松的判断：只要不是明确的 False，就尝试连接 Redis
-        spread_monitor = None
-        state_persistence = None
-        self.redis_client = None  # 保存TradingRedis实例（供OrderTracker使用）
+        # 检查监控模块是否可用
+        if not MONITORING_AVAILABLE:
+            error_msg = (
+                f"❌ 监控模块导入失败: {MONITORING_IMPORT_ERROR}\n"
+                f"   Live模式需要监控模块以避免数据丢失\n"
+                f"   请检查:\n"
+                f"   1. monitoring目录是否存在\n"
+                f"   2. 依赖是否已安装: pip install -r arbitrage/monitoring/requirements.txt"
+            )
+            self.debug(error_msg)
+            # Live 模式强制要求监控模块
+            if self.live_mode:
+                raise RuntimeError(error_msg)
 
-        if is_live or self.live_mode is None:
-            self.debug("→ 初始化监控适配器 (检测到Live/Paper模式)")
-            trading_redis, raw_redis = self._init_monitoring_adapters()
-            if trading_redis and raw_redis:
-                # 创建监控适配器
-                self.redis_client = trading_redis  # 供OrderTracker使用
-                spread_monitor = RedisSpreadMonitor(self, trading_redis)
-                state_persistence = StatePersistence(self, 'LongCryptoStrategy', raw_redis)
-                self.debug("✅ 监控适配器初始化成功")
-            else:
-                self.debug("⚠️ 监控适配器初始化失败，监控功能将不可用")
-        else:
-            self.debug("→ 跳过监控适配器 (Backtest模式)")
+        # 创建监控上下文（自动检测 Live/Backtest 模式）
+        self.monitoring = MonitoringContext(
+            algorithm=self,
+            mode='auto',          # 自动检测模式
+            fail_on_error=True    # Live 模式强制要求 Redis
+        )
+
+        self.debug("="*60)
 
         # === 杠杆配置 ===
         self.leverage_config = {
@@ -99,7 +86,7 @@ class Arbitrage(QCAlgorithm):
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(
             algorithm=self,
-            monitor_adapter=spread_monitor  # 注入监控适配器
+            monitor_adapter=self.monitoring.get_spread_monitor()  # 从监控上下文获取
         )
 
         # === 3. 初始化做多加密货币策略 ===
@@ -109,7 +96,7 @@ class Arbitrage(QCAlgorithm):
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
             position_size_pct=0.80,  # 80% (考虑杠杆和费用)
-            state_persistence=state_persistence  # 注入状态持久化适配器
+            state_persistence=self.monitoring.get_state_persistence()  # 从监控上下文获取
         )
 
         # === 4. 注册策略到 SpreadManager（观察者模式）===
@@ -141,15 +128,15 @@ class Arbitrage(QCAlgorithm):
             'Unknown': []
         }
 
-        # === 9. 初始化独立的订单追踪器 (Enhanced Version) ===
+        # === 9. 初始化独立的订单追踪器 (通过监控上下文创建) ===
         self.debug("📊 Initializing EnhancedOrderTracker...")
-        self.order_tracker = EnhancedOrderTracker(
-            self,
+        self.order_tracker = self.monitoring.create_order_tracker(
             self.strategy,
-            debug=False,
-            realtime_mode=(is_live or self.live_mode is None),  # 启用实时监控在Live模式
-            redis_client=self.redis_client  # 传递Redis客户端
+            debug=False
         )
+
+        # 注入到策略中
+        self.strategy.order_tracker = self.order_tracker
 
         self.debug("✅ Initialization complete!")
         self.debug(f"📈 Subscribed to {len(self.spread_manager.pairs)} crypto-stock pairs")
@@ -274,60 +261,6 @@ class Arbitrage(QCAlgorithm):
             except Exception as e:
                 self.debug(f"❌ Error initializing {exchange} data source: {str(e)}")
 
-    def _init_monitoring_adapters(self):
-        """
-        初始化监控适配器 (Live模式专用)
-
-        Returns:
-            (TradingRedis, redis.StrictRedis):
-                - TradingRedis 实例（用于监控数据）
-                - 原始 Redis 客户端（用于状态持久化）
-                失败返回 (None, None)
-        """
-        self.debug("="*60)
-        self.debug("🔍 Initializing Monitoring Adapters")
-        self.debug("="*60)
-
-        # 检查监控模块是否可用
-        if not REDIS_AVAILABLE:
-            error_msg = (
-                f"❌ 监控模块导入失败: {REDIS_IMPORT_ERROR}\n"
-                f"   Live模式需要Redis监控以避免数据丢失\n"
-                f"   请检查:\n"
-                f"   1. monitoring目录是否存在\n"
-                f"   2. 依赖是否已安装: pip install -r arbitrage/monitoring/requirements.txt"
-            )
-            self.debug(error_msg)
-            raise RuntimeError(error_msg)
-
-        # 验证Redis连接
-        try:
-            _, message = TradingRedis.verify_connection(raise_on_failure=True)
-            self.debug(message)
-
-            # 创建 TradingRedis 客户端（用于监控）
-            trading_redis = TradingRedis()
-            if not trading_redis.is_connected():
-                raise RuntimeError("TradingRedis客户端初始化失败")
-
-            # 创建原始 Redis 客户端（用于状态持久化）
-            raw_redis = StatePersistence.init_redis_connection(self)
-            if not raw_redis:
-                raise RuntimeError("原始Redis客户端初始化失败")
-
-            self.debug("✅ Redis客户端已就绪 (TradingRedis + Raw)")
-            self.debug("="*60)
-            return (trading_redis, raw_redis)
-
-        except Exception as e:
-            error_msg = (
-                f"❌ Redis连接验证失败\n"
-                f"   错误: {e}\n"
-                f"   Live模式需要Redis以避免监控数据丢失\n"
-                f"   请先启动Redis: docker compose up -d redis"
-            )
-            self.debug(error_msg)
-            raise RuntimeError(error_msg)
 
     def _set_margin_mode(self, security, asset_type):
         """为Security设置Margin模式的BuyingPowerModel"""
