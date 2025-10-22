@@ -278,6 +278,19 @@ namespace QuantConnect.Securities
                 if (BidPrice > 0 && AskPrice > 0)
                 {
                     Price = (BidPrice + AskPrice) / 2;
+                    // CRITICAL: Also set the OrderbookDepth.Value property for ConversionRate calculations
+                    // In live mode, OrderbookDepth created from WebSocket may not have Value set
+                    orderbookDepth.Value = Price;
+                }
+
+                // Update _lastData for OrderbookDepth to support currency conversion rates
+                // This ensures GetLastData() returns valid data for ConversionRate calculations
+                if ((_lastData == null
+                  || _lastQuoteBarUpdate != data.EndTime
+                  || data.DataType != MarketDataType.TradeBar)
+                    && isDefaultDataType)
+                {
+                    _lastData = data;
                 }
 
                 return;

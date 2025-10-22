@@ -233,7 +233,7 @@ class SpreadMatcher:
 
         if price_bp <= 0:
             if debug:
-                algorithm.debug(f"[SpreadMatcher] ❌ Invalid BestPrice for {symbol_bp}: {price_bp}")
+                algorithm.debug(f"[SpreadMatcher] ❌ Invalid BestPrice for {symbol_bp}: {price_bp} (direction: {direction})")
             return None
 
         # 4. 获取 lot size
@@ -259,12 +259,21 @@ class SpreadMatcher:
             spread_pct = SpreadMatcher._calc_spread_pct(price_ob, price_bp)
 
             # 5b. 验证价差是否符合预期
-            if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
-                if debug:
+            spread_valid = SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction)
+
+            if debug:
+                if spread_valid:
                     algorithm.debug(
-                        f"[SpreadMatcher] ⏩ Skip level: price_ob={price_ob:.2f}, price_bp={price_bp:.2f}, "
-                        f"spread={spread_pct:.2f}%, expected={expected_spread_pct:.2f}%, direction={direction}"
+                        f"[SpreadMatcher] ✅ Spread MEETS expected | {symbol_ob} @ ${price_ob:.2f}, {symbol_bp} @ ${price_bp:.2f}, "
+                        f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
                     )
+                else:
+                    algorithm.debug(
+                        f"[SpreadMatcher] ❌ Spread NOT meet expected | {symbol_ob} @ ${price_ob:.2f}, {symbol_bp} @ ${price_bp:.2f}, "
+                        f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
+                    )
+
+            if not spread_valid:
                 break  # 价差不满足，停止累积
 
             # 累积符合价差条件的最大流动性（不受 target_usd 限制）
@@ -436,7 +445,21 @@ class SpreadMatcher:
             spread_pct = SpreadMatcher._calc_spread_pct(price1, price2)
 
             # 4b. 验证价差是否符合预期
-            if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
+            spread_valid = SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction)
+
+            if debug:
+                if spread_valid:
+                    algorithm.debug(
+                        f"[SpreadMatcher] ✅ Dual-leg Spread MEETS expected | {symbol1} @ ${price1:.2f}, {symbol2} @ ${price2:.2f}, "
+                        f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
+                    )
+                else:
+                    algorithm.debug(
+                        f"[SpreadMatcher] ❌ Dual-leg Spread NOT meet expected | {symbol1} @ ${price1:.2f}, {symbol2} @ ${price2:.2f}, "
+                        f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
+                    )
+
+            if not spread_valid:
                 # 尝试移动对手侧指针以寻找更优价格
                 j += 1
                 continue
@@ -611,19 +634,28 @@ class SpreadMatcher:
 
         if price1 <= 0 or price2 <= 0:
             if debug:
-                algorithm.debug(f"[SpreadMatcher] ❌ Invalid prices: {symbol1}={price1}, {symbol2}={price2}")
+                algorithm.debug(f"[SpreadMatcher] ❌ Invalid prices: {symbol1}={price1:.2f}, {symbol2}={price2:.2f} (direction: {direction})")
             return None
 
         # 计算市场价差（始终基于 symbol 位置）
         spread_pct = SpreadMatcher._calc_spread_pct(price1, price2)
 
         # 验证价差是否符合预期
-        if not SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction):
-            if debug:
+        spread_valid = SpreadMatcher._validate_spread(spread_pct, expected_spread_pct, direction)
+
+        if debug:
+            if spread_valid:
                 algorithm.debug(
-                    f"[SpreadMatcher] ❌ Spread {spread_pct:.2f}% does not meet expected {expected_spread_pct:.2f}% "
-                    f"for direction {direction}"
+                    f"[SpreadMatcher] ✅ Fallback Spread MEETS expected | {symbol1} @ ${price1:.2f}, {symbol2} @ ${price2:.2f}, "
+                    f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
                 )
+            else:
+                algorithm.debug(
+                    f"[SpreadMatcher] ❌ Fallback Spread NOT meet expected | {symbol1} @ ${price1:.2f}, {symbol2} @ ${price2:.2f}, "
+                    f"spread={spread_pct*100:.2f}%, expected={expected_spread_pct*100:.2f}%, direction={direction}"
+                )
+
+        if not spread_valid:
             return None
 
         # 计算数量（市值相等）

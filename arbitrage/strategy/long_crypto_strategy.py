@@ -69,22 +69,6 @@ class LongCryptoStrategy(BaseStrategy):
         can_open = self._should_open_position(crypto_symbol, stock_symbol, self.position_size_pct)
         can_close = self._should_close_position(crypto_symbol, stock_symbol)
 
-        # 🔍 调试日志：仅在接近阈值时输出（±0.5%范围内）
-        # if abs(spread_pct - self.entry_threshold) < 0.005 or abs(spread_pct - self.exit_threshold) < 0.005:
-        #     self.algorithm.debug(
-        #         f"🔍 Spread Update | {crypto_symbol.value}<->{stock_symbol.value} | "
-        #         f"Spread: {spread_pct*100:.3f}% | "
-        #         f"Entry Threshold: {self.entry_threshold*100:.2f}% | "
-        #         f"Exit Threshold: {self.exit_threshold*100:.2f}% | "
-        #         f"can_open={can_open}, can_close={can_close}"
-        #     )
-        # self.algorithm.debug(
-        #     f"🔍 Spread Update | {crypto_symbol.value}<->{stock_symbol.value} | "
-        #     f"Spread: {spread_pct*100:.3f}% | "
-        #     f"Entry Threshold: {self.entry_threshold*100:.2f}% | "
-        #     f"Exit Threshold: {self.exit_threshold*100:.2f}% | "
-        #     f"can_open={can_open}, can_close={can_close}"
-        # )
 
         # 开仓逻辑: spread <= entry_threshold (负数) 且可以开仓
         if can_open and spread_pct <= self.entry_threshold:

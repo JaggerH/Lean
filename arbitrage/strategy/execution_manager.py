@@ -41,6 +41,7 @@ class ExecutionManager:
         """
         self.algorithm = algorithm
         self.debug_enabled = debug
+        # self.debug_enabled = True
         self.order_tracker = order_tracker
         # Track active ExecutionTargets: key = hash(GridLevel)
         self.active_targets: Dict[int, ExecutionTarget] = {}
@@ -165,7 +166,7 @@ class ExecutionManager:
 
         if not result:
             # if target.spread_direction == "SHORT_SPREAD":
-                # self._debug(f"⏸️ Level {level_id} no valid execution opportunity this tick")
+            # self._debug(f"⏸️ Level {level_id} no valid execution opportunity this tick")
             return
 
         leg1, leg2 = result
@@ -194,7 +195,7 @@ class ExecutionManager:
         验证执行前置条件
 
         检查:
-        1. 两个市场是否同时开盘
+        1. 两个市场是否同时开盘（支持扩展交易时间）
         2. 价格数据是否有效
 
         Args:
@@ -205,24 +206,39 @@ class ExecutionManager:
         """
         crypto_symbol, stock_symbol = pair_symbol
 
-        # 检查市场是否开盘
+        # 从 algorithm 实例读取 extended_market_hours 配置（避免重复读取 config.json）
+        extended_hours = getattr(self.algorithm, 'extended_market_hours', False)
+
+        # 检查市场是否开盘（使用 exchange.hours.is_open 支持扩展交易时间）
         crypto_open = self.algorithm.securities[crypto_symbol].exchange.exchange_open
-        stock_open = self.algorithm.securities[stock_symbol].exchange.exchange_open
+        stock_open = self.algorithm.securities[stock_symbol].exchange.hours.is_open(
+            self.algorithm.time,
+            extended_hours
+        )
 
         if not (crypto_open and stock_open):
-            self._debug(f"⚠️ Market not open | Crypto: {crypto_open}, Stock: {stock_open}")
+            self._debug(
+                f"⚠️ Market not open (extended_hours={extended_hours}) | "
+                f"Crypto: {crypto_open}, Stock: {stock_open}"
+            )
             return False
 
-        # 检查价格数据
+        # 检查价格数据（需要检查 has_data 以确保数据已到达）
         crypto_sec = self.algorithm.securities[crypto_symbol]
         stock_sec = self.algorithm.securities[stock_symbol]
 
         if not crypto_sec.has_data or crypto_sec.price <= 0:
-            self._debug(f"⚠️ Invalid crypto price: {crypto_sec.price}")
+            self._debug(
+                f"⚠️ Invalid crypto data | Symbol: {crypto_symbol.value} | "
+                f"HasData: {crypto_sec.has_data} | Price: {crypto_sec.price}"
+            )
             return False
 
         if not stock_sec.has_data or stock_sec.price <= 0:
-            self._debug(f"⚠️ Invalid stock price: {stock_sec.price}")
+            self._debug(
+                f"⚠️ Invalid stock data | Symbol: {stock_symbol.value} | "
+                f"HasData: {stock_sec.has_data} | Price: {stock_sec.price}"
+            )
             return False
 
         return True
@@ -384,4 +400,5 @@ class ExecutionManager:
     def _debug(self, message: str):
         """条件debug输出"""
         if self.debug_enabled:
-            self.algorithm.debug(f"[{self.algorithm.time:%Y-%m-%d %H:%M:%S}]" + message)
+            # self.algorithm.debug(f"[{self.algorithm.time:%Y-%m-%d %H:%M:%S}]" + message)
+            self.algorithm.debug(message)

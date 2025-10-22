@@ -144,6 +144,9 @@ class LiveModeMonitorTest(QCAlgorithm):
         self.debug(f"  → redis_client: {'Connected' if self.monitoring.is_enabled() else 'None'}")
         self.debug("=" * 60)
 
+        # === 8. 捕获初始快照 ===
+        self.order_tracker.capture_initial_snapshot()
+
         # 追踪 spread 更新
         self.spread_count = 0
         self.last_spread_log_time = self.time

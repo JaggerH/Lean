@@ -589,7 +589,7 @@ class ExecutionTarget:
             target_usd=target_usd,
             direction=self.spread_direction,  # 直接使用 LONG_SPREAD/SHORT_SPREAD
             expected_spread_pct=self.expected_spread_pct,  # 转换为百分比
-            debug=False
+            debug=debug
         )
 
         if not match_result or not match_result.executable:

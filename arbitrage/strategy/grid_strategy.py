@@ -61,8 +61,8 @@ class GridStrategy(BaseStrategy):
         )
 
         # 初始化执行管理器
-        # self.execution_manager = ExecutionManager(algorithm, debug=debug)
-        self.execution_manager = ExecutionManager(algorithm, debug=True)
+        self.execution_manager = ExecutionManager(algorithm, debug=debug)
+        # self.execution_manager = ExecutionManager(algorithm, debug=True)
 
         # order_tracker 初始化为 None，稍后通过 setter 设置
         self._order_tracker = None
@@ -202,6 +202,7 @@ class GridStrategy(BaseStrategy):
 
         self.algorithm.debug(
             f"📥 _open_grid_position | ENTRY Level: {level.level_id} | "
+            f"Symbol: {crypto_symbol}/{stock_symbol} | "
             f"Current Position: {current_leg1_qty:.2f}/{current_leg2_qty:.2f} | "
             f"Delta: {delta_order_pair[crypto_symbol]:.2f}/{delta_order_pair[stock_symbol]:.2f} | "
             f"current Spread Pct: {spread_pct}"

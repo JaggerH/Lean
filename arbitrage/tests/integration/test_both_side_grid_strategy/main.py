@@ -1,5 +1,5 @@
 """
-Long Crypto Grid Strategy 集成测试 - Grid Trading Framework
+Both Side Grid Strategy 集成测试 - Grid Trading Framework
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
@@ -9,20 +9,22 @@ Long Crypto Grid Strategy 集成测试 - Grid Trading Framework
   * IBKR账户: $50,000 - 交易股票 (USA market) - Margin模式 2x杠杆
   * Kraken账户: $50,000 - 交易加密货币 (Kraken market) - Margin模式 5x杠杆
 - 路由策略: Market-based routing (基于Symbol.ID.Market)
-- 策略: LongCryptoGridStrategy (Grid Trading Framework)
-  - 单一Entry Grid: spread <= -1%
-  - 单一Exit Grid: spread >= 2%
-  - 方向: 仅 long crypto + short stock
+- 策略: BothSideGridStrategy (Grid Trading Framework)
+  - Long Crypto Entry: spread <= -1%
+  - Long Crypto Exit: spread >= 2%
+  - Short Crypto Entry: spread >= 3%
+  - Short Crypto Exit: spread <= -0.9%
+  - 方向: 双向（long crypto + short stock 和 short crypto + long stock）
   - 自动profitability validation (profit > 2 * fees)
 
 测试目标:
-1. 验证 Grid Framework 在真实数据环境下的运行
-2. 验证 GridLevelManager 的 trigger detection
-3. 验证 GridPositionManager 的 position tracking
+1. 验证 Grid Framework 在双向交易场景下的运行
+2. 验证 GridLevelManager 对4个grid levels的管理
+3. 验证 GridPositionManager 对双向持仓的跟踪
 4. 验证多账户Margin模式与Grid框架的兼容性
 5. 验证订单自动路由到正确账户 (crypto->Kraken, stock->IBKR)
 6. 验证 profitability validation 正常工作
-7. 对比 Grid 版本与原始 LongCryptoStrategy 的行为一致性
+7. 验证双向交易不会产生冲突持仓
 8. 验证多交易对同时运行 (AAPL 和 TSLA)
 """
 
@@ -40,11 +42,11 @@ from AlgorithmImports import *
 sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
-from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
+from strategy.both_side_grid_strategy import BothSideGridStrategy
 from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
-class LongCryptoGridTest(QCAlgorithm):
-    """Long Crypto Grid Strategy 集成测试"""
+class BothSideGridTest(QCAlgorithm):
+    """Both Side Grid Strategy 集成测试"""
 
     def initialize(self):
         """初始化算法"""
@@ -65,13 +67,15 @@ class LongCryptoGridTest(QCAlgorithm):
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(algorithm=self)
 
-        # === 2. 初始化 Long Crypto Grid Strategy ===
-        self.debug("📋 Initializing LongCryptoGridStrategy...")
-        self.strategy = LongCryptoGridStrategy(
+        # === 2. 初始化 Both Side Grid Strategy ===
+        self.debug("📋 Initializing BothSideGridStrategy...")
+        self.strategy = BothSideGridStrategy(
             algorithm=self,
-            entry_threshold=-0.01,  # -1%
-            exit_threshold=0.02,    # 2%
-            position_size_pct=0.80,  # 80% (考虑杠杆和费用)
+            long_crypto_entry=-0.01,   # -1% (long crypto entry threshold)
+            long_crypto_exit=0.02,     # 2% (long crypto exit threshold)
+            short_crypto_entry=0.03,   # 3% (short crypto entry threshold)
+            short_crypto_exit=-0.009,  # -0.9% (short crypto exit threshold)
+            position_size_pct=0.80,    # 80% (考虑杠杆和费用)
         )
 
         # 启用debug模式
@@ -133,7 +137,7 @@ class LongCryptoGridTest(QCAlgorithm):
 
         # 委托给 Strategy 的 on_order_event 处理订单事件
         self.strategy.on_order_event(order_event)
-        
+
         if order_event.Status == OrderStatus.Invalid:
             self.error(f"Order failed: {order_event.Message}")
             # 🚨 关键：退出算法
@@ -150,7 +154,7 @@ class LongCryptoGridTest(QCAlgorithm):
         super().on_end_of_algorithm()
 
         self.debug("=" * 60)
-        self.debug("📊 Long Crypto Grid Strategy Test Results")
+        self.debug("📊 Both Side Grid Strategy Test Results")
         self.debug("=" * 60)
 
         # 输出策略统计信息
@@ -178,7 +182,7 @@ class LongCryptoGridTest(QCAlgorithm):
 
         try:
             # 导出 JSON 数据到临时位置
-            json_filepath = "LongCryptoGridTest.json"
+            json_filepath = "BothSideGridTest.json"
             self.order_tracker.export_json(json_filepath)
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
@@ -215,9 +219,9 @@ class LongCryptoGridTest(QCAlgorithm):
                 backtest_id = manager.add_backtest(
                     json_file=json_filepath,
                     html_file=html_filepath if Path(html_filepath).exists() else None,
-                    name=f"Long Crypto Grid Test - {self.time.strftime('%Y-%m-%d')}",
-                    description=f"AAPL/AAPLxUSD grid trading from {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}",
-                    algorithm="LongCryptoGridTest"
+                    name=f"Both Side Grid Test - {self.time.strftime('%Y-%m-%d')}",
+                    description=f"AAPL/AAPLxUSD both-side grid trading from {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}",
+                    algorithm="BothSideGridTest"
                 )
 
                 self.debug(f"✅ Backtest saved to history: {backtest_id}")
