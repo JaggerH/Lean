@@ -139,6 +139,22 @@ class PortfolioSnapshot:
     accounts: Dict[str, Any]  # {account_name: {cash, holdings, ...}}
 
 
+@dataclass
+class GridPositionSnapshot:
+    """网格持仓快照"""
+    grid_id: str  # 网格线ID
+    pair_symbol: Tuple[str, str]  # (leg1, leg2)
+    level_type: str  # "ENTRY" | "EXIT"
+    spread_pct: float  # 网格线触发价差
+
+    # 持仓数量
+    leg1_qty: float
+    leg2_qty: float
+
+    # 时间戳
+    timestamp: str
+
+
 # ============================================================================
 #                      GridOrderTracker 主类
 # ============================================================================
@@ -154,7 +170,8 @@ class GridOrderTracker:
     4. Portfolio Snapshot - 每次 ExecutionTarget 状态变化时记录
     """
 
-    def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False,
+                 realtime_mode: bool = False, redis_client=None):
         """
         初始化 GridOrderTracker
 
@@ -162,10 +179,14 @@ class GridOrderTracker:
             algorithm: QCAlgorithm 实例
             strategy: GridStrategy 实例（用于访问 GridPositionManager）
             debug: 是否启用调试日志
+            realtime_mode: 是否为实时模式（Live/Paper），实时模式下会写入 Redis
+            redis_client: TradingRedis 客户端实例（可选，仅实时模式需要）
         """
         self.algorithm = algorithm
         self.strategy = strategy
         self.debug_enabled = debug
+        self.realtime_mode = realtime_mode
+        self.redis_client = redis_client
 
         # === 数据存储 ===
 
@@ -178,6 +199,9 @@ class GridOrderTracker:
 
         # Portfolio 快照（在 ExecutionTarget 终止状态时记录）
         self.portfolio_snapshots: List[PortfolioSnapshot] = []
+
+        # GridPosition 快照（在 ExecutionTarget 终止状态时记录）
+        self.grid_position_snapshots: List[GridPositionSnapshot] = []
 
         # === Round Trip 追踪状态 ===
         # 最后一个有效的 Entry: {entry_level_id: ExecutionTargetSnapshot}
@@ -194,6 +218,39 @@ class GridOrderTracker:
     # ========================================================================
     #                      核心追踪方法
     # ========================================================================
+
+    def on_execution_target_registered(self, target):
+        """
+        当 ExecutionTarget 注册时调用（在 register_execution_target 后立即调用）
+
+        Args:
+            target: ExecutionTarget 实例
+
+        功能:
+        - Live 模式：写入 Redis 显示正在执行的 ExecutionTarget
+        - Backtest 模式：仅记录日志
+        """
+        self.debug(f"📝 ExecutionTarget Registered | Grid: {target.grid_id} | Status: {target.status}")
+
+        # 实时模式：写入 Redis 显示活跃的 ExecutionTarget
+        if self.realtime_mode and self.redis_client:
+            try:
+                # 构造活跃 target 数据
+                active_target_data = {
+                    "grid_id": target.grid_id,
+                    "level_type": target.level.type,
+                    "pair_symbol": f"{target.pair_symbol[0].value}/{target.pair_symbol[1].value}",
+                    "status": str(target.status),
+                    "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
+                    "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
+                    "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                # 写入 Redis (使用 grid_id 作为 hash field)
+                self.redis_client.set_active_target(target.grid_id, active_target_data)
+                self.debug(f"  ✅ Written to Redis: active_target:{target.grid_id}")
+            except Exception as e:
+                self.algorithm.error(f"❌ Failed to write active target to Redis: {e}")
 
     def on_execution_target_update(self, target):
         """
@@ -215,6 +272,31 @@ class GridOrderTracker:
         self.execution_targets.append(snapshot)
 
         self.debug(f"📊 ExecutionTarget Update | Grid: {target.grid_id} | Status: {target.status}")
+
+        # 实时模式：更新 Redis 中的活跃 ExecutionTarget 状态
+        if self.realtime_mode and self.redis_client:
+            try:
+                active_target_data = {
+                    "grid_id": target.grid_id,
+                    "level_type": target.level.type,
+                    "pair_symbol": f"{target.pair_symbol[0].value}/{target.pair_symbol[1].value}",
+                    "status": str(target.status),
+                    "filled_qty_crypto": target.quantity_filled[0],
+                    "filled_qty_stock": target.quantity_filled[1],
+                    "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
+                    "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
+                    "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                # 如果是终止状态，从活跃列表移除；否则更新
+                if target.is_terminal():
+                    self.redis_client.remove_active_target(target.grid_id)
+                    self.debug(f"  ✅ Removed from Redis active targets: {target.grid_id}")
+                else:
+                    self.redis_client.set_active_target(target.grid_id, active_target_data)
+                    self.debug(f"  ✅ Updated Redis active target: {target.grid_id}")
+            except Exception as e:
+                self.algorithm.error(f"❌ Failed to update active target in Redis: {e}")
 
         # 如果是终止状态，记录 Portfolio 快照
         if target.is_terminal():
@@ -315,7 +397,7 @@ class GridOrderTracker:
 
     def _record_portfolio_snapshot(self, execution_target_id: str):
         """
-        记录 Portfolio 快照
+        记录 Portfolio 快照和 GridPosition 快照
 
         Args:
             execution_target_id: ExecutionTarget 的 grid_id
@@ -329,16 +411,60 @@ class GridOrderTracker:
         # 获取账户状态
         accounts = self._capture_accounts_state()
 
-        # 创建快照
-        snapshot = PortfolioSnapshot(
+        # 创建 Portfolio 快照
+        portfolio_snapshot = PortfolioSnapshot(
             timestamp=self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
             execution_target_id=execution_target_id,
             lean_pnl=lean_pnl,
             accounts=accounts
         )
 
-        self.portfolio_snapshots.append(snapshot)
+        self.portfolio_snapshots.append(portfolio_snapshot)
         self.debug(f"  → Portfolio snapshot recorded")
+
+        # 记录 GridPosition 快照（如果 strategy 可用）
+        if self.strategy and hasattr(self.strategy, 'grid_position_manager'):
+            self._record_grid_positions_snapshot()
+
+    def _record_grid_positions_snapshot(self):
+        """
+        记录所有 GridPosition 的快照
+
+        从 strategy.grid_position_manager 获取所有持仓并创建快照
+        """
+        try:
+            position_manager = self.strategy.grid_position_manager
+            timestamp = self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 遍历所有 GridPosition
+            for entry_level, grid_position in position_manager.grid_positions.items():
+                # 创建快照
+                snapshot = GridPositionSnapshot(
+                    grid_id=grid_position.grid_id,
+                    pair_symbol=(
+                        str(grid_position.pair_symbol[0].value),
+                        str(grid_position.pair_symbol[1].value)
+                    ),
+                    level_type=entry_level.type,
+                    spread_pct=entry_level.spread_pct,
+                    leg1_qty=grid_position._leg1_qty,
+                    leg2_qty=grid_position._leg2_qty,
+                    timestamp=timestamp
+                )
+
+                self.grid_position_snapshots.append(snapshot)
+
+                # 实时模式：写入 Redis
+                if self.realtime_mode and self.redis_client:
+                    try:
+                        self.redis_client.set_grid_position(grid_position.grid_id, snapshot)
+                    except Exception as e:
+                        self.algorithm.error(f"❌ Failed to write grid position to Redis: {e}")
+
+            self.debug(f"  → GridPosition snapshots recorded ({len(position_manager.grid_positions)} positions)")
+
+        except Exception as e:
+            self.algorithm.error(f"❌ Failed to record grid position snapshots: {e}")
 
     def _capture_accounts_state(self) -> Dict[str, Any]:
         """捕获所有账户的状态"""

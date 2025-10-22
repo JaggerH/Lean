@@ -399,6 +399,50 @@ class TradingRedis:
             self._pair_mapping_write_logged.add(pair_key)
             print(f"[OK] Redis: 首次写入配对映射 [{pair_key}]")
 
+    def set_active_target(self, grid_id: str, target_data: Dict):
+        """
+        写入活跃的 ExecutionTarget
+
+        Args:
+            grid_id: 网格线ID
+            target_data: ExecutionTarget 数据字典
+        """
+        self._safe_execute(
+            lambda: self.client.hset("trading:active_targets", grid_id, json.dumps(target_data))
+        )
+
+    def remove_active_target(self, grid_id: str):
+        """
+        从活跃 ExecutionTarget 列表移除
+
+        Args:
+            grid_id: 网格线ID
+        """
+        self._safe_execute(
+            lambda: self.client.hdel("trading:active_targets", grid_id)
+        )
+
+    def set_grid_position(self, grid_id: str, position_snapshot):
+        """
+        写入 GridPosition 快照
+
+        Args:
+            grid_id: 网格线ID
+            position_snapshot: GridPositionSnapshot 对象
+        """
+        from dataclasses import asdict
+
+        # 转换为字典
+        position_data = asdict(position_snapshot)
+
+        self._safe_execute(
+            lambda: self.client.hset(
+                f"trading:grid_positions",
+                grid_id,
+                json.dumps(position_data)
+            )
+        )
+
     # === Pub/Sub事件通知 ===
 
     def _notify(self, event_type: str, data: Any = None):

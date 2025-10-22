@@ -67,6 +67,10 @@ class ExecutionManager:
             f"📝 Total Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}"
         )
 
+        # 通知 OrderTracker（如果可用）
+        if self.order_tracker:
+            self.order_tracker.on_execution_target_registered(target)
+
     def get_active_target_by_order_event(self, order_event: OrderEvent) -> Optional[ExecutionTarget]:
         """
         通过订单事件查找对应的 ExecutionTarget
@@ -327,8 +331,15 @@ class ExecutionManager:
             else:
                 # 至少有一个 OrderGroup 部分成交
                 target.status = ExecutionStatus.PartiallyFilled
-                # self.on_execution_event(target)
-                # self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
+
+                # 根据 OrderTracker 模式决定是否触发事件
+                # Live 模式：需要实时更新 UI，触发所有事件包括 PartiallyFilled
+                # Backtest 模式：只记录终态，跳过 PartiallyFilled 以避免重复记录
+                if self.order_tracker and self.order_tracker.realtime_mode:
+                    self.on_execution_event(target)
+                    self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled (Live mode - UI updated)")
+                else:
+                    self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled (Backtest mode - skipped)")
 
         elif order_event.status in [OrderStatus.Canceled, OrderStatus.Invalid]:
             # 订单失败 - 检查对冲敞口
