@@ -34,8 +34,6 @@ class RedisSpreadMonitor:
         self.redis = redis_client
 
         # 日志记录状态（避免刷屏）
-        self._pair_mapping_logged = set()
-        self._spread_write_logged = set()
         self._redis_error_logged = False
 
     def write_pair_mapping(self, crypto: Security, stock: Security):
@@ -100,14 +98,6 @@ class RedisSpreadMonitor:
             # 写入 Redis
             self.redis.set_pair_mapping(pair_key, mapping_data)
 
-            # 日志：每个交易对只记录首次成功写入
-            if pair_key not in self._pair_mapping_logged:
-                self._pair_mapping_logged.add(pair_key)
-                self.algorithm.Debug(
-                    f"✓ Redis配对映射写入成功: {pair_key} | "
-                    f"crypto({crypto_market}) <-> stock({stock_market})"
-                )
-
         except Exception as e:
             self.algorithm.Debug(f"⚠️ RedisSpreadMonitor: 配对映射写入失败: {e}")
             if not self._redis_error_logged:
@@ -150,16 +140,6 @@ class RedisSpreadMonitor:
 
             # 写入 Redis
             self.redis.set_spread(pair_key, spread_data)
-
-            # 调试日志：每个交易对只记录首次成功写入
-            if pair_key not in self._spread_write_logged:
-                self._spread_write_logged.add(pair_key)
-                self.algorithm.Debug(
-                    f"✓ Redis价差写入成功 [{pair_key}] | "
-                    f"spread={spread_pct:.4%} | "
-                    f"crypto={crypto_security.Cache.BidPrice:.2f}/{crypto_security.Cache.AskPrice:.2f} | "
-                    f"stock={stock_security.Cache.BidPrice:.2f}/{stock_security.Cache.AskPrice:.2f}"
-                )
 
 
         except Exception as e:

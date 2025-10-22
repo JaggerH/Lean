@@ -184,6 +184,26 @@ class GridOrderTracker:
         if self.debug_enabled:
             self.algorithm.debug(message)
 
+    def capture_initial_snapshot(self):
+        """
+        捕获初始账户快照（在算法初始化完成后调用）
+
+        用途：记录算法启动时的账户状态，作为后续对比的基准
+        """
+        self.debug("📸 Capturing initial portfolio snapshot...")
+
+        try:
+            # 记录初始 Portfolio 快照
+            self._record_portfolio_snapshot("INITIAL")
+
+            # 如果启用实时模式，也写入 Redis
+            if self.realtime_mode and self.redis_client:
+                self._update_portfolio_snapshot_to_redis()
+
+            self.debug("✅ Initial snapshot captured")
+        except Exception as e:
+            self.algorithm.error(f"❌ Failed to capture initial snapshot: {e}")
+
     # ========================================================================
     #                      核心追踪方法
     # ========================================================================
@@ -218,6 +238,8 @@ class GridOrderTracker:
                     "filled_qty_stock": 0.0,  # 注册时初始为 0
                     "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
                     "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
+                    "expected_spread_pct": target.expected_spread_pct,  # 预期价差
+                    "direction": target.spread_direction,  # 方向
                     "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
                 }
 
@@ -270,6 +292,8 @@ class GridOrderTracker:
                         "filled_qty_stock": target.quantity_filled[1],
                         "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
                         "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
+                        "expected_spread_pct": target.expected_spread_pct,  # 预期价差
+                        "direction": target.spread_direction,  # 方向
                         "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
                     }
                     self.redis_client.set_active_target(hash_key, active_target_data)
