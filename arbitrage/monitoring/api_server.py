@@ -142,6 +142,44 @@ async def get_round_trips():
         return {"error": str(e)}
 
 
+@app.get("/api/active_targets")
+async def get_active_targets():
+    """
+    获取活跃的 ExecutionTarget 列表
+
+    从 Redis 的 trading:active_targets (Hash) 中读取所有活跃的执行目标
+    这些数据由 LEAN 实时写入（通过 OrderTracker.on_execution_target_registered/update）
+
+    Returns:
+        字典，key 为 grid_id，value 为 ExecutionTarget 数据
+    """
+    try:
+        raw = redis_client.hgetall("trading:active_targets")
+        active_targets = {k: json.loads(v) for k, v in raw.items()}
+        return active_targets
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/grid_positions")
+async def get_grid_positions():
+    """
+    获取 GridPosition 快照列表
+
+    从 Redis 的 trading:grid_positions (Hash) 中读取所有网格持仓快照
+    这些数据在 ExecutionTarget 终止状态时由 OrderTracker 写入
+
+    Returns:
+        字典，key 为 grid_id，value 为 GridPositionSnapshot 数据
+    """
+    try:
+        raw = redis_client.hgetall("trading:grid_positions")
+        grid_positions = {k: json.loads(v) for k, v in raw.items()}
+        return grid_positions
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/positions")
 async def get_positions():
     """
@@ -342,19 +380,32 @@ async def get_backtest_data(backtest_id: str):
 @app.get("/api/backtests/{backtest_id}/report")
 async def get_backtest_report(backtest_id: str):
     """
-    获取指定回测的 HTML 报告
+    获取指定回测的 HTML 报告（动态渲染版本）
 
     Args:
         backtest_id: 回测唯一标识符
 
     Returns:
-        HTML 报告文件
+        报告查看器HTML页面（会从JSON动态渲染）
     """
     try:
-        html_path = backtest_manager.get_backtest_html_path(backtest_id)
-        if not html_path:
-            raise HTTPException(status_code=404, detail="HTML report not found")
-        return FileResponse(html_path, media_type="text/html")
+        # 验证backtest是否存在
+        backtest = backtest_manager.get_backtest(backtest_id)
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Backtest not found")
+
+        # 返回报告查看器页面,它会通过 ?id=backtest_id 加载JSON并渲染
+        from fastapi.responses import HTMLResponse
+        from pathlib import Path
+
+        # 读取report_viewer.html并注入backtest_id
+        report_viewer_path = Path(__file__).parent / "static" / "report_viewer.html"
+        with open(report_viewer_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
+        # 返回HTML,浏览器会自动从URL参数获取id
+        return HTMLResponse(content=html_content)
+
     except HTTPException:
         raise
     except Exception as e:
@@ -474,7 +525,7 @@ async def startup_event():
     import os
 
     # 从环境变量获取端口（由uvicorn设置）或使用默认值
-    port = os.environ.get('UVICORN_PORT', '8000')
+    port = os.environ.get('UVICORN_PORT', '8001')
     log_level = os.environ.get('MONITOR_LOG_LEVEL', 'INFO')
 
     print("\n" + "=" * 60)
@@ -540,7 +591,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=False,
         log_level="info"
     )

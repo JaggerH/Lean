@@ -161,6 +161,13 @@ class TradingMonitor {
                 case 'order_update':
                     this.loadOrders();
                     break;
+                case 'execution_target_registered':
+                case 'execution_target_update':
+                    this.loadActiveTargets();
+                    break;
+                case 'grid_position_update':
+                    this.loadGridPositions();
+                    break;
             }
 
             this.updateLastUpdateTime();
@@ -194,7 +201,9 @@ class TradingMonitor {
             this.loadPositions(),
             this.loadSpreads(),
             this.loadOrders(),
-            this.loadStats()
+            this.loadStats(),
+            this.loadActiveTargets(),
+            this.loadGridPositions()
         ]);
     }
 
@@ -234,6 +243,20 @@ class TradingMonitor {
         const data = await this.fetchAPI('stats');
         if (data && !data.error) {
             this.renderStats(data);
+        }
+    }
+
+    async loadActiveTargets() {
+        const data = await this.fetchAPI('active_targets');
+        if (data && !data.error) {
+            this.renderActiveTargets(data);
+        }
+    }
+
+    async loadGridPositions() {
+        const data = await this.fetchAPI('grid_positions');
+        if (data && !data.error) {
+            this.renderGridPositions(data);
         }
     }
 
@@ -520,6 +543,100 @@ class TradingMonitor {
         }
     }
 
+    renderActiveTargets(targets) {
+        const container = document.getElementById('active-targets-container');
+
+        if (!targets || Object.keys(targets).length === 0) {
+            container.innerHTML = '<div class="loader">暂无活跃订单</div>';
+            return;
+        }
+
+        let html = '';
+        // 使用 hash 作为 key 遍历，从数据中获取 grid_id 用于显示
+        for (const [hashKey, target] of Object.entries(targets)) {
+            const gridId = target.grid_id;  // 人类可读的 grid_id（用于 UI 显示）
+
+            // 安全获取数量，避免 undefined
+            const cryptoFilled = target.filled_qty_crypto || 0;
+            const stockFilled = target.filled_qty_stock || 0;
+            const cryptoTarget = target.target_qty_crypto || 0;
+            const stockTarget = target.target_qty_stock || 0;
+
+            html += `
+                <div class="active-target-item" data-hash="${hashKey}" style="
+                    padding: 15px;
+                    background: #1e1e1e;
+                    border-radius: 4px;
+                    margin-bottom: 10px;
+                    border-left: 3px solid #4ec9b0;
+                ">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <strong style="color: #4ec9b0; font-size: 14px;">${gridId}</strong>
+                        <span style="
+                            padding: 2px 8px;
+                            border-radius: 3px;
+                            background: #569cd633;
+                            color: #569cd6;
+                            font-weight: 600;
+                            font-size: 12px;
+                        ">${target.status}</span>
+                    </div>
+                    <div style="font-size: 12px; color: #888; margin-bottom: 6px;">
+                        ${target.pair_symbol} | ${target.level_type}
+                    </div>
+                    <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 4px;">
+                        Crypto: ${cryptoFilled.toFixed(2)} / ${cryptoTarget.toFixed(2)}
+                    </div>
+                    <div style="font-size: 12px; color: #b0b0b0; margin-bottom: 6px;">
+                        Stock: ${stockFilled.toFixed(2)} / ${stockTarget.toFixed(2)}
+                    </div>
+                    <div style="font-size: 11px; color: #666;">
+                        ${target.timestamp}
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+    }
+
+    renderGridPositions(positions) {
+        const container = document.getElementById('grid-positions-container');
+
+        if (!positions || Object.keys(positions).length === 0) {
+            container.innerHTML = '<div class="loader">暂无网格持仓</div>';
+            return;
+        }
+
+        let html = '<table><thead><tr><th>Grid ID</th><th>Pair</th><th>Type</th><th>Spread</th><th>Leg1 Qty</th><th>Leg2 Qty</th><th>Time</th></tr></thead><tbody>';
+
+        // 使用 hash 作为 key 遍历，从数据中获取 grid_id 用于显示
+        for (const [hashKey, pos] of Object.entries(positions)) {
+            const gridId = pos.grid_id;  // 人类可读的 grid_id（用于 UI 显示）
+            const spreadClass = pos.spread_pct >= 0 ? 'positive' : 'negative';
+            html += `
+                <tr data-hash="${hashKey}">
+                    <td style="color: #4ec9b0; font-weight: 600;">${gridId}</td>
+                    <td>${pos.pair_symbol[0]} <-> ${pos.pair_symbol[1]}</td>
+                    <td><span style="
+                        padding: 2px 6px;
+                        border-radius: 3px;
+                        font-size: 11px;
+                        background: ${pos.level_type === 'ENTRY' ? '#4ec9b033' : '#ce917833'};
+                        color: ${pos.level_type === 'ENTRY' ? '#4ec9b0' : '#ce9178'};
+                    ">${pos.level_type}</span></td>
+                    <td class="${spreadClass}">${(pos.spread_pct * 100).toFixed(2)}%</td>
+                    <td>${pos.leg1_qty.toFixed(2)}</td>
+                    <td>${pos.leg2_qty.toFixed(2)}</td>
+                    <td style="color: #888; font-size: 11px;">${pos.timestamp}</td>
+                </tr>
+            `;
+        }
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }
+
     // === 辅助方法 ===
 
     formatMoney(value) {
@@ -575,7 +692,9 @@ class TradingMonitor {
             this.loadSpreads(),
             this.loadSnapshot(),
             this.loadPositions(),
-            this.loadOrders()
+            this.loadOrders(),
+            this.loadActiveTargets(),
+            this.loadGridPositions()
         ]);
         this.updateLastUpdateTime();
     }
@@ -742,21 +861,57 @@ class TradingMonitor {
             }
         });
 
-        // 加载回测数据
-        const data = await this.fetchAPI(`backtests/${backtestId}`);
-        if (data && !data.error) {
+        // 加载回测元数据
+        const metadata = await this.fetchAPI(`backtests/${backtestId}`);
+        if (metadata && !metadata.error) {
             // 更新标题
             document.getElementById('backtest-detail-title').textContent =
-                `📊 ${data.name || 'Backtest'}`;
-
-            // 显示 HTML 报告
-            const container = document.getElementById('backtest-detail-container');
-            const reportUrl = `/api/backtests/${backtestId}/report`;
-
-            container.innerHTML = `
-                <iframe class="backtest-detail-iframe" src="${reportUrl}"></iframe>
-            `;
+                `📊 ${metadata.name || 'Backtest'}`;
         }
+
+        // 加载回测JSON数据并直接渲染（无需iframe）
+        const container = document.getElementById('backtest-detail-container');
+        container.innerHTML = '<div class="loader">Loading report...</div>';
+
+        try {
+            const jsonData = await this.fetchAPI(`backtests/${backtestId}/data`);
+            if (jsonData && !jsonData.error) {
+                // 确保backtest_report.js已加载
+                if (!window.BacktestReportRenderer) {
+                    // 动态加载backtest_report.js
+                    await this.loadScript('/static/backtest_report.js');
+                }
+
+                // 直接在容器中渲染报告
+                const renderer = new BacktestReportRenderer(jsonData, 'backtest-detail-container');
+                renderer.render();
+            } else {
+                container.innerHTML = '<div class="error">Failed to load backtest data</div>';
+            }
+        } catch (error) {
+            console.error('[ERROR] Failed to render backtest report:', error);
+            container.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+        }
+    }
+
+    /**
+     * 动态加载JavaScript脚本
+     */
+    loadScript(src) {
+        return new Promise((resolve, reject) => {
+            // 检查是否已加载
+            const existingScript = document.querySelector(`script[src="${src}"]`);
+            if (existingScript) {
+                resolve();
+                return;
+            }
+
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
     }
 
 }

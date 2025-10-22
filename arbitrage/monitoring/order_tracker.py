@@ -2,10 +2,10 @@
 Grid Order Tracker - Grid 框架专用的订单追踪器
 
 功能:
-1. Round Trip 追踪 - Entry GridLevel → Exit GridLevel 配对
-2. ExecutionTarget 追踪 - 每次 GridLevel 触发的执行目标
-3. OrderGroup 追踪 - ExecutionTarget 内的订单组（可能多次提交）
-4. Portfolio Snapshot - 每次 ExecutionTarget 状态变化时记录
+1. ExecutionTarget 追踪 - 记录每次 GridLevel 触发的执行目标及其状态变化
+2. OrderGroup 追踪 - ExecutionTarget 内的订单组（可能多次提交）
+3. Portfolio Snapshot - 每次 ExecutionTarget 终止状态时记录账户快照
+4. GridPosition Snapshot - 记录网格持仓状态
 
 数据层次:
     GridLevel (配置)
@@ -20,6 +20,10 @@ Grid Order Tracker - Grid 框架专用的订单追踪器
        └─ status: OrderGroupStatus
           ↓
     OrderTicket (单个订单票据 - LEAN 原生)
+
+注意:
+- 本追踪器只负责记录ExecutionTarget事件,不做Entry-Exit配对逻辑
+- Round Trip计算应由前端或分析工具根据ExecutionTarget历史计算
 """
 from AlgorithmImports import *
 from typing import Dict, List, Tuple, Optional, Any
@@ -98,35 +102,6 @@ class ExecutionTargetSnapshot:
 
 
 @dataclass
-class RoundTrip:
-    """Grid Round Trip - Entry → Exit 配对（支持同 GridLevel 多次执行累积）"""
-    round_trip_id: int
-    pair: str  # "TSLAxUSD <-> TSLA"
-
-    # Entry 组（同 GridLevel 的多个 ExecutionTarget）
-    entry_level_id: str
-    entry_targets: List[ExecutionTargetSnapshot]  # 多个 Entry targets
-    entry_time_range: str  # "start_time ~ end_time" or single timestamp
-    total_entry_cost: float  # 累加所有 Entry 的成本（包含手续费）
-
-    # Exit 组（同 GridLevel 的多个 ExecutionTarget）
-    exit_level_id: str
-    exit_targets: List[ExecutionTargetSnapshot]  # 多个 Exit targets
-    exit_time_range: str  # "start_time ~ end_time" or single timestamp
-    total_exit_revenue: float  # 累加所有 Exit 的收入（扣除手续费）
-
-    # PnL
-    net_pnl: float  # total_exit_revenue - total_entry_cost
-
-    # 费用（带默认值的字段必须在最后）
-    total_entry_fee: float = 0.0  # 累加所有 Entry 的手续费
-    total_exit_fee: float = 0.0  # 累加所有 Exit 的手续费
-
-    # 状态
-    status: str = "OPEN"  # "OPEN" | "CLOSED"
-
-
-@dataclass
 class PortfolioSnapshot:
     """Portfolio 快照（在 ExecutionTarget 终止状态时记录）"""
     timestamp: str  # YYYY-mm-dd HH:MM:SS format
@@ -164,10 +139,12 @@ class GridOrderTracker:
     Grid 框架专用的订单追踪器
 
     追踪粒度：
-    1. Round Trip 级别 - Entry GridLevel → Exit GridLevel 配对
-    2. ExecutionTarget 级别 - 每次 GridLevel 触发的执行目标
-    3. OrderGroup 级别 - ExecutionTarget 内的订单组（可能多次提交）
-    4. Portfolio Snapshot - 每次 ExecutionTarget 状态变化时记录
+    1. ExecutionTarget 级别 - 每次 GridLevel 触发的执行目标及其状态变化
+    2. OrderGroup 级别 - ExecutionTarget 内的订单组（可能多次提交）
+    3. Portfolio Snapshot - ExecutionTarget 终止状态时记录账户快照
+    4. GridPosition Snapshot - 记录网格持仓状态
+
+    注意：不做Entry-Exit配对，Round Trip计算交由前端/分析工具处理
     """
 
     def __init__(self, algorithm: QCAlgorithm, strategy=None, debug: bool = False,
@@ -190,10 +167,6 @@ class GridOrderTracker:
 
         # === 数据存储 ===
 
-        # Round Trips: 完整的 Entry → Exit 周期
-        self.round_trips: List[RoundTrip] = []  # 已完成的 Round Trips
-        self.round_trip_counter: int = 0
-
         # ExecutionTarget 历史（所有状态变化）
         self.execution_targets: List[ExecutionTargetSnapshot] = []
 
@@ -202,10 +175,6 @@ class GridOrderTracker:
 
         # GridPosition 快照（在 ExecutionTarget 终止状态时记录）
         self.grid_position_snapshots: List[GridPositionSnapshot] = []
-
-        # === Round Trip 追踪状态 ===
-        # 最后一个有效的 Entry: {entry_level_id: ExecutionTargetSnapshot}
-        self._last_entry: Dict[str, ExecutionTargetSnapshot] = {}
 
         # 最后已知价格: {symbol: last_price}
         self.last_prices: Dict[Symbol, float] = {}
@@ -235,20 +204,26 @@ class GridOrderTracker:
         # 实时模式：写入 Redis 显示活跃的 ExecutionTarget
         if self.realtime_mode and self.redis_client:
             try:
+                # 使用 hash(GridLevel) 作为唯一标识符
+                hash_key = str(hash(target.level))
+
                 # 构造活跃 target 数据
                 active_target_data = {
-                    "grid_id": target.grid_id,
+                    "hash": hash_key,  # 唯一标识符（前端索引用）
+                    "grid_id": target.grid_id,  # 人类可读标识（UI 显示用）
                     "level_type": target.level.type,
                     "pair_symbol": f"{target.pair_symbol[0].value}/{target.pair_symbol[1].value}",
                     "status": str(target.status),
+                    "filled_qty_crypto": 0.0,  # 注册时初始为 0
+                    "filled_qty_stock": 0.0,  # 注册时初始为 0
                     "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
                     "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
                     "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
                 }
 
-                # 写入 Redis (使用 grid_id 作为 hash field)
-                self.redis_client.set_active_target(target.grid_id, active_target_data)
-                self.debug(f"  ✅ Written to Redis: active_target:{target.grid_id}")
+                # 写入 Redis (使用 hash 作为 hash field)
+                self.redis_client.set_active_target(hash_key, active_target_data)
+                self.debug(f"  ✅ Written to Redis: active_target (hash={hash_key}, grid_id={target.grid_id})")
             except Exception as e:
                 self.algorithm.error(f"❌ Failed to write active target to Redis: {e}")
 
@@ -276,51 +251,38 @@ class GridOrderTracker:
         # 实时模式：更新 Redis 中的活跃 ExecutionTarget 状态
         if self.realtime_mode and self.redis_client:
             try:
-                active_target_data = {
-                    "grid_id": target.grid_id,
-                    "level_type": target.level.type,
-                    "pair_symbol": f"{target.pair_symbol[0].value}/{target.pair_symbol[1].value}",
-                    "status": str(target.status),
-                    "filled_qty_crypto": target.quantity_filled[0],
-                    "filled_qty_stock": target.quantity_filled[1],
-                    "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
-                    "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
-                    "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
-                }
+                # 使用 hash(GridLevel) 作为唯一标识符
+                hash_key = str(hash(target.level))
 
                 # 如果是终止状态，从活跃列表移除；否则更新
                 if target.is_terminal():
-                    self.redis_client.remove_active_target(target.grid_id)
-                    self.debug(f"  ✅ Removed from Redis active targets: {target.grid_id}")
+                    self.redis_client.remove_active_target(hash_key)
+                    self.debug(f"  ✅ Removed from Redis active targets (hash={hash_key}, grid_id={target.grid_id})")
                 else:
-                    self.redis_client.set_active_target(target.grid_id, active_target_data)
-                    self.debug(f"  ✅ Updated Redis active target: {target.grid_id}")
+                    # 构造活跃 target 数据
+                    active_target_data = {
+                        "hash": hash_key,  # 唯一标识符
+                        "grid_id": target.grid_id,  # UI 显示
+                        "level_type": target.level.type,
+                        "pair_symbol": f"{target.pair_symbol[0].value}/{target.pair_symbol[1].value}",
+                        "status": str(target.status),
+                        "filled_qty_crypto": target.quantity_filled[0],
+                        "filled_qty_stock": target.quantity_filled[1],
+                        "target_qty_crypto": target.target_qty.get(target.pair_symbol[0], 0.0),
+                        "target_qty_stock": target.target_qty.get(target.pair_symbol[1], 0.0),
+                        "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    self.redis_client.set_active_target(hash_key, active_target_data)
+                    self.debug(f"  ✅ Updated Redis active target (hash={hash_key}, grid_id={target.grid_id})")
+
+                # 实时更新 Portfolio 快照（账户状态、PnL）
+                self._update_portfolio_snapshot_to_redis()
             except Exception as e:
                 self.algorithm.error(f"❌ Failed to update active target in Redis: {e}")
 
         # 如果是终止状态，记录 Portfolio 快照
         if target.is_terminal():
             self._record_portfolio_snapshot(target.grid_id)
-
-            # Rule 1: 如果 Canceled 且 filled_quantity = (0,0)，忽略
-            is_canceled = (str(target.status) == "5")  # Status 5 = Canceled
-            has_no_fills = (snapshot.total_filled_qty[0] == 0 and snapshot.total_filled_qty[1] == 0)
-
-            if is_canceled and has_no_fills:
-                self.debug(f"  ⊗ Skipping canceled target with no fills | Grid: {target.grid_id}")
-                return
-
-            # 检查是否有成交
-            has_fills = (snapshot.total_filled_qty[0] != 0 or snapshot.total_filled_qty[1] != 0)
-
-            if has_fills:
-                # 如果是 Entry，记录为最后一个有效 Entry
-                if target.level.type == "ENTRY":
-                    self._record_entry(target, snapshot)
-
-                # 如果是 Exit，尝试匹配 Round Trip
-                elif target.level.type == "EXIT":
-                    self._try_match_round_trip(target, snapshot)
 
     # ========================================================================
     #                      内部辅助方法
@@ -438,6 +400,9 @@ class GridOrderTracker:
 
             # 遍历所有 GridPosition
             for entry_level, grid_position in position_manager.grid_positions.items():
+                # 使用 hash(GridLevel) 作为唯一标识符
+                hash_key = str(hash(entry_level))
+
                 # 创建快照
                 snapshot = GridPositionSnapshot(
                     grid_id=grid_position.grid_id,
@@ -457,7 +422,11 @@ class GridOrderTracker:
                 # 实时模式：写入 Redis
                 if self.realtime_mode and self.redis_client:
                     try:
-                        self.redis_client.set_grid_position(grid_position.grid_id, snapshot)
+                        from dataclasses import asdict
+                        # 转换为字典并添加 hash 字段
+                        snapshot_dict = asdict(snapshot)
+                        snapshot_dict["hash"] = hash_key  # 添加唯一标识符
+                        self.redis_client.set_grid_position(hash_key, snapshot_dict)
                     except Exception as e:
                         self.algorithm.error(f"❌ Failed to write grid position to Redis: {e}")
 
@@ -465,6 +434,32 @@ class GridOrderTracker:
 
         except Exception as e:
             self.algorithm.error(f"❌ Failed to record grid position snapshots: {e}")
+
+    def _update_portfolio_snapshot_to_redis(self):
+        """
+        实时更新 Portfolio 快照到 Redis（Live 模式）
+
+        在每次 ExecutionTarget 更新时调用，确保前端账户状态实时更新
+        """
+        if not self.realtime_mode or not self.redis_client:
+            return
+
+        try:
+            # 构造快照数据
+            snapshot_data = {
+                "timestamp": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
+                "pnl": {
+                    "realized": float(self.algorithm.portfolio.total_profit),
+                    "unrealized": float(self.algorithm.portfolio.total_unrealized_profit)
+                },
+                "accounts": self._capture_accounts_state()
+            }
+
+            # 写入 Redis
+            self.redis_client.set_snapshot(snapshot_data)
+            self.debug(f"  ✅ Updated portfolio snapshot to Redis")
+        except Exception as e:
+            self.algorithm.error(f"❌ Failed to update portfolio snapshot: {e}")
 
     def _capture_accounts_state(self) -> Dict[str, Any]:
         """捕获所有账户的状态"""
@@ -532,176 +527,28 @@ class GridOrderTracker:
                 "cashbook": {}
             }
 
-    def _record_entry(self, target, snapshot: ExecutionTargetSnapshot):
-        """
-        记录最后一个有效的 Entry ExecutionTarget
-
-        Args:
-            target: Entry ExecutionTarget 实例
-            snapshot: ExecutionTargetSnapshot
-        """
-        level_id = target.level.level_id
-        self._last_entry[level_id] = snapshot
-        self.debug(f"  📥 Entry recorded | Level: {level_id} | Cost: ${snapshot.total_cost:.2f} | Filled: {snapshot.total_filled_qty}")
-
-    def _try_match_round_trip(self, target, snapshot: ExecutionTargetSnapshot):
-        """
-        尝试将 Exit 与最后的 Entry 匹配创建 Round Trip
-
-        Rule 2: Entry/Exit filled_quantity 完全相等且相邻时匹配
-
-        Args:
-            target: Exit ExecutionTarget 实例
-            snapshot: ExecutionTargetSnapshot
-        """
-        exit_level_id = target.level.level_id
-
-        # 从 Strategy 获取配对的 Entry Level ID
-        entry_level_id = self._get_paired_entry_level_id(target.level)
-
-        if not entry_level_id:
-            self.debug(f"  ⚠️ No paired entry level for {exit_level_id}")
-            return
-
-        # 检查是否有最后记录的 Entry
-        if entry_level_id not in self._last_entry:
-            self.debug(f"  ⚠️ No recorded entry for {entry_level_id}")
-            return
-
-        entry_snapshot = self._last_entry[entry_level_id]
-
-        # Rule 2: 检查 filled_quantity 是否完全相等
-        entry_qty = entry_snapshot.total_filled_qty
-        exit_qty = snapshot.total_filled_qty
-
-        quantities_match = (abs(entry_qty[0] - exit_qty[0]) < 0.0001 and
-                           abs(entry_qty[1] - exit_qty[1]) < 0.0001)
-
-        if not quantities_match:
-            self.debug(f"  ⚠️ Quantities don't match | Entry: {entry_qty} | Exit: {exit_qty}")
-            return
-
-        # Rule 2: 检查是否相邻（简化版：如果 quantities match，就创建 Round Trip）
-        # 注意：严格的"相邻"检查需要检查 execution_targets 列表中的顺序
-        # 这里简化为：只要有匹配的 Entry 就创建 Round Trip
-
-        # 创建 Round Trip
-        self._create_simple_round_trip(entry_level_id, exit_level_id, entry_snapshot, snapshot)
-
-        # 清除已使用的 Entry，避免重复匹配
-        del self._last_entry[entry_level_id]
-
-    def _create_simple_round_trip(self, entry_level_id: str, exit_level_id: str,
-                                   entry_snapshot: ExecutionTargetSnapshot,
-                                   exit_snapshot: ExecutionTargetSnapshot):
-        """
-        创建简单的 1:1 Round Trip
-
-        Args:
-            entry_level_id: Entry GridLevel ID
-            exit_level_id: Exit GridLevel ID
-            entry_snapshot: Entry ExecutionTargetSnapshot
-            exit_snapshot: Exit ExecutionTargetSnapshot
-        """
-        self.round_trip_counter += 1
-
-        round_trip = RoundTrip(
-            round_trip_id=self.round_trip_counter,
-            pair=self._format_pair_name_from_snapshot(exit_snapshot),
-            entry_level_id=entry_level_id,
-            entry_targets=[entry_snapshot],  # 只有一个 Entry
-            entry_time_range=entry_snapshot.timestamp,
-            total_entry_cost=entry_snapshot.total_cost,
-            total_entry_fee=entry_snapshot.total_fee,
-            exit_level_id=exit_level_id,
-            exit_targets=[exit_snapshot],  # 只有一个 Exit
-            exit_time_range=exit_snapshot.timestamp,
-            total_exit_revenue=exit_snapshot.total_cost,
-            total_exit_fee=exit_snapshot.total_fee,
-            net_pnl=exit_snapshot.total_cost - entry_snapshot.total_cost,
-            status="CLOSED"  # 1:1 匹配直接设为 CLOSED
-        )
-
-        self.round_trips.append(round_trip)
-        self.debug(f"  ✅ Round Trip #{round_trip.round_trip_id} created | Entry: ${entry_snapshot.total_cost:.2f} | Exit: ${exit_snapshot.total_cost:.2f} | PnL: ${round_trip.net_pnl:.2f}")
-
-    def _get_paired_entry_level_id(self, exit_level) -> Optional[str]:
-        """
-        从 Exit GridLevel 获取配对的 Entry Level ID
-
-        Args:
-            exit_level: Exit GridLevel 实例
-
-        Returns:
-            Entry Level ID 或 None
-        """
-        # 方法 1: 使用 GridLevelManager 的 exit_to_entry 索引
-        if self.strategy and hasattr(self.strategy, 'grid_level_manager'):
-            try:
-                entry_level = self.strategy.grid_level_manager.exit_to_entry.get(exit_level)
-                if entry_level:
-                    return entry_level.level_id
-            except Exception as e:
-                self.debug(f"  ⚠️ Error finding paired entry level from exit_to_entry: {e}")
-
-        # 方法 2: 备用 - 遍历所有 grid_levels（按 pair）
-        if self.strategy and hasattr(self.strategy, 'grid_level_manager'):
-            try:
-                for pair_symbol, levels in self.strategy.grid_level_manager.grid_levels.items():
-                    for level in levels:
-                        if (level.type == "ENTRY" and
-                            hasattr(level, 'paired_exit_level_id') and
-                            level.paired_exit_level_id == exit_level.level_id):
-                            return level.level_id
-            except Exception as e:
-                self.debug(f"  ⚠️ Error finding paired entry level from grid_levels: {e}")
-
-        return None
-
-    def _format_pair_name_from_snapshot(self, snapshot: ExecutionTargetSnapshot) -> str:
-        """
-        从 ExecutionTargetSnapshot 格式化交易对名称
-
-        Args:
-            snapshot: ExecutionTargetSnapshot
-
-        Returns:
-            交易对名称，如 "AAPLXUSD <-> AAPL"
-        """
-        symbols = list(snapshot.target_qty.keys())
-        if len(symbols) >= 2:
-            return f"{symbols[0]} <-> {symbols[1]}"
-        elif len(symbols) == 1:
-            return symbols[0]
-        return "N/A"
-
-
     # ========================================================================
     #                      导出方法
     # ========================================================================
 
-    def export_json(self, filepath: str, generate_html: bool = True):
+    def export_json(self, filepath: str):
         """
-        导出所有数据到 JSON 文件（可选生成 HTML 报告）
+        导出ExecutionTarget历史和Portfolio快照到JSON文件
 
         Args:
             filepath: 输出文件路径
-            generate_html: 是否自动生成 HTML 报告（默认 True）
         """
-        # 所有 Round Trips 都是 CLOSED (1:1 匹配)
         data = {
             "meta": {
                 "start_time": self.algorithm.start_date.strftime("%Y-%m-%d %H:%M:%S"),
                 "end_time": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
-                "total_round_trips": len(self.round_trips),
-                "closed_round_trips": len(self.round_trips),
-                "open_round_trips": 0,
                 "total_execution_targets": len(self.execution_targets),
-                "total_snapshots": len(self.portfolio_snapshots)
+                "total_snapshots": len(self.portfolio_snapshots),
+                "total_grid_positions": len(self.grid_position_snapshots)
             },
-            "round_trips": [asdict(rt) for rt in self.round_trips],
             "execution_targets": [asdict(et) for et in self.execution_targets],
-            "portfolio_snapshots": [asdict(ps) for ps in self.portfolio_snapshots]
+            "portfolio_snapshots": [asdict(ps) for ps in self.portfolio_snapshots],
+            "grid_position_snapshots": [asdict(gps) for gps in self.grid_position_snapshots]
         }
 
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -709,33 +556,12 @@ class GridOrderTracker:
 
         self.debug(f"✅ Exported Grid tracking data to: {filepath}")
 
-        # 自动生成 HTML 报告
-        if generate_html:
-            try:
-                from monitoring.grid_html_generator import generate_grid_html_report
-                html_filepath = filepath.replace('.json', '_grid.html')
-                generate_grid_html_report(filepath, html_filepath)
-                self.debug(f"✅ Generated HTML report: {html_filepath}")
-            except Exception as e:
-                self.debug(f"⚠️ Failed to generate HTML report: {e}")
-
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息"""
-        # 所有 Round Trips 都是 CLOSED (1:1 匹配)
-        total_pnl = sum(rt.net_pnl for rt in self.round_trips)
-
-        # 计算未配对的 Entry 数量 (最后记录的 Entry)
-        pending_entries_count = len(self._last_entry)
-
         return {
-            "total_round_trips": len(self.round_trips),
-            "closed_round_trips": len(self.round_trips),
-            "open_round_trips": 0,
-            "pending_entries": pending_entries_count,
-            "open_positions": pending_entries_count,  # 向后兼容：表示未配对的 Entry positions
-            "total_pnl": total_pnl,
             "total_execution_targets": len(self.execution_targets),
-            "total_snapshots": len(self.portfolio_snapshots)
+            "total_snapshots": len(self.portfolio_snapshots),
+            "total_grid_positions": len(self.grid_position_snapshots)
         }
 
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
 from AlgorithmImports import Symbol
+import hashlib
 
 if TYPE_CHECKING:
     from .execution_models import OrderGroup, OrderGroupStatus
@@ -60,10 +61,10 @@ class GridLevel:
 
     def __hash__(self):
         """
-        基于网格线本质属性计算 hash
+        基于网格线本质属性计算 hash（跨重启稳定版 - 使用确定性哈希）
 
-        只包含核心标识字段（不可变的本质属性）：
-        - pair_symbol: 交易对
+        使用字符串标识符和 MD5 哈希确保跨程序重启的哈希稳定性：
+        - pair_symbol: 使用 (Symbol.value, Symbol.id.market) 元组
         - type: ENTRY/EXIT
         - spread_pct: 触发价差（本质属性）
         - direction: 方向
@@ -73,27 +74,50 @@ class GridLevel:
         - position_size_pct: 可动态调整的执行参数
         - paired_exit_level_id: 配对关系由 Manager 维护
         - 运行时状态字段（is_valid 等）
+
+        注意：
+        - Symbol 对象在每次重启时内存地址不同，导致 hash 不稳定
+        - Python 的 hash() 函数默认启用了 hash randomization（安全特性）
+        - 使用 MD5 生成确定性哈希，保证相同输入始终产生相同输出
         """
-        return hash((
-            self.pair_symbol,      # Tuple[Symbol, Symbol]
-            self.type,             # "ENTRY" or "EXIT"
-            self.spread_pct,       # 触发条件
-            self.direction         # "LONG_SPREAD" or "SHORT_SPREAD"
-        ))
+        # 构造用于哈希的字符串
+        hash_string = (
+            f"{self.pair_symbol[0].value}|"
+            f"{str(self.pair_symbol[0].id.market)}|"
+            f"{self.pair_symbol[1].value}|"
+            f"{str(self.pair_symbol[1].id.market)}|"
+            f"{self.type}|"
+            f"{self.spread_pct}|"
+            f"{self.direction}"
+        )
+
+        # 使用 MD5 生成确定性哈希（取前8字节转为整数）
+        hash_bytes = hashlib.md5(hash_string.encode('utf-8')).digest()
+        result_hash = int.from_bytes(hash_bytes[:8], byteorder='big', signed=True)
+
+        return result_hash
 
     def __eq__(self, other):
         """
-        基于网格线本质属性判断相等
+        基于网格线本质属性判断相等（跨重启稳定版）
 
-        只比较核心标识字段，保证：
+        使用字符串标识符比较，保证：
         - 相同触发条件的网格线被视为同一个
         - level_id 改名不影响相等性判断
         - position_size_pct 调整不影响相等性判断
+        - 跨程序重启时相同逻辑网格线仍被判断为相等
+
+        注意：
+        - 必须与 __hash__() 保持一致的比较逻辑
+        - 使用 Symbol.value + Symbol.id.market 而非 Symbol 对象
         """
         if not isinstance(other, GridLevel):
             return False
         return (
-            self.pair_symbol == other.pair_symbol and
+            self.pair_symbol[0].value == other.pair_symbol[0].value and
+            str(self.pair_symbol[0].id.market) == str(other.pair_symbol[0].id.market) and
+            self.pair_symbol[1].value == other.pair_symbol[1].value and
+            str(self.pair_symbol[1].id.market) == str(other.pair_symbol[1].id.market) and
             self.type == other.type and
             self.spread_pct == other.spread_pct and
             self.direction == other.direction

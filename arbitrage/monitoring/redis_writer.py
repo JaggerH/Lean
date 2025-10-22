@@ -399,49 +399,47 @@ class TradingRedis:
             self._pair_mapping_write_logged.add(pair_key)
             print(f"[OK] Redis: 首次写入配对映射 [{pair_key}]")
 
-    def set_active_target(self, grid_id: str, target_data: Dict):
+    def set_active_target(self, hash_key: str, target_data: Dict):
         """
         写入活跃的 ExecutionTarget
 
         Args:
-            grid_id: 网格线ID
-            target_data: ExecutionTarget 数据字典
+            hash_key: hash(GridLevel) 作为唯一标识符
+            target_data: ExecutionTarget 数据字典（必须包含 hash 和 grid_id 字段）
         """
         self._safe_execute(
-            lambda: self.client.hset("trading:active_targets", grid_id, json.dumps(target_data))
+            lambda: self.client.hset("trading:active_targets", hash_key, json.dumps(target_data))
         )
+        self._notify("execution_target_update", hash_key)
 
-    def remove_active_target(self, grid_id: str):
+    def remove_active_target(self, hash_key: str):
         """
         从活跃 ExecutionTarget 列表移除
 
         Args:
-            grid_id: 网格线ID
+            hash_key: hash(GridLevel) 作为唯一标识符
         """
         self._safe_execute(
-            lambda: self.client.hdel("trading:active_targets", grid_id)
+            lambda: self.client.hdel("trading:active_targets", hash_key)
         )
+        self._notify("execution_target_update", hash_key)
 
-    def set_grid_position(self, grid_id: str, position_snapshot):
+    def set_grid_position(self, hash_key: str, position_data: Dict):
         """
         写入 GridPosition 快照
 
         Args:
-            grid_id: 网格线ID
-            position_snapshot: GridPositionSnapshot 对象
+            hash_key: hash(GridLevel) 作为唯一标识符
+            position_data: GridPositionSnapshot 字典（必须包含 hash 和 grid_id 字段）
         """
-        from dataclasses import asdict
-
-        # 转换为字典
-        position_data = asdict(position_snapshot)
-
         self._safe_execute(
             lambda: self.client.hset(
-                f"trading:grid_positions",
-                grid_id,
+                "trading:grid_positions",
+                hash_key,
                 json.dumps(position_data)
             )
         )
+        self._notify("grid_position_update", hash_key)
 
     # === Pub/Sub事件通知 ===
 

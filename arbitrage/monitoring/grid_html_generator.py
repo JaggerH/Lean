@@ -916,7 +916,6 @@ class GridHTMLReportGenerator:
             direction = order.get('direction', 'N/A')
             quantity = order.get('quantity', 0)
             fill_price = order.get('fill_price', 0)
-            fee = order.get('fee', 0)
             status = order.get('status', 'N/A')
             time = order.get('time', 'N/A')
 
@@ -929,7 +928,6 @@ class GridHTMLReportGenerator:
                 <td><span class="direction-badge {direction_class}">{direction}</span></td>
                 <td class="number">{quantity:.4f}</td>
                 <td class="number">${fill_price:.2f}</td>
-                <td class="number">${fee:.4f}</td>
                 <td>{status}</td>
                 <td style="font-size: 10px; color: #858585;">{time}</td>
             </tr>
@@ -944,13 +942,12 @@ class GridHTMLReportGenerator:
                     <th>Direction</th>
                     <th>Quantity</th>
                     <th>Fill Price</th>
-                    <th>Fee</th>
                     <th>Status</th>
                     <th>Time</th>
                 </tr>
             </thead>
             <tbody>
-                {''.join(order_rows) if order_rows else '<tr><td colspan="8">No orders</td></tr>'}
+                {''.join(order_rows) if order_rows else '<tr><td colspan="7">No orders</td></tr>'}
             </tbody>
         </table>
         """

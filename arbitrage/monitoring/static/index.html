@@ -444,19 +444,6 @@
             text-align: left;
         }
 
-        .backtest-detail-iframe {
-            width: 100%;
-            height: 100%;
-            flex: 1;
-            border: none;
-            background: white;
-            border-radius: 4px;
-        }
-
-        /* 隐藏 iframe 内的滚动条 */
-        .backtest-detail-iframe::-webkit-scrollbar {
-            display: none;
-        }
 
         /* Backtest Layout - 左右分栏 */
         .backtest-layout {
@@ -507,9 +494,15 @@
 
         #backtest-detail-container {
             flex: 1;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
+            overflow-y: auto;
+            overflow-x: hidden;
+            /* 隐藏滚动条但保持滚动功能 */
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* IE/Edge */
+        }
+
+        #backtest-detail-container::-webkit-scrollbar {
+            display: none; /* Chrome/Safari/Opera */
         }
 
         /* 选中状态 */
@@ -584,8 +577,20 @@
             </div>
         </div>
 
-        <!-- 第二行：当前持仓（完整宽度） -->
+        <!-- 网格持仓追踪（完整宽度） -->
         <div class="card positions-row">
+            <h2>📊 网格持仓追踪</h2>
+            <div id="grid-positions-container" class="loader">加载中...</div>
+        </div>
+
+        <!-- 活跃订单执行 -->
+        <div class="card">
+            <h2>🎯 活跃订单执行</h2>
+            <div id="active-targets-container" class="loader">加载中...</div>
+        </div>
+
+        <!-- 当前持仓 -->
+        <div class="card">
             <h2>📦 当前持仓</h2>
             <div id="positions-container" class="loader">加载中...</div>
         </div>

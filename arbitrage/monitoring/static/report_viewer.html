@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backtest Report - Grid Trading</title>
+    <style>
+        /* 复用grid_html_generator的CSS样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Consolas', 'Monaco', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            font-size: 13px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: #252526;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+
+        header {
+            border-bottom: 3px solid #007acc;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            color: #4ec9b0;
+            margin-bottom: 15px;
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        h2 {
+            color: #569cd6;
+            margin: 30px 0 15px 0;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3e3e42;
+            font-size: 20px;
+        }
+
+        h3 {
+            color: #dcdcaa;
+            margin: 15px 0 10px 0;
+            font-size: 16px;
+        }
+
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .meta-card {
+            background: #2d2d30;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 3px solid #007acc;
+        }
+
+        .meta-card .label {
+            color: #858585;
+            font-size: 11px;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+
+        .meta-card .value {
+            color: #d4d4d4;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        /* ExecutionTarget Timeline */
+        .execution-timeline {
+            position: relative;
+            padding-left: 40px;
+            margin: 20px 0;
+        }
+
+        .execution-timeline::before {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #3e3e42;
+        }
+
+        .execution-card {
+            position: relative;
+            margin-bottom: 30px;
+            background: #1e1e1e;
+            border-radius: 6px;
+            border-left: 4px solid #4ec9b0;
+            padding: 20px;
+        }
+
+        .execution-card.entry {
+            border-left-color: #4fc3f7;
+        }
+
+        .execution-card.exit {
+            border-left-color: #f48771;
+        }
+
+        .execution-card.canceled {
+            border-left-color: #858585;
+            opacity: 0.7;
+        }
+
+        .execution-card::before {
+            content: '';
+            position: absolute;
+            left: -44px;
+            top: 20px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4ec9b0;
+            border: 3px solid #1e1e1e;
+        }
+
+        .execution-card.entry::before {
+            background: #4fc3f7;
+        }
+
+        .execution-card.exit::before {
+            background: #f48771;
+        }
+
+        .execution-card.canceled::before {
+            background: #858585;
+        }
+
+        .execution-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .execution-header .title {
+            color: #4ec9b0;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .execution-header .timestamp {
+            color: #858585;
+            font-size: 12px;
+        }
+
+        .execution-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+            padding: 15px;
+            background: #2d2d30;
+            border-radius: 4px;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .info-item .label {
+            color: #858585;
+            font-size: 11px;
+            margin-bottom: 5px;
+        }
+
+        .info-item .value {
+            color: #d4d4d4;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        /* OrderGroup 卡片 */
+        .order-groups {
+            margin-top: 15px;
+        }
+
+        .order-group-card {
+            background: #2d2d30;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            border-left: 3px solid #dcdcaa;
+        }
+
+        .order-group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .order-group-header .title {
+            color: #dcdcaa;
+            font-weight: bold;
+        }
+
+        .orders-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+
+        .orders-table th {
+            background: #37373d;
+            color: #cccccc;
+            padding: 8px;
+            text-align: left;
+            font-size: 11px;
+        }
+
+        .orders-table td {
+            padding: 8px;
+            border-bottom: 1px solid #252526;
+        }
+
+        .orders-table tr:hover {
+            background: #37373d;
+        }
+
+        .direction-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .direction-badge.buy {
+            background: #0e639c;
+            color: #4fc3f7;
+        }
+
+        .direction-badge.sell {
+            background: #5a1d1d;
+            color: #f48771;
+        }
+
+        .number {
+            font-family: 'Consolas', monospace;
+            color: #b5cea8;
+        }
+
+        .positive {
+            color: #4ec9b0;
+        }
+
+        .negative {
+            color: #f48771;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .status-badge.open {
+            background: #1a472a;
+            color: #4ec9b0;
+        }
+
+        .status-badge.closed {
+            background: #37373d;
+            color: #858585;
+        }
+
+        /* 折叠功能 */
+        .collapsible {
+            cursor: pointer;
+            user-select: none;
+            padding: 10px;
+            background: #2d2d30;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+
+        .collapsible:hover {
+            background: #37373d;
+        }
+
+        .collapsible::before {
+            content: '▼ ';
+            display: inline-block;
+            transition: transform 0.2s;
+            margin-right: 8px;
+        }
+
+        .collapsible.collapsed::before {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            max-height: 5000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .collapsible-content.hidden {
+            max-height: 0;
+        }
+
+        /* Portfolio 对比 */
+        .portfolio-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .account-card {
+            background: #2d2d30;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 3px solid #c586c0;
+        }
+
+        .account-card.ibkr {
+            border-left-color: #ce9178;
+        }
+
+        .account-card.kraken {
+            border-left-color: #4fc3f7;
+        }
+
+        .holdings-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 11px;
+        }
+
+        .holdings-table th {
+            background: #37373d;
+            color: #cccccc;
+            padding: 6px;
+            text-align: left;
+        }
+
+        .holdings-table td {
+            padding: 6px;
+            border-bottom: 1px solid #252526;
+        }
+
+        /* 过滤器 */
+        .filter-panel {
+            background: #2d2d30;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .filter-panel label {
+            display: inline-block;
+            margin-right: 20px;
+            cursor: pointer;
+            color: #cccccc;
+        }
+
+        .filter-panel input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+            background: #2d2d30;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        /* Loading状态 */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #858585;
+        }
+
+        .error {
+            background: #3c1f1e;
+            color: #f48771;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px;
+            border-left: 3px solid #f48771;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="report-container">
+            <div class="loading">
+                <div style="font-size: 24px; margin-bottom: 10px;">⏳</div>
+                <p>Loading backtest data...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载报告渲染器 -->
+    <script src="/static/backtest_report.js"></script>
+
+    <script>
+        // 从URL参数获取backtest_id
+        const urlParams = new URLSearchParams(window.location.search);
+        const backtestId = urlParams.get('id');
+
+        if (!backtestId) {
+            document.getElementById('report-container').innerHTML = `
+                <div class="error">
+                    <strong>错误:</strong> 未指定回测ID
+                </div>
+            `;
+        } else {
+            // 加载JSON数据并渲染
+            fetch(`/api/backtests/${backtestId}/data`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // 创建渲染器并渲染报告
+                    window.reportRenderer = new BacktestReportRenderer(data, 'report-container');
+                    window.reportRenderer.render();
+                })
+                .catch(error => {
+                    console.error('Failed to load backtest data:', error);
+                    document.getElementById('report-container').innerHTML = `
+                        <div class="error">
+                            <strong>加载失败:</strong> ${error.message}
+                        </div>
+                    `;
+                });
+        }
+    </script>
+</body>
+</html>
