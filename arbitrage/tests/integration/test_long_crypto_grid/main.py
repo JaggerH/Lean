@@ -71,8 +71,6 @@ class LongCryptoGridTest(QCAlgorithm):
             entry_threshold=-0.01,  # -1%
             exit_threshold=0.02,    # 2%
             position_size_pct=0.80,  # 80% (考虑杠杆和费用)
-            crypto_fee_pct=0.0026,  # Kraken 0.26%
-            stock_fee_pct=0.0005    # IBKR 0.05%
         )
 
         # 启用debug模式
@@ -112,33 +110,12 @@ class LongCryptoGridTest(QCAlgorithm):
         """处理数据 - 委托给SpreadManager处理"""
         if not data.ticks or len(data.ticks) == 0:
             return
-
-        # 每分钟输出一次 spread 统计 (已禁用，避免日志过多)
-        # if (self.time - self.last_spread_log_time).total_seconds() >= 60:
-        #     self.debug(f"📊 Spread updates in last minute: {self.spread_count}")
-        #     self.spread_count = 0
-        #     self.last_spread_log_time = self.time
-
-        # === 1. 先触发 strategy 的 on_data (重新执行 PENDING 的 ExecutionTargets) ===
         self.strategy.on_data(data)
-
-        # === 2. 委托给SpreadManager处理数据并监控价差 ===
         self.spread_manager.on_data(data)
-        # self.spread_count += 1
 
     def on_order_event(self, order_event: OrderEvent):
         """处理订单事件 - 验证多账户路由"""
         # 输出订单事件详情
-        # self.debug(
-        #     f"{self.time} | "
-        #     f"📋 ORDER EVENT | ID: {order_event.order_id} | "
-        #     f"Status: {order_event.status} | "
-        #     f"Symbol: {order_event.symbol.value} | "
-        #     f"Qty: {order_event.quantity} | "
-        #     f"FillQty: {order_event.fill_quantity} | "
-        #     f"FillPrice: {order_event.fill_price} | "
-        #     f"Message: {order_event.message if order_event.message else 'N/A'}"
-        # )
 
         # 委托给 Strategy 的 on_order_event 处理订单事件
         self.strategy.on_order_event(order_event)
