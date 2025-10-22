@@ -29,8 +29,6 @@ class LongCryptoGridStrategy(GridStrategy):
                  entry_threshold: float = -0.01,
                  exit_threshold: float = 0.02,
                  position_size_pct: float = 0.25,
-                 crypto_fee_pct: float = 0.0026,  # Kraken 0.26%
-                 stock_fee_pct: float = 0.0005,   # IBKR 0.05%
                  state_persistence=None):
         """
         初始化策略
@@ -40,8 +38,6 @@ class LongCryptoGridStrategy(GridStrategy):
             entry_threshold: 开仓阈值 (负数, spread <= entry_threshold 时开仓, 默认-1%)
             exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
             position_size_pct: 仓位大小百分比 (默认25%)
-            crypto_fee_pct: 加密货币交易费率 (默认Kraken 0.26%)
-            stock_fee_pct: 股票交易费率 (默认IBKR 0.05%)
             state_persistence: 状态持久化适配器 (可选)
         """
         # 调用父类GridStrategy初始化
@@ -50,8 +46,6 @@ class LongCryptoGridStrategy(GridStrategy):
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.position_size_pct = position_size_pct
-        self.crypto_fee_pct = crypto_fee_pct
-        self.stock_fee_pct = stock_fee_pct
 
         # 持仓时间追踪 (与原始策略保持一致)
         self.open_times = {}  # {pair_symbol: open_time}

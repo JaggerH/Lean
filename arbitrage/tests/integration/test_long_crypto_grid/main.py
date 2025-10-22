@@ -3,8 +3,8 @@ Long Crypto Grid Strategy 集成测试 - Grid Trading Framework
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
-- 交易对: TSLA/TSLAUSD, AAPL/AAPLUSD
-- 日期范围: 2025-09-02 至 2025-09-05
+- 交易对: AAPL/AAPLxUSD, TSLA/TSLAxUSD
+- 日期范围: 2025-09-02 至 2025-09-27
 - 账户配置:
   * IBKR账户: $50,000 - 交易股票 (USA market) - Margin模式 2x杠杆
   * Kraken账户: $50,000 - 交易加密货币 (Kraken market) - Margin模式 5x杠杆
@@ -23,6 +23,7 @@ Long Crypto Grid Strategy 集成测试 - Grid Trading Framework
 5. 验证订单自动路由到正确账户 (crypto->Kraken, stock->IBKR)
 6. 验证 profitability validation 正常工作
 7. 对比 Grid 版本与原始 LongCryptoStrategy 的行为一致性
+8. 验证多交易对同时运行 (AAPL 和 TSLA)
 """
 
 import sys
@@ -82,18 +83,31 @@ class LongCryptoGridTest(QCAlgorithm):
 
         # === 4. 订阅交易对（使用 subscribe_trading_pair 简化代码）===
         self.debug("📡 Subscribing to trading pairs...")
-        crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        # 订阅 AAPL 交易对
+        aapl_crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
+        aapl_stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
 
         self.aapl_crypto, self.aapl_stock = self.spread_manager.subscribe_trading_pair(
-            pair_symbol=(crypto_symbol, stock_symbol),
+            pair_symbol=(aapl_crypto_symbol, aapl_stock_symbol),
         )
 
-        self.debug(f"✅ Subscribed: {crypto_symbol.value} <-> {stock_symbol.value}")
+        self.debug(f"✅ Subscribed: {aapl_crypto_symbol.value} <-> {aapl_stock_symbol.value}")
+
+        # 订阅 TSLA 交易对
+        tsla_crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        tsla_stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
+        self.tsla_crypto, self.tsla_stock = self.spread_manager.subscribe_trading_pair(
+            pair_symbol=(tsla_crypto_symbol, tsla_stock_symbol),
+        )
+
+        self.debug(f"✅ Subscribed: {tsla_crypto_symbol.value} <-> {tsla_stock_symbol.value}")
 
         # === 4.5. 初始化Grid Levels（Grid策略的新需求）===
-        self.debug("🔧 Initializing grid levels for trading pair...")
-        self.strategy.initialize_pair((crypto_symbol, stock_symbol))
+        self.debug("🔧 Initializing grid levels for trading pairs...")
+        self.strategy.initialize_pair((aapl_crypto_symbol, aapl_stock_symbol))
+        self.strategy.initialize_pair((tsla_crypto_symbol, tsla_stock_symbol))
 
         # === 5. 初始化独立的订单追踪器 (Grid Version) ===
         self.debug("📊 Initializing GridOrderTracker for tracking ExecutionTargets and Round Trips...")
@@ -147,9 +161,15 @@ class LongCryptoGridTest(QCAlgorithm):
             self.debug(f"Average Holding Time: {stats['avg_holding_time_seconds']:.2f} seconds")
 
         # 输出Grid摘要
-        pair_symbol = (self.aapl_crypto.symbol, self.aapl_stock.symbol)
-        grid_summary = self.strategy.get_grid_summary(pair_symbol)
-        self.debug("\n" + grid_summary)
+        self.debug("\n=== AAPL Grid Summary ===")
+        aapl_pair_symbol = (self.aapl_crypto.symbol, self.aapl_stock.symbol)
+        aapl_grid_summary = self.strategy.get_grid_summary(aapl_pair_symbol)
+        self.debug(aapl_grid_summary)
+
+        self.debug("\n=== TSLA Grid Summary ===")
+        tsla_pair_symbol = (self.tsla_crypto.symbol, self.tsla_stock.symbol)
+        tsla_grid_summary = self.strategy.get_grid_summary(tsla_pair_symbol)
+        self.debug(tsla_grid_summary)
 
         # === 导出 GridOrderTracker 数据并自动保存到 backtest_history ===
         self.debug("=" * 60)
