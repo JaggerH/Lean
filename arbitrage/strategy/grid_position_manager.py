@@ -144,22 +144,22 @@ class GridPositionManager:
         if order_event.status in [OrderStatus.Filled, OrderStatus.PartiallyFilled]:
             fill_qty = order_event.fill_quantity
 
-            # 根据 symbol 判断是 crypto 还是 stock 的订单
+            # 根据 symbol 判断是 leg1 还是 leg2 的订单
             if order_event.symbol == crypto_symbol:
-                # 更新 crypto 持仓
-                grid_position.update_filled_qty(crypto_qty=fill_qty, stock_qty=0.0)
+                # 更新 leg1 (crypto) 持仓
+                grid_position.update_filled_qty(leg1_qty=fill_qty, leg2_qty=0.0)
 
                 self.debug(
-                    f"[{event_time}] 📊 Crypto filled: {crypto_symbol.value} | Grid: {grid_id} | "
+                    f"[{event_time}] 📊 Leg1 filled: {crypto_symbol.value} | Grid: {grid_id} | "
                     f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
                 )
 
             elif order_event.symbol == stock_symbol:
-                # 更新 stock 持仓
-                grid_position.update_filled_qty(crypto_qty=0.0, stock_qty=fill_qty)
+                # 更新 leg2 (stock) 持仓
+                grid_position.update_filled_qty(leg1_qty=0.0, leg2_qty=fill_qty)
 
                 self.debug(
-                    f"[{event_time}] 📊 Stock filled: {stock_symbol.value} | Grid: {grid_id} | "
+                    f"[{event_time}] 📊 Leg2 filled: {stock_symbol.value} | Grid: {grid_id} | "
                     f"{'+' if fill_qty > 0 else ''}{fill_qty:.2f} @ {order_event.fill_price:.2f}"
                 )
 
@@ -201,10 +201,7 @@ class GridPositionManager:
             return self.grid_positions[level]
 
         # 创建新的 GridPosition
-        position = GridPosition(
-            pair_symbol=level.pair_symbol,
-            level=level
-        )
+        position = GridPosition(level=level)
 
         self.grid_positions[level] = position
 
@@ -290,9 +287,9 @@ class GridPositionManager:
 
         for entry_level, position in self.grid_positions.items():
             if entry_level.pair_symbol == pair_symbol:
-                crypto_qty, stock_qty = position.quantity
+                leg1_qty, leg2_qty = position.quantity
                 # 如果有任何一边持仓>0.01，认为是活跃的
-                if abs(crypto_qty) > 0.01 or abs(stock_qty) > 0.01:
+                if abs(leg1_qty) > 0.01 or abs(leg2_qty) > 0.01:
                     active_grids.append(entry_level.level_id)
 
         return active_grids
@@ -323,12 +320,12 @@ class GridPositionManager:
         ]
 
         for entry_level, position in pair_positions.items():
-            crypto_qty, stock_qty = position.quantity
+            leg1_qty, leg2_qty = position.quantity
             summary_lines.append(
                 f"  {entry_level.level_id} (hash={hash(entry_level)}):"
             )
             summary_lines.append(
-                f"    Holdings: {crypto_qty:.2f} / {stock_qty:.2f}"
+                f"    Holdings: {leg1_qty:.2f} / {leg2_qty:.2f}"
             )
 
         return "\n".join(summary_lines)
@@ -413,32 +410,32 @@ class GridPositionManager:
         Returns:
             True if has orphan position, False otherwise
         """
-        crypto_qty, stock_qty = position.quantity
-        crypto_qty = abs(crypto_qty)
-        stock_qty = abs(stock_qty)
+        leg1_qty, leg2_qty = position.quantity
+        leg1_qty = abs(leg1_qty)
+        leg2_qty = abs(leg2_qty)
 
         # 如果双边都没有仓位，不算孤立
-        if crypto_qty < 0.01 and stock_qty < 0.01:
+        if leg1_qty < 0.01 and leg2_qty < 0.01:
             return False
 
         # 如果只有一边有仓位，肯定是孤立
-        if crypto_qty < 0.01 or stock_qty < 0.01:
+        if leg1_qty < 0.01 or leg2_qty < 0.01:
             return True
 
         # 计算市值比例（考虑价格）
-        crypto_symbol, stock_symbol = position.pair_symbol
-        crypto_price = self.algorithm.securities[crypto_symbol].price
-        stock_price = self.algorithm.securities[stock_symbol].price
+        leg1_symbol, leg2_symbol = position.pair_symbol
+        leg1_price = self.algorithm.securities[leg1_symbol].price
+        leg2_price = self.algorithm.securities[leg2_symbol].price
 
-        if crypto_price <= 0 or stock_price <= 0:
+        if leg1_price <= 0 or leg2_price <= 0:
             # 价格无效，无法判断,保守起见认为有敞口
             return True
 
-        crypto_value = crypto_qty * crypto_price
-        stock_value = stock_qty * stock_price
+        leg1_value = leg1_qty * leg1_price
+        leg2_value = leg2_qty * leg2_price
 
         # 对冲比例 = 较小市值 / 较大市值
-        hedge_ratio = min(crypto_value, stock_value) / max(crypto_value, stock_value)
+        hedge_ratio = min(leg1_value, leg2_value) / max(leg1_value, leg2_value)
 
         # 如果对冲比例 < 90%，认为有敞口
         return hedge_ratio < 0.9

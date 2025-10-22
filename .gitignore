@@ -290,3 +290,4 @@ Launcher/config.json
 # IDE
 .claude/settings.local.json
 *live*.json
+arbitrage/monitoring/backtest_history

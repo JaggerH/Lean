@@ -193,16 +193,16 @@ class GridStrategy(BaseStrategy):
 
         # ✅ 计算增量数量（delta = 目标 - 当前持仓）
         grid_position = self.grid_position_manager.get_or_create_grid_position(level)
-        current_crypto_qty, current_stock_qty = grid_position.quantity
+        current_leg1_qty, current_leg2_qty = grid_position.quantity
 
         delta_order_pair = {
-            crypto_symbol: target_order_pair[crypto_symbol] - current_crypto_qty,
-            stock_symbol: target_order_pair[stock_symbol] - current_stock_qty
+            crypto_symbol: target_order_pair[crypto_symbol] - current_leg1_qty,
+            stock_symbol: target_order_pair[stock_symbol] - current_leg2_qty
         }
 
         self.algorithm.debug(
             f"📥 _open_grid_position | ENTRY Level: {level.level_id} | "
-            f"Current Position: {current_crypto_qty:.2f}/{current_stock_qty:.2f} | "
+            f"Current Position: {current_leg1_qty:.2f}/{current_leg2_qty:.2f} | "
             f"Delta: {delta_order_pair[crypto_symbol]:.2f}/{delta_order_pair[stock_symbol]:.2f} | "
             f"current Spread Pct: {spread_pct}"
         )

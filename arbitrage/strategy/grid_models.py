@@ -120,13 +120,24 @@ class GridPosition:
     3. 只负责累计持仓数量的记录
     4. 不存储状态和时间戳（由外部逻辑判断）
     5. grid_id 直接使用 level.level_id（不再包含交易对前缀）
+    6. pair_symbol 通过 level.pair_symbol 获取（避免冗余存储）
     """
-    pair_symbol: Tuple[Symbol, Symbol]  # (crypto_symbol, stock_symbol)
     level: GridLevel  # 关联的网格线配置
 
     # 实际持仓（累计成交）- 内部存储
-    _crypto_qty: float = 0.0  # 实际 crypto 数量（带符号）
-    _stock_qty: float = 0.0   # 实际 stock 数量（带符号）
+    # leg1 = pair_symbol[0], leg2 = pair_symbol[1]
+    _leg1_qty: float = 0.0  # 第一条腿的数量（带符号）
+    _leg2_qty: float = 0.0  # 第二条腿的数量（带符号）
+
+    @property
+    def pair_symbol(self) -> Tuple[Symbol, Symbol]:
+        """
+        获取交易对（从关联的 GridLevel 获取）
+
+        Returns:
+            (crypto_symbol, stock_symbol) 元组
+        """
+        return self.level.pair_symbol
 
     @property
     def grid_id(self) -> str:
@@ -144,20 +155,20 @@ class GridPosition:
         获取持仓数量元组
 
         Returns:
-            (crypto_qty, stock_qty)
+            (leg1_qty, leg2_qty) 对应 (pair_symbol[0], pair_symbol[1])
         """
-        return (self._crypto_qty, self._stock_qty)
+        return (self._leg1_qty, self._leg2_qty)
 
-    def update_filled_qty(self, crypto_qty: float, stock_qty: float):
+    def update_filled_qty(self, leg1_qty: float, leg2_qty: float):
         """
         更新实际成交数量（累加）
 
         Args:
-            crypto_qty: Crypto 数量变化（带符号）
-            stock_qty: Stock 数量变化（带符号）
+            leg1_qty: 第一条腿数量变化（带符号）
+            leg2_qty: 第二条腿数量变化（带符号）
         """
-        self._crypto_qty += crypto_qty
-        self._stock_qty += stock_qty
+        self._leg1_qty += leg1_qty
+        self._leg2_qty += leg2_qty
 
 
 # ============================================================================

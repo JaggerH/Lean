@@ -81,8 +81,6 @@ class TestLongCryptoGridStrategyInit(unittest.TestCase):
         self.assertEqual(strategy.entry_threshold, -0.01)
         self.assertEqual(strategy.exit_threshold, 0.02)
         self.assertEqual(strategy.position_size_pct, 0.25)
-        self.assertEqual(strategy.crypto_fee_pct, 0.0026)
-        self.assertEqual(strategy.stock_fee_pct, 0.0005)
 
         # Verify grid managers initialized
         self.assertIsNotNone(strategy.grid_level_manager)
@@ -97,17 +95,13 @@ class TestLongCryptoGridStrategyInit(unittest.TestCase):
             algo,
             entry_threshold=-0.02,
             exit_threshold=0.03,
-            position_size_pct=0.30,
-            crypto_fee_pct=0.003,
-            stock_fee_pct=0.001
+            position_size_pct=0.30
         )
 
         # Verify custom parameters
         self.assertEqual(strategy.entry_threshold, -0.02)
         self.assertEqual(strategy.exit_threshold, 0.03)
         self.assertEqual(strategy.position_size_pct, 0.30)
-        self.assertEqual(strategy.crypto_fee_pct, 0.003)
-        self.assertEqual(strategy.stock_fee_pct, 0.001)
 
         print("✅ Custom initialization test passed")
 
@@ -414,10 +408,9 @@ class TestGridStrategyShouldClosePosition(unittest.TestCase):
         self.exit_level = levels[1]   # type="EXIT"
 
         # Create a mock GridPosition for testing
-        self.mock_position = GridPosition(
-            pair_symbol=self.pair_symbol,
-            level=self.entry_level
-        )
+        self.mock_position = GridPosition(level=self.entry_level)
+        # Give it some position so it's not empty
+        self.mock_position.update_filled_qty(1.0, 100.0)
 
     def test_should_close_returns_true_has_position_no_execution(self):
         """Test should_close_position returns True when has position and no active execution"""
