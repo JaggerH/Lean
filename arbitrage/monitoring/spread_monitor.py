@@ -36,7 +36,6 @@ class RedisSpreadMonitor:
         # 日志记录状态（避免刷屏）
         self._pair_mapping_logged = set()
         self._spread_write_logged = set()
-        self._spread_write_count = 0
         self._redis_error_logged = False
 
     def write_pair_mapping(self, crypto: Security, stock: Security):
@@ -153,7 +152,6 @@ class RedisSpreadMonitor:
             self.redis.set_spread(pair_key, spread_data)
 
             # 调试日志：每个交易对只记录首次成功写入
-            self._spread_write_count += 1
             if pair_key not in self._spread_write_logged:
                 self._spread_write_logged.add(pair_key)
                 self.algorithm.Debug(
@@ -163,12 +161,6 @@ class RedisSpreadMonitor:
                     f"stock={stock_security.Cache.BidPrice:.2f}/{stock_security.Cache.AskPrice:.2f}"
                 )
 
-            # 每100次写入输出一次统计
-            if self._spread_write_count % 100 == 0:
-                self.algorithm.Debug(
-                    f"📊 Redis写入统计: 已写入 {self._spread_write_count} 次 "
-                    f"({len(self._spread_write_logged)} 个不同交易对)"
-                )
 
         except Exception as e:
             self.algorithm.Debug(f"⚠️ RedisSpreadMonitor: 价差写入失败: {e}")
