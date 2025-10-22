@@ -767,6 +767,55 @@ let monitorInstance = null;
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 Trading Monitor 启动');
     monitorInstance = new TradingMonitor();
+
+    // 添加刷新按钮事件监听
+    const refreshBtn = document.getElementById('refresh-backtest-list-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+            console.log('[INFO] 用户点击刷新回测列表按钮');
+
+            // 添加旋转动画
+            refreshBtn.classList.add('spinning');
+            refreshBtn.disabled = true;
+
+            try {
+                // 重新加载回测历史（但不自动选择第一个）
+                const data = await monitorInstance.fetchAPI('backtests?sort_by=created_at&limit=20');
+                if (data && !data.error) {
+                    console.log(`[INFO] 刷新成功，找到 ${data.backtests.length} 个回测`);
+                    monitorInstance.renderBacktestList(data.backtests);
+
+                    // 如果之前有选中的回测，保持选中状态
+                    if (monitorInstance.selectedBacktestId) {
+                        const selectedExists = data.backtests.some(
+                            bt => bt.backtest_id === monitorInstance.selectedBacktestId
+                        );
+                        if (selectedExists) {
+                            monitorInstance.viewBacktestDetail(monitorInstance.selectedBacktestId);
+                        } else {
+                            // 如果之前选中的回测不存在了，选择第一个
+                            if (data.backtests.length > 0) {
+                                monitorInstance.viewBacktestDetail(data.backtests[0].backtest_id);
+                            }
+                        }
+                    } else if (data.backtests.length > 0) {
+                        // 如果之前没有选中，选择第一个
+                        monitorInstance.viewBacktestDetail(data.backtests[0].backtest_id);
+                    }
+                } else {
+                    console.error('[ERROR] 刷新回测历史失败:', data);
+                }
+            } catch (error) {
+                console.error('[ERROR] 刷新过程中出错:', error);
+            } finally {
+                // 移除旋转动画
+                setTimeout(() => {
+                    refreshBtn.classList.remove('spinning');
+                    refreshBtn.disabled = false;
+                }, 500); // 延迟500ms，让用户看到动画完成
+            }
+        });
+    }
 });
 
 // 页面卸载时清理资源

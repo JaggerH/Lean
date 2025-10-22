@@ -127,6 +127,38 @@
             color: #1e1e1e;
         }
 
+        /* Refresh Button Styles */
+        .btn-refresh {
+            padding: 6px 12px;
+            border: 1px solid #007acc;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #1e1e1e;
+            color: #007acc;
+            white-space: nowrap;
+        }
+
+        .btn-refresh:hover {
+            background: #007acc;
+            color: #ffffff;
+        }
+
+        .btn-refresh:active {
+            transform: scale(0.95);
+        }
+
+        .btn-refresh.spinning {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
         /* 第一行：盈亏统计 + 账户状态，各占50% */
         .top-row {
             display: grid;
@@ -577,7 +609,12 @@
                 <!-- 左侧：回测列表 -->
                 <div class="backtest-sidebar">
                     <div class="card" style="height: 100%; margin: 0;">
-                        <h2>📚 回测历史</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h2 style="margin: 0;">📚 回测历史</h2>
+                            <button id="refresh-backtest-list-btn" class="btn-refresh" title="刷新列表">
+                                🔄 刷新
+                            </button>
+                        </div>
                         <div id="backtest-list-container" class="loader">加载中...</div>
                     </div>
                 </div>

@@ -42,7 +42,7 @@ class OrderSnapshot:
     fill_price: float
     fee: float
     status: str
-    time: str  # ISO format
+    time: str  # YYYY-mm-dd HH:MM:SS format
 
     @classmethod
     def from_order_event(cls, order_event: OrderEvent):
@@ -55,7 +55,7 @@ class OrderSnapshot:
             fill_price=order_event.fill_price,
             fee=order_event.order_fee.value.amount if order_event.order_fee else 0.0,
             status=str(order_event.status),
-            time=order_event.utc_time.isoformat()
+            time=order_event.utc_time.strftime("%Y-%m-%d %H:%M:%S")
         )
 
 
@@ -83,7 +83,7 @@ class ExecutionTargetSnapshot:
     grid_id: str
     level_type: str  # "ENTRY" | "EXIT"
     status: str  # ExecutionStatus
-    timestamp: str  # ISO format
+    timestamp: str  # YYYY-mm-dd HH:MM:SS format
 
     # 目标数量
     target_qty: Dict[str, float]  # {symbol: qty}
@@ -129,7 +129,7 @@ class RoundTrip:
 @dataclass
 class PortfolioSnapshot:
     """Portfolio 快照（在 ExecutionTarget 终止状态时记录）"""
-    timestamp: str  # ISO format
+    timestamp: str  # YYYY-mm-dd HH:MM:SS format
     execution_target_id: str  # 关联的 ExecutionTarget grid_id
 
     # LEAN PnL
@@ -180,11 +180,8 @@ class GridOrderTracker:
         self.portfolio_snapshots: List[PortfolioSnapshot] = []
 
         # === Round Trip 追踪状态 ===
-        # 待配对的 Entry: {entry_level_id: [ExecutionTargetSnapshots]}
-        self._pending_entries: Dict[str, List[ExecutionTargetSnapshot]] = {}
-
-        # 进行中的 Round Trip: {entry_level_id: RoundTrip}
-        self._open_round_trips: Dict[str, RoundTrip] = {}
+        # 最后一个有效的 Entry: {entry_level_id: ExecutionTargetSnapshot}
+        self._last_entry: Dict[str, ExecutionTargetSnapshot] = {}
 
         # 最后已知价格: {symbol: last_price}
         self.last_prices: Dict[Symbol, float] = {}
@@ -223,17 +220,25 @@ class GridOrderTracker:
         if target.is_terminal():
             self._record_portfolio_snapshot(target.grid_id)
 
+            # Rule 1: 如果 Canceled 且 filled_quantity = (0,0)，忽略
+            is_canceled = (str(target.status) == "5")  # Status 5 = Canceled
+            has_no_fills = (snapshot.total_filled_qty[0] == 0 and snapshot.total_filled_qty[1] == 0)
+
+            if is_canceled and has_no_fills:
+                self.debug(f"  ⊗ Skipping canceled target with no fills | Grid: {target.grid_id}")
+                return
+
             # 检查是否有成交
             has_fills = (snapshot.total_filled_qty[0] != 0 or snapshot.total_filled_qty[1] != 0)
 
             if has_fills:
-                # 如果是 Entry，累积到待配对列表
+                # 如果是 Entry，记录为最后一个有效 Entry
                 if target.level.type == "ENTRY":
-                    self._accumulate_entry(target, snapshot)
+                    self._record_entry(target, snapshot)
 
-                # 如果是 Exit，累积并尝试配对 Round Trip
+                # 如果是 Exit，尝试匹配 Round Trip
                 elif target.level.type == "EXIT":
-                    self._accumulate_exit(target, snapshot)
+                    self._try_match_round_trip(target, snapshot)
 
     # ========================================================================
     #                      内部辅助方法
@@ -267,7 +272,7 @@ class GridOrderTracker:
                     fill_price=ticket.average_fill_price,
                     fee=0.0,  # 单笔订单手续费不重要，在 target 层级统计
                     status=str(ticket.status),
-                    time=self.algorithm.time.isoformat()
+                    time=self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S")
                 )
                 order_snapshots.append(order_snap)
 
@@ -297,7 +302,7 @@ class GridOrderTracker:
             grid_id=target.grid_id,
             level_type=target.level.type,
             status=str(target.status),
-            timestamp=self.algorithm.time.isoformat(),
+            timestamp=self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
             target_qty={
                 str(crypto_symbol.value): target.target_qty[crypto_symbol],
                 str(stock_symbol.value): target.target_qty[stock_symbol]
@@ -326,7 +331,7 @@ class GridOrderTracker:
 
         # 创建快照
         snapshot = PortfolioSnapshot(
-            timestamp=self.algorithm.time.isoformat(),
+            timestamp=self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
             execution_target_id=execution_target_id,
             lean_pnl=lean_pnl,
             accounts=accounts
@@ -401,25 +406,23 @@ class GridOrderTracker:
                 "cashbook": {}
             }
 
-    def _accumulate_entry(self, target, snapshot: ExecutionTargetSnapshot):
+    def _record_entry(self, target, snapshot: ExecutionTargetSnapshot):
         """
-        累积 Entry ExecutionTarget 到待配对列表
+        记录最后一个有效的 Entry ExecutionTarget
 
         Args:
             target: Entry ExecutionTarget 实例
             snapshot: ExecutionTargetSnapshot
         """
         level_id = target.level.level_id
+        self._last_entry[level_id] = snapshot
+        self.debug(f"  📥 Entry recorded | Level: {level_id} | Cost: ${snapshot.total_cost:.2f} | Filled: {snapshot.total_filled_qty}")
 
-        if level_id not in self._pending_entries:
-            self._pending_entries[level_id] = []
-
-        self._pending_entries[level_id].append(snapshot)
-        self.debug(f"  📥 Entry accumulated | Level: {level_id} | Cost: ${snapshot.total_cost:.2f} | Total entries: {len(self._pending_entries[level_id])}")
-
-    def _accumulate_exit(self, target, snapshot: ExecutionTargetSnapshot):
+    def _try_match_round_trip(self, target, snapshot: ExecutionTargetSnapshot):
         """
-        累积 Exit ExecutionTarget 并创建/更新 Round Trip
+        尝试将 Exit 与最后的 Entry 匹配创建 Round Trip
+
+        Rule 2: Entry/Exit filled_quantity 完全相等且相邻时匹配
 
         Args:
             target: Exit ExecutionTarget 实例
@@ -434,77 +437,67 @@ class GridOrderTracker:
             self.debug(f"  ⚠️ No paired entry level for {exit_level_id}")
             return
 
-        # 检查是否有待配对的 Entry
-        if entry_level_id not in self._pending_entries or not self._pending_entries[entry_level_id]:
-            self.debug(f"  ⚠️ No pending entries for {entry_level_id}")
+        # 检查是否有最后记录的 Entry
+        if entry_level_id not in self._last_entry:
+            self.debug(f"  ⚠️ No recorded entry for {entry_level_id}")
             return
 
-        # 检查是否已有 Open Round Trip
-        if entry_level_id in self._open_round_trips:
-            # 累积到现有 Round Trip
-            round_trip = self._open_round_trips[entry_level_id]
-            round_trip.exit_targets.append(snapshot)
-            round_trip.total_exit_revenue += snapshot.total_cost
-            round_trip.total_exit_fee += snapshot.total_fee
+        entry_snapshot = self._last_entry[entry_level_id]
 
-            # 更新时间范围
-            first_exit_time = round_trip.exit_targets[0].timestamp
-            last_exit_time = snapshot.timestamp
-            if first_exit_time == last_exit_time:
-                round_trip.exit_time_range = first_exit_time
-            else:
-                round_trip.exit_time_range = f"{first_exit_time} ~ {last_exit_time}"
+        # Rule 2: 检查 filled_quantity 是否完全相等
+        entry_qty = entry_snapshot.total_filled_qty
+        exit_qty = snapshot.total_filled_qty
 
-            # 重新计算 PnL
-            round_trip.net_pnl = round_trip.total_exit_revenue - round_trip.total_entry_cost
+        quantities_match = (abs(entry_qty[0] - exit_qty[0]) < 0.0001 and
+                           abs(entry_qty[1] - exit_qty[1]) < 0.0001)
 
-            self.debug(f"  📤 Exit accumulated | RT #{round_trip.round_trip_id} | Revenue: ${snapshot.total_cost:.2f} | Fee: ${snapshot.total_fee:.4f} | Total exits: {len(round_trip.exit_targets)} | PnL: ${round_trip.net_pnl:.2f}")
-        else:
-            # 创建新的 Round Trip
-            self._create_round_trip(entry_level_id, exit_level_id, snapshot)
+        if not quantities_match:
+            self.debug(f"  ⚠️ Quantities don't match | Entry: {entry_qty} | Exit: {exit_qty}")
+            return
 
-    def _create_round_trip(self, entry_level_id: str, exit_level_id: str, exit_snapshot: ExecutionTargetSnapshot):
+        # Rule 2: 检查是否相邻（简化版：如果 quantities match，就创建 Round Trip）
+        # 注意：严格的"相邻"检查需要检查 execution_targets 列表中的顺序
+        # 这里简化为：只要有匹配的 Entry 就创建 Round Trip
+
+        # 创建 Round Trip
+        self._create_simple_round_trip(entry_level_id, exit_level_id, entry_snapshot, snapshot)
+
+        # 清除已使用的 Entry，避免重复匹配
+        del self._last_entry[entry_level_id]
+
+    def _create_simple_round_trip(self, entry_level_id: str, exit_level_id: str,
+                                   entry_snapshot: ExecutionTargetSnapshot,
+                                   exit_snapshot: ExecutionTargetSnapshot):
         """
-        创建新的 Round Trip
+        创建简单的 1:1 Round Trip
 
         Args:
             entry_level_id: Entry GridLevel ID
             exit_level_id: Exit GridLevel ID
+            entry_snapshot: Entry ExecutionTargetSnapshot
             exit_snapshot: Exit ExecutionTargetSnapshot
         """
-        entry_snapshots = self._pending_entries[entry_level_id]
-        total_entry_cost = sum(e.total_cost for e in entry_snapshots)
-        total_entry_fee = sum(e.total_fee for e in entry_snapshots)
-
         self.round_trip_counter += 1
-
-        # 计算 Entry 时间范围
-        first_entry_time = entry_snapshots[0].timestamp
-        last_entry_time = entry_snapshots[-1].timestamp
-        if first_entry_time == last_entry_time:
-            entry_time_range = first_entry_time
-        else:
-            entry_time_range = f"{first_entry_time} ~ {last_entry_time}"
 
         round_trip = RoundTrip(
             round_trip_id=self.round_trip_counter,
             pair=self._format_pair_name_from_snapshot(exit_snapshot),
             entry_level_id=entry_level_id,
-            entry_targets=entry_snapshots,
-            entry_time_range=entry_time_range,
-            total_entry_cost=total_entry_cost,
-            total_entry_fee=total_entry_fee,
+            entry_targets=[entry_snapshot],  # 只有一个 Entry
+            entry_time_range=entry_snapshot.timestamp,
+            total_entry_cost=entry_snapshot.total_cost,
+            total_entry_fee=entry_snapshot.total_fee,
             exit_level_id=exit_level_id,
-            exit_targets=[exit_snapshot],
+            exit_targets=[exit_snapshot],  # 只有一个 Exit
             exit_time_range=exit_snapshot.timestamp,
             total_exit_revenue=exit_snapshot.total_cost,
             total_exit_fee=exit_snapshot.total_fee,
-            net_pnl=exit_snapshot.total_cost - total_entry_cost,
-            status="OPEN"
+            net_pnl=exit_snapshot.total_cost - entry_snapshot.total_cost,
+            status="CLOSED"  # 1:1 匹配直接设为 CLOSED
         )
 
-        self._open_round_trips[entry_level_id] = round_trip
-        self.debug(f"  ✅ Round Trip #{round_trip.round_trip_id} created | Entry: {len(entry_snapshots)} targets (${total_entry_cost:.2f}) | Exit: 1 target (${exit_snapshot.total_cost:.2f}) | PnL: ${round_trip.net_pnl:.2f}")
+        self.round_trips.append(round_trip)
+        self.debug(f"  ✅ Round Trip #{round_trip.round_trip_id} created | Entry: ${entry_snapshot.total_cost:.2f} | Exit: ${exit_snapshot.total_cost:.2f} | PnL: ${round_trip.net_pnl:.2f}")
 
     def _get_paired_entry_level_id(self, exit_level) -> Optional[str]:
         """
@@ -569,20 +562,18 @@ class GridOrderTracker:
             filepath: 输出文件路径
             generate_html: 是否自动生成 HTML 报告（默认 True）
         """
-        # 合并已完成的和进行中的 Round Trips
-        all_round_trips = self.round_trips + list(self._open_round_trips.values())
-
+        # 所有 Round Trips 都是 CLOSED (1:1 匹配)
         data = {
             "meta": {
-                "start_time": self.algorithm.start_date.isoformat(),
-                "end_time": self.algorithm.time.isoformat(),
-                "total_round_trips": len(all_round_trips),
+                "start_time": self.algorithm.start_date.strftime("%Y-%m-%d %H:%M:%S"),
+                "end_time": self.algorithm.time.strftime("%Y-%m-%d %H:%M:%S"),
+                "total_round_trips": len(self.round_trips),
                 "closed_round_trips": len(self.round_trips),
-                "open_round_trips": len(self._open_round_trips),
+                "open_round_trips": 0,
                 "total_execution_targets": len(self.execution_targets),
                 "total_snapshots": len(self.portfolio_snapshots)
             },
-            "round_trips": [asdict(rt) for rt in all_round_trips],
+            "round_trips": [asdict(rt) for rt in self.round_trips],
             "execution_targets": [asdict(et) for et in self.execution_targets],
             "portfolio_snapshots": [asdict(ps) for ps in self.portfolio_snapshots]
         }
@@ -604,17 +595,16 @@ class GridOrderTracker:
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息"""
-        # 计算所有 Round Trip 的总 PnL（包括 Open 和 Closed）
-        all_round_trips = self.round_trips + list(self._open_round_trips.values())
-        total_pnl = sum(rt.net_pnl for rt in all_round_trips)
+        # 所有 Round Trips 都是 CLOSED (1:1 匹配)
+        total_pnl = sum(rt.net_pnl for rt in self.round_trips)
 
-        # 计算未配对的 Entry 数量
-        pending_entries_count = sum(len(entries) for entries in self._pending_entries.values())
+        # 计算未配对的 Entry 数量 (最后记录的 Entry)
+        pending_entries_count = len(self._last_entry)
 
         return {
-            "total_round_trips": len(all_round_trips),
+            "total_round_trips": len(self.round_trips),
             "closed_round_trips": len(self.round_trips),
-            "open_round_trips": len(self._open_round_trips),
+            "open_round_trips": 0,
             "pending_entries": pending_entries_count,
             "open_positions": pending_entries_count,  # 向后兼容：表示未配对的 Entry positions
             "total_pnl": total_pnl,

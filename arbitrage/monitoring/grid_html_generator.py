@@ -890,6 +890,10 @@ class GridHTMLReportGenerator:
 
         spread_display = f"{actual_spread*100:.4f}%" if actual_spread is not None else "N/A"
 
+        # 计算 AVG Prices
+        avg_prices = self._calculate_avg_prices(orders)
+        avg_prices_html = " | ".join([f"{symbol}: ${price:.2f}" for symbol, price in avg_prices.items()])
+
         # OrderGroup 头部
         header_html = f"""
         <div class="order-group-header">
@@ -897,6 +901,9 @@ class GridHTMLReportGenerator:
             <div style="font-size: 11px; color: #858585;">
                 Status: {og_status} | Expected Spread: {expected_spread*100:.2f}% |
                 Actual Spread: {spread_display} | Total Fee: ${total_fee:.2f}
+            </div>
+            <div style="font-size: 11px; color: #dcdcaa; margin-top: 5px;">
+                AVG Prices: {avg_prices_html if avg_prices_html else "N/A"}
             </div>
         </div>
         """
@@ -1059,6 +1066,37 @@ class GridHTMLReportGenerator:
             {holdings_table}
         </div>
         """
+
+    def _calculate_avg_prices(self, orders: List[Dict]) -> Dict[str, float]:
+        """
+        计算每个symbol的加权平均价格
+
+        Args:
+            orders: 订单列表
+
+        Returns:
+            {symbol: avg_price} 字典
+        """
+        symbol_totals = {}  # {symbol: {'total_value': float, 'total_qty': float}}
+
+        for order in orders:
+            symbol = order.get('symbol', '')
+            quantity = order.get('quantity', 0)
+            fill_price = order.get('fill_price', 0)
+
+            if symbol not in symbol_totals:
+                symbol_totals[symbol] = {'total_value': 0.0, 'total_qty': 0.0}
+
+            symbol_totals[symbol]['total_value'] += quantity * fill_price
+            symbol_totals[symbol]['total_qty'] += quantity
+
+        # 计算平均价格
+        avg_prices = {}
+        for symbol, totals in symbol_totals.items():
+            if totals['total_qty'] > 0:
+                avg_prices[symbol] = totals['total_value'] / totals['total_qty']
+
+        return avg_prices
 
     def _get_status_name(self, status_code: str) -> str:
         """获取状态名称"""
