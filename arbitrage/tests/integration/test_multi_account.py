@@ -34,7 +34,7 @@ from AlgorithmImports import *
 from testing.testable_algorithm import TestableAlgorithm
 from spread_manager import SpreadManager
 from strategy.base_strategy import BaseStrategy
-from order_tracker import OrderTracker as EnhancedOrderTracker
+from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 
 class SimpleStrategy(BaseStrategy):
@@ -418,7 +418,7 @@ class MultiAccountTest(TestableAlgorithm):
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
             # 生成 HTML 可视化报告
-            from visualization.html_generator import generate_html_report
+            from monitoring.html_generator import generate_html_report
             html_filepath = "order_tracker_report.html"
             generate_html_report(json_filepath, html_filepath)
             self.debug(f"✅ HTML report generated: {html_filepath}")

@@ -150,24 +150,24 @@ class MonitorLauncher:
         if not monitor_dir.exists():
             raise Exception(f"监控目录不存在: {monitor_dir}")
 
-        # 查找可用端口 (从8000开始)
+        # 查找可用端口 (从8001开始)
         print("   检测可用端口...", end='', flush=True)
         try:
             # 导入端口检测工具
             sys.path.insert(0, str(monitor_dir))
             from config_utils import is_port_in_use, find_available_port
 
-            # 先检测8000端口状态
-            if is_port_in_use(8000):
-                print(" 8000被占用", end='', flush=True)
-                self.monitor_port = find_available_port(8000)
-                print(f"✓ 端口 {8000} 被占用，自动切换到端口 {self.monitor_port}")
+            # 先检测8001端口状态
+            if is_port_in_use(8001):
+                print(" 8001被占用", end='', flush=True)
+                self.monitor_port = find_available_port(8001)
+                print(f"✓ 端口 {8001} 被占用，自动切换到端口 {self.monitor_port}")
             else:
-                self.monitor_port = 8000
-                print(" → 使用8000")
+                self.monitor_port = 8001
+                print(" → 使用8001")
         except Exception as e:
             print(f"\n⚠️ 端口检测失败: {e}")
-            self.monitor_port = 8000  # 默认端口
+            self.monitor_port = 8001  # 默认端口
 
         # 设置环境变量（让FastAPI知道实际端口）
         env = os.environ.copy()
@@ -255,7 +255,7 @@ class MonitorLauncher:
         print("\n[3/3] 打开监控界面...")
 
         if not self.monitor_port:
-            self.monitor_port = 8000  # 默认端口
+            self.monitor_port = 8001  # 默认端口
 
         url = f'http://localhost:{self.monitor_port}'
 
@@ -359,7 +359,7 @@ class MonitorLauncher:
             # 4. 保持运行
             print("\n" + "=" * 70)
             print("  监控服务已启动!")
-            print(f"  监控界面: http://localhost:{self.monitor_port or 8000}")
+            print(f"  监控界面: http://localhost:{self.monitor_port or 8001}")
             if enable_reload:
                 print("  开发模式: 修改代码会自动重启服务器")
             print("  按 Ctrl+C 停止服务")

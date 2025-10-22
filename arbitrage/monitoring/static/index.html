@@ -12,33 +12,49 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #0f0f23;
-            color: #e0e0e0;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
             padding: 20px;
+            font-size: 13px;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1800px;
             margin: 0 auto;
+            background: #252526;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
         }
 
         header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px 30px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 15px;
+            margin-bottom: 25px;
         }
 
-        h1 {
-            font-size: 28px;
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 10px;
         }
 
+        h1 {
+            font-family: '微软雅黑', 'Microsoft YaHei', sans-serif;
+            color: #4ec9b0;
+            margin: 0;
+            font-size: 24px;
+        }
+
+        h2 {
+            font-family: '微软雅黑', 'Microsoft YaHei', sans-serif;
+        }
+
         .status {
-            font-size: 14px;
-            opacity: 0.9;
+            font-size: 13px;
+            color: #cccccc;
         }
 
         .status .dot {
@@ -54,6 +70,61 @@
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
+        }
+
+        /* Mode Switcher Styles */
+        .mode-switcher {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .mode-toggle {
+            display: flex;
+            background: #1e1e1e;
+            border-radius: 6px;
+            padding: 4px;
+            gap: 4px;
+        }
+
+        .mode-toggle button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: transparent;
+            color: #888;
+        }
+
+        .mode-toggle button:hover {
+            color: #d4d4d4;
+        }
+
+        .mode-toggle button.active {
+            background: #007acc;
+            color: #ffffff;
+        }
+
+        .mode-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .mode-badge.live {
+            background: #4ade80;
+            color: #1e1e1e;
+        }
+
+        .mode-badge.backtest {
+            background: #569cd6;
+            color: #1e1e1e;
         }
 
         /* 第一行：盈亏统计 + 账户状态，各占50% */
@@ -77,35 +148,36 @@
         }
 
         .card {
-            background: #1a1a2e;
-            border-radius: 10px;
+            background: #2d2d30;
+            border-radius: 6px;
             padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            border: 1px solid #2a2a3e;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+            border-left: 3px solid #007acc;
+            margin-bottom: 20px;
         }
 
         .card h2 {
-            font-size: 18px;
-            margin-bottom: 15px;
-            color: #a0a0ff;
-            border-bottom: 2px solid #667eea;
+            color: #569cd6;
+            margin: 0 0 15px 0;
             padding-bottom: 8px;
+            border-bottom: 1px solid #3e3e42;
+            font-size: 18px;
         }
 
         .stat-row {
             display: flex;
             justify-content: space-between;
             padding: 10px 0;
-            border-bottom: 1px solid #2a2a3e;
+            border-bottom: 1px solid #3e3e42;
         }
 
         .stat-label {
-            color: #b0b0b0;
+            color: #cccccc;
         }
 
         .stat-value {
             font-weight: bold;
-            color: #e0e0e0;
+            color: #d4d4d4;
         }
 
         .positive {
@@ -124,10 +196,10 @@
         }
 
         .spread-item {
-            padding: 16px;
-            background: #16213e;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
+            padding: 15px;
+            background: #1e1e1e;
+            border-radius: 4px;
+            border-left: 3px solid #4ec9b0;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -135,8 +207,8 @@
         }
 
         .spread-item:hover {
-            background: #1a2642;
-            border-left-color: #764ba2;
+            background: #2d2d30;
+            border-left-color: #569cd6;
             transform: translateX(2px);
         }
 
@@ -149,7 +221,7 @@
         .spread-pair-name {
             font-weight: 600;
             font-size: 15px;
-            color: #a0a0ff;
+            color: #4ec9b0;
             margin-bottom: 8px;
             white-space: nowrap;
             overflow: hidden;
@@ -226,9 +298,9 @@
         }
 
         .order-item {
-            padding: 10px;
-            background: #16213e;
-            border-radius: 6px;
+            padding: 12px;
+            background: #1e1e1e;
+            border-radius: 4px;
             margin-bottom: 8px;
             font-size: 13px;
             display: flex;
@@ -237,20 +309,20 @@
         }
 
         .order-buy {
-            border-left: 4px solid #4ade80;
+            border-left: 3px solid #4ec9b0;
         }
 
         .order-sell {
-            border-left: 4px solid #f87171;
+            border-left: 3px solid #ce9178;
         }
 
         .timestamp {
-            color: #888;
+            color: #808080;
             font-size: 11px;
         }
 
         .account-card {
-            background: linear-gradient(135deg, #2e3440 0%, #1a1a2e 100%);
+            background: #2d2d30;
         }
 
         table {
@@ -262,35 +334,185 @@
         th, td {
             padding: 10px;
             text-align: left;
-            border-bottom: 1px solid #2a2a3e;
+            border-bottom: 1px solid #3e3e42;
         }
 
         th {
-            background: #16213e;
-            color: #a0a0ff;
+            background: #2d2d30;
+            color: #569cd6;
             font-weight: 600;
         }
 
         .loader {
             text-align: center;
             padding: 20px;
-            color: #888;
+            color: #808080;
         }
 
         .error {
-            background: #4c1d1d;
-            color: #f87171;
+            background: #3c1f1e;
+            color: #f48771;
             padding: 15px;
-            border-radius: 6px;
+            border-radius: 4px;
             margin-bottom: 15px;
-            border-left: 4px solid #f87171;
+            border-left: 3px solid #f48771;
+        }
+
+        /* Backtest History Styles */
+        .backtest-item {
+            padding: 12px;
+            background: #1e1e1e;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            border-left: 3px solid #569cd6;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-align: left;
+        }
+
+        .backtest-item:hover {
+            background: #2d2d30;
+            border-left-color: #4ec9b0;
+            transform: translateX(2px);
+        }
+
+        .backtest-header {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            margin-bottom: 8px;
+            gap: 4px;
+        }
+
+        .backtest-name {
+            font-weight: 600;
+            font-size: 13px;
+            color: #4ec9b0;
+        }
+
+        .backtest-time {
+            font-size: 11px;
+            color: #888;
+        }
+
+        .backtest-desc {
+            display: none; /* 隐藏描述 */
+        }
+
+        .backtest-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 11px;
+            color: #888;
+        }
+
+        .backtest-meta span {
+            display: block;
+            text-align: left;
+        }
+
+        .backtest-detail-iframe {
+            width: 100%;
+            height: 100%;
+            flex: 1;
+            border: none;
+            background: white;
+            border-radius: 4px;
+        }
+
+        /* 隐藏 iframe 内的滚动条 */
+        .backtest-detail-iframe::-webkit-scrollbar {
+            display: none;
+        }
+
+        /* Backtest Layout - 左右分栏 */
+        .backtest-layout {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 20px;
+            height: calc(100vh - 200px);
+        }
+
+        .backtest-sidebar {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .backtest-sidebar .card {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .backtest-sidebar .card h2 {
+            flex-shrink: 0;
+            margin-bottom: 15px;
+        }
+
+        #backtest-list-container {
+            flex: 1;
+            overflow-y: auto;
+            /* 隐藏滚动条但保持滚动功能 */
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* IE/Edge */
+        }
+
+        #backtest-list-container::-webkit-scrollbar {
+            display: none; /* Chrome/Safari/Opera */
+        }
+
+        .backtest-main {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .backtest-main .card {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        #backtest-detail-container {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 选中状态 */
+        .backtest-item.selected {
+            background: #2d2d30;
+            border-left-color: #4ec9b0;
+        }
+
+        /* 响应式：小屏幕改为上下布局 */
+        @media (max-width: 1200px) {
+            .backtest-layout {
+                grid-template-columns: 1fr;
+                grid-template-rows: 300px 1fr;
+                height: auto;
+            }
+
+            .backtest-sidebar {
+                max-height: 300px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🚀 LEAN交易实时监控</h1>
+            <div class="header-top">
+                <h1>🚀 LEAN交易实时监控</h1>
+                <div class="mode-switcher">
+                    <div class="mode-toggle">
+                        <button id="mode-live" class="active" onclick="monitorInstance.switchMode('live')">Live</button>
+                        <button id="mode-backtest" onclick="monitorInstance.switchMode('backtest')">Backtest</button>
+                    </div>
+                    <span class="mode-badge live" id="mode-badge">Live</span>
+                </div>
+            </div>
             <div class="status">
                 <span class="dot"></span>
                 <span id="connection-status">连接中...</span>
@@ -298,6 +520,8 @@
             </div>
         </header>
 
+        <!-- Live 模式内容 -->
+        <div id="live-content">
         <!-- 第一行：盈亏统计 + 账户状态 -->
         <div class="top-row">
             <!-- PnL卡片 -->
@@ -341,10 +565,34 @@
         </div>
 
         <!-- 订单卡片 -->
-        <div class="card">
+        <div class="card" id="orders-card">
             <h2>📝 最近订单 (最新10条)</h2>
             <div id="orders-container" class="loader">加载中...</div>
         </div>
+        </div> <!-- End of live-content -->
+
+        <!-- Backtest 模式内容 -->
+        <div id="backtest-content" style="display: none;">
+            <div class="backtest-layout">
+                <!-- 左侧：回测列表 -->
+                <div class="backtest-sidebar">
+                    <div class="card" style="height: 100%; margin: 0;">
+                        <h2>📚 回测历史</h2>
+                        <div id="backtest-list-container" class="loader">加载中...</div>
+                    </div>
+                </div>
+
+                <!-- 右侧：回测详情 -->
+                <div class="backtest-main">
+                    <div class="card" style="height: 100%; margin: 0;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h2 id="backtest-detail-title" style="margin: 0;">📊 回测详情</h2>
+                        </div>
+                        <div id="backtest-detail-container" class="loader">请从左侧选择一个回测查看详情</div>
+                    </div>
+                </div>
+            </div>
+        </div> <!-- End of backtest-content -->
     </div>
 
     <script src="/static/app.js"></script>

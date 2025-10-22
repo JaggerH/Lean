@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
-from order_tracker import OrderTracker as EnhancedOrderTracker
+from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 class LongCryptoGridTest(QCAlgorithm):
     """Long Crypto Grid Strategy 集成测试"""
@@ -97,9 +97,12 @@ class LongCryptoGridTest(QCAlgorithm):
         self.debug("🔧 Initializing grid levels for trading pair...")
         self.strategy.initialize_pair((crypto_symbol, stock_symbol))
 
-        # === 5. 初始化独立的订单追踪器 (Enhanced Version) ===
-        self.debug("📊 Initializing EnhancedOrderTracker for independent order verification...")
-        self.order_tracker = EnhancedOrderTracker(self, self.strategy)
+        # === 5. 初始化独立的订单追踪器 (Grid Version) ===
+        self.debug("📊 Initializing GridOrderTracker for tracking ExecutionTargets and Round Trips...")
+        self.order_tracker = EnhancedOrderTracker(self, self.strategy, debug=True)
+
+        # 注入到 Strategy 中（让 Strategy 能够调用 tracker）
+        self.strategy.order_tracker = self.order_tracker
 
         # 追踪 spread 更新
         self.spread_count = 0
@@ -170,5 +173,71 @@ class LongCryptoGridTest(QCAlgorithm):
         pair_symbol = (self.aapl_crypto.symbol, self.aapl_stock.symbol)
         grid_summary = self.strategy.get_grid_summary(pair_symbol)
         self.debug("\n" + grid_summary)
+
+        # === 导出 GridOrderTracker 数据并自动保存到 backtest_history ===
+        self.debug("=" * 60)
+        self.debug("📊 Exporting GridOrderTracker Data")
+        self.debug("=" * 60)
+
+        try:
+            # 导出 JSON 数据到临时位置
+            json_filepath = "LongCryptoGridTest.json"
+            self.order_tracker.export_json(json_filepath)
+            self.debug(f"✅ JSON data exported to: {json_filepath}")
+
+            # 显示 GridOrderTracker 统计
+            tracker_stats = self.order_tracker.get_statistics()
+            self.debug("")
+            self.debug("📈 GridOrderTracker Summary:")
+            self.debug(f"  Total Round Trips: {tracker_stats['total_round_trips']}")
+            self.debug(f"  Open Positions: {tracker_stats['open_positions']}")
+            self.debug(f"  Total PnL: ${tracker_stats['total_pnl']:.2f}")
+            self.debug(f"  Total ExecutionTargets: {tracker_stats['total_execution_targets']}")
+            self.debug(f"  Total Portfolio Snapshots: {tracker_stats['total_snapshots']}")
+            self.debug("")
+
+            # === 自动保存到 backtest_history ===
+            self.debug("=" * 60)
+            self.debug("💾 Saving to Backtest History")
+            self.debug("=" * 60)
+
+            try:
+                # 导入 BacktestManager
+                monitoring_path = str(Path(arbitrage_path) / 'monitoring')
+                if monitoring_path not in sys.path:
+                    sys.path.insert(0, monitoring_path)
+
+                from backtest_manager import BacktestManager
+
+                # 初始化 BacktestManager (指向 arbitrage/monitoring/backtest_history)
+                backtest_history_dir = Path(arbitrage_path) / 'monitoring' / 'backtest_history'
+                manager = BacktestManager(history_dir=str(backtest_history_dir))
+
+                # HTML 文件路径
+                html_filepath = json_filepath.replace('.json', '_grid.html')
+
+                # 添加到回测历史
+                backtest_id = manager.add_backtest(
+                    json_file=json_filepath,
+                    html_file=html_filepath if Path(html_filepath).exists() else None,
+                    name=f"Long Crypto Grid Test - {self.time.strftime('%Y-%m-%d')}",
+                    description=f"AAPL/AAPLxUSD grid trading from {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}",
+                    algorithm="LongCryptoGridTest"
+                )
+
+                self.debug(f"✅ Backtest saved to history: {backtest_id}")
+                self.debug(f"   Location: {backtest_history_dir / backtest_id}")
+                self.debug(f"   View in monitor: http://localhost:8001")
+
+            except Exception as e:
+                self.debug(f"⚠️ Warning: Failed to save to backtest history: {e}")
+                import traceback
+                self.debug(traceback.format_exc())
+                self.debug("   Note: Files are still available locally")
+
+        except Exception as e:
+            self.debug(f"❌ Error exporting GridOrderTracker data: {e}")
+            import traceback
+            self.debug(traceback.format_exc())
 
         self.debug("=" * 60)

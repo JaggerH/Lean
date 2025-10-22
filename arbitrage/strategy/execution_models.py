@@ -326,6 +326,9 @@ class ExecutionTarget:
     anchor_time: Optional[datetime] = field(default=None)  # 首次提交时间
     timeout_minutes: int = 5  # 超时时间（默认5分钟）
 
+    # 手续费累计
+    total_fee_in_account_currency: float = field(default=0.0)  # 累计手续费（已转换为账户货币）
+
     @property
     def quantity_filled(self) -> Tuple[float, float]:
         """
@@ -375,14 +378,11 @@ class ExecutionTarget:
         """是否为终止状态（Filled/Canceled/Invalid/Failed）"""
         return self.status in [ExecutionStatus.Filled, ExecutionStatus.Canceled, ExecutionStatus.Invalid, ExecutionStatus.Failed]
 
-    def is_expired(self, current_time: datetime) -> bool:
+    def is_expired(self) -> bool:
         """
         检查 ExecutionTarget 是否超时
 
         超时策略：从首次提交时间（anchor_time）开始计时，超过 timeout_minutes 视为超时
-
-        Args:
-            current_time: 当前时间
 
         Returns:
             True if expired, False otherwise
@@ -390,6 +390,7 @@ class ExecutionTarget:
         if not self.anchor_time:
             return False
 
+        current_time = self.algorithm.UtcTime
         elapsed_minutes = (current_time - self.anchor_time).total_seconds() / 60
         return elapsed_minutes > self.timeout_minutes
 
@@ -535,15 +536,21 @@ class ExecutionTarget:
             
     def is_quantity_filled(self) -> bool:
         """
-        检查是否完全填充（严格判定）
+        检查是否完全填充（基于 lot size 容忍）
 
-        直接检查 quantity_remaining 元组的两个值是否都为 0
+        如果剩余数量小于最小交易单位（lot size），视为已填充
+        这样可以容忍因浮点精度或最小交易单位限制导致的微小剩余
 
         Returns:
-            True if both crypto_remaining and stock_remaining are exactly 0
+            True if both legs' remaining quantity < lot size
         """
+        crypto_symbol, stock_symbol = self.pair_symbol
         crypto_remaining, stock_remaining = self.quantity_remaining
-        return crypto_remaining == 0.0 and stock_remaining == 0.0
+
+        crypto_lot = self.algorithm.securities[crypto_symbol].symbol_properties.lot_size
+        stock_lot = self.algorithm.securities[stock_symbol].symbol_properties.lot_size
+
+        return abs(crypto_remaining) < crypto_lot and abs(stock_remaining) < stock_lot
 
     def calculate_executable_quantity(
         self,
@@ -652,3 +659,38 @@ class ExecutionTarget:
             return True
 
         return all(order_group.is_failed() for order_group in self.order_groups)
+
+    def update_fee(self, order_event: OrderEvent):
+        """
+        累加订单成交手续费（转换为账户货币）
+
+        在每次订单成交事件时调用，实时累加手续费
+        自动处理币种转换，统一为账户货币
+
+        Args:
+            order_event: OrderEvent 对象
+        """
+        if not order_event.order_fee:
+            return
+
+        fee_amount = order_event.order_fee.value.amount
+        fee_currency = order_event.order_fee.value.currency
+
+        # 跳过零手续费或 NullCurrency
+        if fee_amount == 0 or fee_currency == "NullCurrency":
+            return
+
+        # 转换为账户货币
+        account_currency = self.algorithm.account_currency
+        if fee_currency == account_currency:
+            self.total_fee_in_account_currency += fee_amount
+        else:
+            # 检查 cash_book 中是否有该货币
+            if fee_currency not in self.algorithm.portfolio.cash_book:
+                # 如果没有该货币，跳过（可能是 NullCurrency 或其他特殊情况）
+                return
+
+            # 获取汇率并转换
+            conversion_rate = self.algorithm.portfolio.cash_book[fee_currency].conversion_rate
+            fee_in_account_currency = fee_amount * conversion_rate
+            self.total_fee_in_account_currency += fee_in_account_currency

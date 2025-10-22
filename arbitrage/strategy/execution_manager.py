@@ -30,16 +30,18 @@ class ExecutionManager:
     - 下一个tick会用更新的orderbook重新计算
     """
 
-    def __init__(self, algorithm: QCAlgorithm, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, order_tracker=None, debug: bool = False):
         """
         初始化ExecutionManager
 
         Args:
             algorithm: QCAlgorithm实例
             debug: 是否启用调试日志
+            order_tracker: GridOrderTracker实例（可选）
         """
         self.algorithm = algorithm
         self.debug_enabled = debug
+        self.order_tracker = order_tracker
         # Track active ExecutionTargets: key = hash(GridLevel)
         self.active_targets: Dict[int, ExecutionTarget] = {}
         
@@ -139,14 +141,22 @@ class ExecutionManager:
             target.fill_remaining_orders()
             return
 
-        # === 步骤 3: 双腿市值误差检测 ===
+        # === 步骤 3: 双腿市值误差检测（优先于超时检查）===
         if target.is_quantity_filled():
             # self._debug(f"✅ Level {level_id} reached target with acceptable error, marking as completed")
             target.status = ExecutionStatus.Filled
+            self.on_execution_event(target)
             del self.active_targets[hash_key]
             return
 
-        # === 步骤 4: 计算可执行数量（委托给 ExecutionTarget）===
+        # === 步骤 4: 超时检查（只对未完成的 target）===
+        if target.is_expired():
+            target.status = ExecutionStatus.Canceled
+            self.on_execution_event(target)
+            del self.active_targets[hash_key]
+            return
+        
+        # === 步骤 5: 计算可执行数量（委托给 ExecutionTarget）===
         result = target.calculate_executable_quantity(self.debug_enabled)
 
         if not result:
@@ -156,7 +166,7 @@ class ExecutionManager:
 
         leg1, leg2 = result
 
-        # === 步骤 5: 预先创建 OrderGroup（占位，解决异步竞态条件）===
+        # === 步骤 6: 预先创建 OrderGroup（占位，解决异步竞态条件）===
         order_group = OrderGroup(
             grid_id=level_id,
             pair_symbol=pair_symbol,
@@ -168,15 +178,12 @@ class ExecutionManager:
         )
         target.order_groups.append(order_group)  # 立即添加
 
-        # === 步骤 6: 提交订单（不保存 tickets 返回值）===
+        # === 步骤 7: 提交订单（不保存 tickets 返回值）===
         self._place_order(leg1, leg2, target.level)
 
-        # === 步骤 7: 更新ExecutionTarget状态 ===
-        target.status = ExecutionStatus.Submitted
-
-        # self.algorithm.debug( f"📤 Submitted orders for level {level_id}")
-        # self.algorithm.debug( f"Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}")
-        # self.algorithm.debug( f"PlaceOrder: {leg1[0].value}: {leg1[1]:.4f}, {leg2[0].value}: {leg2[1]:.4f}" )
+        # === 步骤 8: 更新ExecutionTarget状态（仅首次提交）===
+        if target.status == ExecutionStatus.New:
+            target.status = ExecutionStatus.Submitted
 
     def _validate_preconditions(self, pair_symbol: Tuple[Symbol, Symbol]) -> bool:
         """
@@ -272,6 +279,19 @@ class ExecutionManager:
         hash_key = hash(level)
         return hash_key in self.active_targets
 
+    def on_execution_event(self, target: ExecutionTarget):
+        """
+        统一处理 ExecutionTarget 状态变化事件
+
+        通知 order_tracker 记录状态变化
+        order_tracker 会根据 target.status 自行判断事件类型
+
+        Args:
+            target: ExecutionTarget 对象
+        """
+        if self.order_tracker:
+            self.order_tracker.on_execution_target_update(target)
+
     def on_order_event(self, order_event: OrderEvent):
         """
         处理订单事件，更新ExecutionTarget状态
@@ -290,6 +310,9 @@ class ExecutionManager:
 
         hash_key = hash(target.level)
 
+        # === 步骤 1.5: 更新手续费 ===
+        target.update_fee(order_event)
+
         # === 步骤 2: 添加 ticket 到 OrderGroup（解决异步竞态条件）===
         target.add_ticket(order_event)
 
@@ -298,14 +321,14 @@ class ExecutionManager:
             # 委托给 ExecutionTarget 检查状态
             if target.is_completely_filled():
                 target.status = ExecutionStatus.Filled
+                self.on_execution_event(target)
                 del self.active_targets[hash_key]
                 self._debug(f"✅ ExecutionTarget for level {target.grid_id} completed (Filled)")
             else:
                 # 至少有一个 OrderGroup 部分成交
                 target.status = ExecutionStatus.PartiallyFilled
+                # self.on_execution_event(target)
                 # self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
-                
-            
 
         elif order_event.status in [OrderStatus.Canceled, OrderStatus.Invalid]:
             # 订单失败 - 检查对冲敞口

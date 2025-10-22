@@ -2,15 +2,16 @@
 FastAPI监控服务器
 提供REST API和WebSocket实时推送
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import redis
 import json
 import asyncio
-from typing import List
+from typing import List, Optional
 from config_utils import get_redis_port_from_compose
+from backtest_manager import BacktestManager
 
 app = FastAPI(
     title="Trading Monitor API",
@@ -38,13 +39,26 @@ redis_client = redis.Redis(
 # WebSocket连接管理
 active_connections: List[WebSocket] = []
 
+# BacktestManager - 管理回测历史（使用绝对路径）
+import os
+from pathlib import Path
+
+# 获取 monitoring 目录的父目录（arbitrage 目录）
+ARBITRAGE_DIR = Path(__file__).parent.parent
+# backtest_history 在 monitoring 目录下
+BACKTEST_HISTORY_DIR = Path(__file__).parent / "backtest_history"
+
+backtest_manager = BacktestManager(history_dir=str(BACKTEST_HISTORY_DIR))
+
 
 # === REST API端点 ===
 
 @app.get("/")
 async def root():
     """根路径 - 返回监控页面"""
-    return FileResponse("static/index.html")
+    # 使用绝对路径
+    static_dir = Path(__file__).parent / "static"
+    return FileResponse(static_dir / "index.html")
 
 
 @app.get("/api/health")
@@ -257,6 +271,133 @@ async def get_positions():
         return {"error": str(e)}
 
 
+# === Backtest History API ===
+
+@app.get("/api/backtests")
+async def list_backtests(limit: Optional[int] = None, sort_by: str = "created_at"):
+    """
+    获取回测历史列表
+
+    Args:
+        limit: 最大返回数量
+        sort_by: 排序字段 (created_at, total_pnl, total_round_trips)
+
+    Returns:
+        回测列表
+    """
+    try:
+        backtests = backtest_manager.list_backtests(limit=limit, sort_by=sort_by)
+        return {
+            "backtests": backtests,
+            "total": len(backtests)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtests/{backtest_id}")
+async def get_backtest(backtest_id: str):
+    """
+    获取指定回测的元数据
+
+    Args:
+        backtest_id: 回测唯一标识符
+
+    Returns:
+        回测元数据
+    """
+    try:
+        backtest = backtest_manager.get_backtest(backtest_id)
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Backtest not found")
+        return backtest
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtests/{backtest_id}/data")
+async def get_backtest_data(backtest_id: str):
+    """
+    获取指定回测的完整 JSON 数据
+
+    Args:
+        backtest_id: 回测唯一标识符
+
+    Returns:
+        GridOrderTracker JSON 数据
+    """
+    try:
+        data = backtest_manager.get_backtest_data(backtest_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Backtest data not found")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtests/{backtest_id}/report")
+async def get_backtest_report(backtest_id: str):
+    """
+    获取指定回测的 HTML 报告
+
+    Args:
+        backtest_id: 回测唯一标识符
+
+    Returns:
+        HTML 报告文件
+    """
+    try:
+        html_path = backtest_manager.get_backtest_html_path(backtest_id)
+        if not html_path:
+            raise HTTPException(status_code=404, detail="HTML report not found")
+        return FileResponse(html_path, media_type="text/html")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/backtests/{backtest_id}")
+async def delete_backtest(backtest_id: str):
+    """
+    删除指定回测
+
+    Args:
+        backtest_id: 回测唯一标识符
+
+    Returns:
+        删除结果
+    """
+    try:
+        success = backtest_manager.delete_backtest(backtest_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Backtest not found")
+        return {"success": True, "message": f"Backtest {backtest_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtests/stats/summary")
+async def get_backtest_stats():
+    """
+    获取回测历史统计信息
+
+    Returns:
+        统计数据
+    """
+    try:
+        stats = backtest_manager.get_statistics()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # === WebSocket实时推送 ===
 
 @app.websocket("/ws")
@@ -320,7 +461,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # === 静态文件服务 ===
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# 使用绝对路径挂载静态文件目录
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # === 启动事件 ===
@@ -341,6 +484,15 @@ async def startup_event():
     print(f"  监控页面: http://localhost:{port}")
     print(f"  API文档: http://localhost:{port}/docs")
     print(f"  日志级别: {log_level}")
+
+    # 显示路径信息（调试用）
+    if log_level == 'DEBUG':
+        print(f"\n[DEBUG] 路径配置:")
+        print(f"  - 当前工作目录: {os.getcwd()}")
+        print(f"  - api_server.py: {Path(__file__).absolute()}")
+        print(f"  - static 目录: {STATIC_DIR.absolute()}")
+        print(f"  - backtest_history: {BACKTEST_HISTORY_DIR.absolute()}")
+
     print("=" * 60 + "\n")
 
     # 测试Redis连接

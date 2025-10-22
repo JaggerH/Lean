@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
 from strategy.long_crypto_strategy import LongCryptoStrategy
-from order_tracker import OrderTracker as EnhancedOrderTracker
+from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 class OrderBookTest(QCAlgorithm):
     """多账户Margin模式集成测试"""

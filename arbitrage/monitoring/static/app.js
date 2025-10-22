@@ -19,6 +19,12 @@ class TradingMonitor {
         // 缓存价差数据，用于在持仓中显示
         this.spreadsCache = {};
 
+        // 当前模式: 'live' 或 'backtest'
+        this.currentMode = 'live';
+
+        // 当前选中的回测ID
+        this.selectedBacktestId = null;
+
         this.init();
     }
 
@@ -621,6 +627,138 @@ class TradingMonitor {
             this.reconnectTimer = null;
         }
     }
+
+    // === 模式切换 ===
+
+    switchMode(mode) {
+        if (this.currentMode === mode) return;
+
+        console.log(`[INFO] 切换模式: ${this.currentMode} -> ${mode}`);
+        this.currentMode = mode;
+
+        // 更新按钮状态
+        document.getElementById('mode-live').classList.toggle('active', mode === 'live');
+        document.getElementById('mode-backtest').classList.toggle('active', mode === 'backtest');
+
+        // 更新徽章
+        const badge = document.getElementById('mode-badge');
+        badge.textContent = mode === 'live' ? 'Live' : 'Backtest';
+        badge.className = `mode-badge ${mode}`;
+
+        if (mode === 'live') {
+            // 显示 Live 内容，隐藏 Backtest 内容
+            document.getElementById('live-content').style.display = 'block';
+            document.getElementById('backtest-content').style.display = 'none';
+
+            // 重新连接 WebSocket 和加载实时数据
+            if (!this.wsConnected) {
+                this.connectWebSocket();
+            }
+            this.initialLoad();
+        } else {
+            // 显示 Backtest 内容，隐藏 Live 内容
+            document.getElementById('live-content').style.display = 'none';
+            document.getElementById('backtest-content').style.display = 'block';
+
+            // 加载回测历史并自动选择第一个
+            this.loadBacktestHistory();
+        }
+    }
+
+    // === 回测历史管理 ===
+
+    async loadBacktestHistory() {
+        console.log('[INFO] 加载回测历史...');
+        const data = await this.fetchAPI('backtests?sort_by=created_at&limit=20');
+        console.log('[DEBUG] 回测数据:', data);
+        if (data && !data.error) {
+            console.log(`[INFO] 找到 ${data.backtests.length} 个回测`);
+            this.renderBacktestList(data.backtests);
+
+            // 自动选择第一个回测
+            if (data.backtests && data.backtests.length > 0) {
+                console.log('[INFO] 自动选择第一个回测');
+                this.viewBacktestDetail(data.backtests[0].backtest_id);
+            }
+        } else {
+            console.error('[ERROR] 加载回测历史失败:', data);
+        }
+    }
+
+    renderBacktestList(backtests) {
+        console.log('[INFO] 渲染回测列表, 数量:', backtests ? backtests.length : 0);
+        const container = document.getElementById('backtest-list-container');
+
+        if (!container) {
+            console.error('[ERROR] 找不到 backtest-list-container 元素');
+            return;
+        }
+
+        if (!backtests || backtests.length === 0) {
+            console.log('[INFO] 没有回测数据，显示空状态');
+            container.innerHTML = '<div class="loader">暂无回测历史</div>';
+            return;
+        }
+
+        let html = '';
+        for (const bt of backtests) {
+            const createdTime = new Date(bt.created_at).toLocaleString('zh-CN');
+            const startDate = bt.start_date !== 'N/A' ? new Date(bt.start_date).toLocaleDateString('zh-CN') : 'N/A';
+            const endDate = bt.end_date !== 'N/A' ? new Date(bt.end_date).toLocaleDateString('zh-CN') : 'N/A';
+            const pnlClass = bt.total_pnl >= 0 ? 'positive' : 'negative';
+            const hasReport = bt.has_html_report ? '📊' : '📄';
+
+            html += `
+                <div class="backtest-item" data-backtest-id="${bt.backtest_id}" onclick="monitorInstance.viewBacktestDetail('${bt.backtest_id}')">
+                    <div class="backtest-header">
+                        <div class="backtest-name">${hasReport} ${bt.name || 'Unnamed Backtest'}</div>
+                        <div class="backtest-time">${createdTime}</div>
+                    </div>
+                    ${bt.description ? `<div class="backtest-desc">${bt.description}</div>` : ''}
+                    <div class="backtest-meta">
+                        <span>🤖 ${bt.algorithm || 'N/A'}</span>
+                        <span>📅 ${startDate} ~ ${endDate}</span>
+                        <span>🎯 RT: ${bt.total_round_trips}</span>
+                        <span>📈 ET: ${bt.total_execution_targets}</span>
+                        <span class="${pnlClass}">💰 $${bt.total_pnl.toFixed(2)}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+    }
+
+    async viewBacktestDetail(backtestId) {
+        console.log(`[INFO] 查看回测详情: ${backtestId}`);
+        this.selectedBacktestId = backtestId;
+
+        // 更新列表选中状态
+        document.querySelectorAll('.backtest-item').forEach(item => {
+            if (item.dataset.backtestId === backtestId) {
+                item.classList.add('selected');
+            } else {
+                item.classList.remove('selected');
+            }
+        });
+
+        // 加载回测数据
+        const data = await this.fetchAPI(`backtests/${backtestId}`);
+        if (data && !data.error) {
+            // 更新标题
+            document.getElementById('backtest-detail-title').textContent =
+                `📊 ${data.name || 'Backtest'}`;
+
+            // 显示 HTML 报告
+            const container = document.getElementById('backtest-detail-container');
+            const reportUrl = `/api/backtests/${backtestId}/report`;
+
+            container.innerHTML = `
+                <iframe class="backtest-detail-iframe" src="${reportUrl}"></iframe>
+            `;
+        }
+    }
+
 }
 
 // 启动监控

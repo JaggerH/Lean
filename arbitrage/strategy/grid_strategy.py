@@ -64,6 +64,9 @@ class GridStrategy(BaseStrategy):
         # self.execution_manager = ExecutionManager(algorithm, debug=debug)
         self.execution_manager = ExecutionManager(algorithm, debug=True)
 
+        # order_tracker 初始化为 None，稍后通过 setter 设置
+        self._order_tracker = None
+
         self.algorithm.debug("📊 GridStrategy initialized")
 
     def _setup_grid_levels(self, pair_symbol: Tuple[Symbol, Symbol], levels: List[GridLevel]):
@@ -304,46 +307,16 @@ class GridStrategy(BaseStrategy):
                 
     def on_data(self, data):
         """
-        处理数据更新 - 重新触发 active ExecutionTargets + 超时检查
+        处理数据更新 - 重新触发 active ExecutionTargets
 
         每个 tick 执行：
-        1. 超时检查：检查 ExecutionTarget 是否超时
-        2. 重新触发：重新检查 orderbook 深度并尝试提交订单
+        重新触发：重新检查 orderbook 深度并尝试提交订单
 
         Args:
             data: Slice 数据
         """
-        current_time = self.algorithm.UtcTime
-
-        # 遍历所有 active targets
-        for execution_key, target in list(self.execution_manager.active_targets.items()):
-
-            # === 步骤 1: 超时检查 ===
-            if target.is_expired(current_time):
-                if target.is_quantity_filled():
-                    # 超时但已经足够接近目标，标记完成
-                    target.status = ExecutionStatus.Filled
-                    crypto_symbol, stock_symbol = target.pair_symbol
-                    crypto_remaining, stock_remaining = target.quantity_remaining
-                    self.algorithm.debug(
-                        f"⏰ ExecutionTarget {target.grid_id} expired but close enough to target, marked as Filled | "
-                        f"Remaining: {crypto_symbol.value}={crypto_remaining:.4f}, {stock_symbol.value}={stock_remaining:.4f}"
-                    )
-                else:
-                    # 超时且未完成，取消并等待下次触发
-                    target.status = ExecutionStatus.Canceled
-                    crypto_symbol, stock_symbol = target.pair_symbol
-                    crypto_remaining, stock_remaining = target.quantity_remaining
-                    self.algorithm.debug(
-                        f"⏰ ExecutionTarget {target.grid_id} expired and canceled | "
-                        f"Remaining: {crypto_symbol.value}={crypto_remaining:.4f}, {stock_symbol.value}={stock_remaining:.4f}"
-                    )
-
-                # 从 active_targets 移除
-                del self.execution_manager.active_targets[execution_key]
-                continue
-
-            # === 步骤 2: 重新触发活跃的 ExecutionTarget ===
+        # 遍历所有 active targets，重新触发执行
+        for target in list(self.execution_manager.active_targets.values()):
             if target.is_active():
                 self.execution_manager.execute(target)
                 
@@ -373,6 +346,18 @@ class GridStrategy(BaseStrategy):
     # ============================================================================
     #                      统计和报告
     # ============================================================================
+    
+    @property
+    def order_tracker(self):
+        """获取 order_tracker"""
+        return self._order_tracker
+
+    @order_tracker.setter
+    def order_tracker(self, value):
+        """设置 order_tracker 并同步到 ExecutionManager"""
+        self._order_tracker = value
+        self.execution_manager.order_tracker = value
+
 
     def get_grid_summary(self, pair_symbol: Tuple[Symbol, Symbol]) -> str:
         """

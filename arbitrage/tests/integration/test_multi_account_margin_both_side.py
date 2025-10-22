@@ -1,27 +1,31 @@
 """
-多账户Margin模式集成测试 - Multi-Account Portfolio Manager with Margin
+多账户Margin模式双边策略集成测试 - Multi-Account Portfolio Manager with Both-Side Strategy
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
 - 交易对: TSLA/TSLAUSD, AAPL/AAPLUSD
-- 日期范围: 2025-09-02 至 2025-09-05
+- 日期范围: 2025-09-02 至 2025-09-27
 - 账户配置:
   * IBKR账户: $50,000 - 交易股票 (USA market) - Margin模式 2x杠杆
   * Kraken账户: $50,000 - 交易加密货币 (Kraken market) - Margin模式 5x杠杆
 - 路由策略: Market-based routing (基于Symbol.ID.Market)
-- 策略: 简化版市价单套利
-  - 开仓: spread <= -1% 时双市价单开仓 (long crypto + short stock)
-  - 平仓: spread >= 2% 时双市价单平仓
-  - 限制: 仅支持 long crypto + short stock (符合Kraken限制)
+- 策略: 双边套利策略 (BothSideStrategy)
+  - Long Crypto + Short Stock:
+    * 开仓: spread <= -1%
+    * 平仓: spread >= 2%
+  - Short Crypto + Long Stock:
+    * 开仓: spread >= 3%
+    * 平仓: spread <= -0.9%
 
 测试目标:
 1. 验证多账户Margin模式配置正确初始化
 2. 验证每个Security使用Margin BuyingPowerModel
 3. 验证杠杆倍数设置正确 (股票2x, 加密货币5x)
 4. 验证订单自动路由到正确账户 (crypto->Kraken, stock->IBKR)
-5. 验证Margin模式下的买入力计算
-6. 验证Fill更新正确的子账户
-7. 验证账户间现金和持仓隔离
+5. 验证双边策略能同时捕捉正负价差机会
+6. 验证Margin模式下的买入力计算
+7. 验证Fill更新正确的子账户
+8. 验证账户间现金和持仓隔离
 """
 
 import sys
@@ -35,12 +39,12 @@ from AlgorithmImports import *
 from testing.testable_algorithm import TestableAlgorithm
 from spread_manager import SpreadManager
 from strategy.base_strategy import BaseStrategy
-from strategy.long_crypto_strategy import LongCryptoStrategy
+from strategy.both_side_strategy import BothSideStrategy
 from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 
-class MultiAccountMarginTest(TestableAlgorithm):
-    """多账户Margin模式集成测试"""
+class MultiAccountMarginBothSideTest(TestableAlgorithm):
+    """多账户Margin模式双边策略集成测试"""
 
     def initialize(self):
         """初始化算法"""
@@ -48,7 +52,7 @@ class MultiAccountMarginTest(TestableAlgorithm):
 
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 5)
+        self.set_end_date(2025, 9, 27)
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
@@ -144,14 +148,16 @@ class MultiAccountMarginTest(TestableAlgorithm):
             strategy=None  # Will set later
         )
 
-        # === 8. 初始化做多加密货币策略 ===
-        self.debug("📋 Initializing LongCryptoStrategy...")
-        self.strategy = LongCryptoStrategy(
+        # === 8. 初始化双边策略 ===
+        self.debug("📋 Initializing BothSideStrategy...")
+        self.strategy = BothSideStrategy(
             algorithm=self,
             spread_manager=self.spread_manager,
-            entry_threshold=-0.01,  # -1%
-            exit_threshold=0.02,    # 2%
-            position_size_pct=0.80  # 50% (考虑杠杆和费用)
+            long_crypto_entry=-0.01,   # -1%
+            long_crypto_exit=0.02,     # 2%
+            short_crypto_entry=0.03,   # 3%
+            short_crypto_exit=-0.009,  # -0.9%
+            position_size_pct=0.8     # 25%
         )
 
         # 链接策略到 SpreadManager
@@ -195,7 +201,7 @@ class MultiAccountMarginTest(TestableAlgorithm):
                        aapl_crypto=str(self.aapl_crypto.symbol))
 
         self.debug("✅ Initialization complete!")
-        self.debug("🎯 Multi-Account Margin Mode Test Ready!")
+        self.debug("🎯 Multi-Account Margin Mode Both-Side Strategy Test Ready!")
         self.debug("="*60)
         self.end_test_phase()
 
@@ -302,13 +308,13 @@ class MultiAccountMarginTest(TestableAlgorithm):
 
         try:
             # 导出 JSON 数据
-            json_filepath = "order_tracker_data.json"
+            json_filepath = "order_tracker_data_both_side.json"
             self.order_tracker.export_json(json_filepath)
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
             # 生成 HTML 可视化报告
             from monitoring.html_generator import generate_html_report
-            html_filepath = "order_tracker_report.html"
+            html_filepath = "order_tracker_report_both_side.html"
             generate_html_report(json_filepath, html_filepath)
             self.debug(f"✅ HTML report generated: {html_filepath}")
 
@@ -330,7 +336,7 @@ class MultiAccountMarginTest(TestableAlgorithm):
 
         # === 输出交易统计 ===
         self.debug("" + "="*60)
-        self.debug("📊 交易统计 (Margin Mode)")
+        self.debug("📊 交易统计 (Margin Mode - Both-Side Strategy)")
         self.debug("="*60)
         self.debug(f"总Tick数: {self.tick_count:,}")
         self.debug(f"订单事件数: {len(self.order_events)}")
@@ -347,7 +353,7 @@ class MultiAccountMarginTest(TestableAlgorithm):
         # === 输出最终多账户状态 ===
         if hasattr(self.portfolio, 'GetAccount'):
             self.debug("" + "="*60)
-            self.debug("💰 最终多账户状态 (Margin Mode)")
+            self.debug("💰 最终多账户状态 (Margin Mode - Both-Side)")
             self.debug("="*60)
 
             try:
@@ -379,7 +385,7 @@ class MultiAccountMarginTest(TestableAlgorithm):
         })
 
         self.debug("" + "="*60)
-        self.debug("✅ 多账户Margin模式集成测试完成")
+        self.debug("✅ 多账户Margin模式双边策略集成测试完成")
         self.debug("="*60)
 
         self.end_test_phase()

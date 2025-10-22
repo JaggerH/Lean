@@ -57,6 +57,9 @@ class LongCryptoGridStrategy(GridStrategy):
         self.open_times = {}  # {pair_symbol: open_time}
         self.holding_times = []  # 每次回转交易的持仓时间 (timedelta)
 
+        # GridOrderTracker (可选，从外部注入)
+        self.order_tracker = None
+
         self.algorithm.debug(
             f"LongCryptoGridStrategy initialized | "
             f"Entry: spread <= {self.entry_threshold*100:.2f}% | "
