@@ -66,14 +66,16 @@ class BothSideStrategy(BaseStrategy):
             f"Position: {self.position_size_pct*100:.1f}%"
         )
 
-    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
+    def on_spread_update(self, signal):
         """
         处理spread更新 - 使用 BaseStrategy 的方法判断开/平仓
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 交易对
-            spread_pct: Spread百分比
+            signal: SpreadSignal 对象（包含 pair_symbol, theoretical_spread 等所有价差信息）
         """
+        # 提取价差信息
+        pair_symbol = signal.pair_symbol
+        spread_pct = signal.theoretical_spread
         crypto_symbol, stock_symbol = pair_symbol
 
         # 使用 BaseStrategy 的方法检查是否应该开/平仓

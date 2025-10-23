@@ -275,7 +275,7 @@ class GridStrategy(BaseStrategy):
         # ✅ 委托给执行层
         self.execution_manager.execute(execution_target)
 
-    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
+    def on_spread_update(self, signal):
         """
         处理价差更新 - 网格交易逻辑（简化版）
 
@@ -285,9 +285,12 @@ class GridStrategy(BaseStrategy):
         3. 如果是 EXIT，检查是否应该平仓
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            spread_pct: Spread 百分比
+            signal: SpreadSignal 对象（包含 pair_symbol, theoretical_spread 等所有价差信息）
         """
+        # 提取价差信息
+        pair_symbol = signal.pair_symbol
+        spread_pct = signal.theoretical_spread
+
         # 获取当前活跃的网格线（唯一）
         level = self.grid_level_manager.get_active_level(pair_symbol, spread_pct)
 

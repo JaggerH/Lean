@@ -5,7 +5,11 @@ Spread Monitor - 价差监控适配器
 从核心业务逻辑 (SpreadManager) 中解耦监控实现细节。
 """
 from AlgorithmImports import *
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+# 避免循环导入，仅用于类型检查
+if TYPE_CHECKING:
+    from spread_manager import SpreadSignal
 
 
 class RedisSpreadMonitor:
@@ -19,7 +23,11 @@ class RedisSpreadMonitor:
     使用方式:
         monitor = RedisSpreadMonitor(algorithm, redis_client)
         monitor.write_pair_mapping(crypto, stock)
-        monitor.write_spread(crypto_symbol, stock_symbol, spread_pct, ...)
+        monitor.write_spread(signal)  # signal: SpreadSignal 对象
+
+    重构历史 (2025-10-23):
+    - write_spread() 参数从 (pair_symbol, spread_pct) 改为 SpreadSignal 对象
+    - 新增字段: market_state, executable_spread, direction
     """
 
     def __init__(self, algorithm: QCAlgorithm, redis_client):
@@ -105,16 +113,26 @@ class RedisSpreadMonitor:
                 import traceback
                 self.algorithm.Debug(f"   详细错误:\n{traceback.format_exc()}")
 
-    def write_spread(self, pair_symbol: tuple, spread_pct: float):
+    def write_spread(self, signal: 'SpreadSignal'):
         """
-        将价差数据写入 Redis
+        将价差数据写入 Redis（重构版 - 使用 SpreadSignal）
+
+        重构变更 (2025-10-23):
+        - 参数改为 SpreadSignal 对象，包含完整的价差信息
+        - 添加市场状态、可执行价差、交易方向字段
+        - 保持向后兼容：spread_pct → signal.theoretical_spread
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 交易对
-            spread_pct: 价差百分比
+            signal: SpreadSignal 对象，包含：
+                - pair_symbol: (crypto_symbol, stock_symbol) 交易对
+                - theoretical_spread: 理论价差（始终有值，用于监控可视化）
+                - market_state: 市场状态（CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY）
+                - executable_spread: 可执行价差（仅在 CROSSED 市场时非 None）
+                - direction: 交易方向（"LONG_SPREAD" / "SHORT_SPREAD" / None）
         """
         try:
-            crypto_symbol, stock_symbol = pair_symbol
+            # 从 SpreadSignal 中解构数据
+            crypto_symbol, stock_symbol = signal.pair_symbol
 
             # 获取 Security 对象以访问当前价格
             crypto_security = self.algorithm.securities[crypto_symbol]
@@ -123,12 +141,22 @@ class RedisSpreadMonitor:
             # 构建交易对标识 (如 "BTCUSDx<->BTC")
             pair_key = f"{crypto_symbol.Value}<->{stock_symbol.Value}"
 
-            # 构建价差数据
+            # 构建价差数据（包含新增字段）
             spread_data = {
                 'pair': pair_key,
                 'crypto_symbol': crypto_symbol.Value,
                 'stock_symbol': stock_symbol.Value,
-                'spread_pct': float(spread_pct),
+
+                # 原有字段（向后兼容）
+                'spread_pct': float(signal.theoretical_spread),
+
+                # 新增字段（2025-10-23 重构）
+                'market_state': signal.market_state.value,  # "crossed" / "limit" / "none"
+                'theoretical_spread': float(signal.theoretical_spread),
+                'executable_spread': float(signal.executable_spread) if signal.executable_spread is not None else None,
+                'direction': signal.direction,  # "LONG_SPREAD" / "SHORT_SPREAD" / None
+
+                # 价格信息
                 'crypto_bid': float(crypto_security.Cache.BidPrice),
                 'crypto_ask': float(crypto_security.Cache.AskPrice),
                 'crypto_limit_bid': float(crypto_security.Cache.BidPrice),  # 我们的买入限价

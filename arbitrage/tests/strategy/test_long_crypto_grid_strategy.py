@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from AlgorithmImports import QCAlgorithm, Symbol, SecurityType, Market
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
 from strategy.grid_models import GridPosition
+from spread_manager import SpreadSignal, MarketState
 
 
 class TestAlgorithm(QCAlgorithm):
@@ -211,7 +212,15 @@ class TestLongCryptoGridStrategyTrading(unittest.TestCase):
         # Spread at -0.5% (above -1% threshold)
         spread_pct = -0.005
 
-        self.strategy.on_spread_update(self.pair_symbol, spread_pct)
+        # 创建 SpreadSignal
+        signal = SpreadSignal(
+            pair_symbol=self.pair_symbol,
+            market_state=MarketState.NO_OPPORTUNITY,
+            theoretical_spread=spread_pct,
+            executable_spread=None,
+            direction=None
+        )
+        self.strategy.on_spread_update(signal)
 
         print("✅ No entry above threshold test passed")
 
@@ -229,7 +238,15 @@ class TestLongCryptoGridStrategyTrading(unittest.TestCase):
             # Spread at 2.5% (above 2% threshold)
             spread_pct = 0.025
 
-            self.strategy.on_spread_update(self.pair_symbol, spread_pct)
+            # 创建 SpreadSignal
+            signal = SpreadSignal(
+                pair_symbol=self.pair_symbol,
+                market_state=MarketState.CROSSED,
+                theoretical_spread=spread_pct,
+                executable_spread=spread_pct,
+                direction="LONG_SPREAD"
+            )
+            self.strategy.on_spread_update(signal)
 
             print("✅ Exit trigger test passed")
 
@@ -241,7 +258,15 @@ class TestLongCryptoGridStrategyTrading(unittest.TestCase):
         # Spread at 1.5% (below 2% threshold)
         spread_pct = 0.015
 
-        self.strategy.on_spread_update(self.pair_symbol, spread_pct)
+        # 创建 SpreadSignal
+        signal = SpreadSignal(
+            pair_symbol=self.pair_symbol,
+            market_state=MarketState.NO_OPPORTUNITY,
+            theoretical_spread=spread_pct,
+            executable_spread=None,
+            direction=None
+        )
+        self.strategy.on_spread_update(signal)
 
         print("✅ No exit below threshold test passed")
 
@@ -290,7 +315,15 @@ class TestLongCryptoGridStrategyDirectionRestriction(unittest.TestCase):
         # Large positive spread (would be short crypto opportunity)
         spread_pct = 0.05  # +5%
 
-        strategy.on_spread_update(pair_symbol, spread_pct)
+        # 创建 SpreadSignal
+        signal = SpreadSignal(
+            pair_symbol=pair_symbol,
+            market_state=MarketState.CROSSED,
+            theoretical_spread=spread_pct,
+            executable_spread=spread_pct,
+            direction="SHORT_SPREAD"
+        )
+        strategy.on_spread_update(signal)
 
         print("✅ No short crypto entry test passed")
 

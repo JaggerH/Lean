@@ -540,13 +540,12 @@ class BaseStrategy:
         if self.state_persistence:
             self.state_persistence.persist(self.positions, self.order_to_pair)
 
-    def on_spread_update(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
+    def on_spread_update(self, signal):
         """
         处理spread更新 - 由子类实现具体策略逻辑
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 交易对
-            spread_pct: Spread百分比
+            signal: SpreadSignal 对象（包含 pair_symbol, theoretical_spread 等所有价差信息）
         """
         raise NotImplementedError("Subclass must implement on_spread_update()")
 

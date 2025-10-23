@@ -58,17 +58,19 @@ class TestSpreadSignalDataclass(unittest.TestCase):
 
     def test_spread_signal_instantiation(self):
         """Test creating SpreadSignal instances"""
+        # Create test symbols
+        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
         signal = SpreadSignal(
+            pair_symbol=(crypto_symbol, stock_symbol),
             market_state=MarketState.CROSSED,
             theoretical_spread=0.005,
             executable_spread=0.004,
-            direction="SHORT_SPREAD",
-            token_bid=150.5,
-            token_ask=150.6,
-            stock_bid=149.8,
-            stock_ask=150.0
+            direction="SHORT_SPREAD"
         )
 
+        self.assertEqual(signal.pair_symbol, (crypto_symbol, stock_symbol))
         self.assertEqual(signal.market_state, MarketState.CROSSED)
         self.assertEqual(signal.theoretical_spread, 0.005)
         self.assertEqual(signal.executable_spread, 0.004)
@@ -77,24 +79,21 @@ class TestSpreadSignalDataclass(unittest.TestCase):
         self.assertTrue(signal.is_crossed)
         self.assertFalse(signal.has_limit_opportunity)
         self.assertTrue(signal.is_executable)
-        self.assertEqual(signal.token_bid, 150.5)
-        self.assertEqual(signal.token_ask, 150.6)
-        self.assertEqual(signal.stock_bid, 149.8)
-        self.assertEqual(signal.stock_ask, 150.0)
 
         print("SpreadSignal instantiation test passed")
 
     def test_spread_signal_no_opportunity(self):
         """Test SpreadSignal with NO_OPPORTUNITY state"""
+        # Create test symbols
+        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
         signal = SpreadSignal(
+            pair_symbol=(crypto_symbol, stock_symbol),
             market_state=MarketState.NO_OPPORTUNITY,
             theoretical_spread=0.002,
             executable_spread=None,  # Should be None for no opportunity
-            direction=None,  # Should be None for no opportunity
-            token_bid=149.5,
-            token_ask=150.5,
-            stock_bid=150.0,
-            stock_ask=150.2
+            direction=None  # Should be None for no opportunity
         )
 
         self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
@@ -109,15 +108,16 @@ class TestSpreadSignalDataclass(unittest.TestCase):
 
     def test_spread_signal_limit_opportunity(self):
         """Test SpreadSignal with LIMIT_OPPORTUNITY state"""
+        # Create test symbols
+        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
         signal = SpreadSignal(
+            pair_symbol=(crypto_symbol, stock_symbol),
             market_state=MarketState.LIMIT_OPPORTUNITY,
             theoretical_spread=0.003,
             executable_spread=None,  # LIMIT_OPPORTUNITY doesn't have executable_spread
-            direction="LONG_SPREAD",
-            token_bid=149.8,
-            token_ask=150.0,
-            stock_bid=150.5,
-            stock_ask=150.6
+            direction="LONG_SPREAD"
         )
 
         self.assertEqual(signal.market_state, MarketState.LIMIT_OPPORTUNITY)
@@ -229,42 +229,42 @@ class TestSpreadManagerInit(unittest.TestCase):
         print("Get all pairs test passed")
 
     def test_calculate_spread_pct(self):
-        """Test spread percentage calculation (now returns SpreadSignal)"""
+        """Test spread percentage calculation (now returns dict)"""
         # Static method, doesn't need algorithm instance
 
         # Test scenario 1: token higher than stock (CROSSED Market)
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid=150.5,
             token_ask=150.6,
             stock_bid=150.0,
             stock_ask=150.1
         )
 
-        # Should return SpreadSignal
-        self.assertIsInstance(signal, SpreadSignal)
+        # Should return dict
+        self.assertIsInstance(result, dict)
         # Should be CROSSED Market
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
         # Theoretical spread should be positive
-        self.assertGreater(signal.theoretical_spread, 0)
+        self.assertGreater(result["theoretical_spread"], 0)
         # Should have executable spread
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertIsNotNone(result["executable_spread"])
 
         # Test scenario 2: token lower than stock (CROSSED Market)
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid=149.5,
             token_ask=149.6,
             stock_bid=150.0,
             stock_ask=150.1
         )
 
-        # Should return SpreadSignal
-        self.assertIsInstance(signal, SpreadSignal)
+        # Should return dict
+        self.assertIsInstance(result, dict)
         # Should be CROSSED Market
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
         # Theoretical spread should be negative
-        self.assertLess(signal.theoretical_spread, 0)
+        self.assertLess(result["theoretical_spread"], 0)
         # Should have executable spread
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertIsNotNone(result["executable_spread"])
 
         print("Calculate spread percentage test passed")
 
@@ -301,8 +301,8 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     """Test spread calculation edge cases"""
 
     def test_calculate_spread_pct_zero_token_bid(self):
-        """Test edge case with token bid = 0 (now returns SpreadSignal)"""
-        signal = SpreadManager.calculate_spread_pct(
+        """Test edge case with token bid = 0 (now returns dict)"""
+        result = SpreadManager.calculate_spread_pct(
             token_bid=0.0,
             token_ask=150.0,
             stock_bid=100.0,
@@ -310,14 +310,15 @@ class TestSpreadManagerCalculations(unittest.TestCase):
         )
 
         # Should return NO_OPPORTUNITY when token_bid is 0
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertEqual(signal.theoretical_spread, 0.0)
-        self.assertIsNone(signal.executable_spread)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertEqual(result["theoretical_spread"], 0.0)
+        self.assertIsNone(result["executable_spread"])
         print("Zero token bid test passed")
 
     def test_calculate_spread_pct_zero_token_ask(self):
-        """Test edge case with token ask = 0 (now returns SpreadSignal)"""
-        signal = SpreadManager.calculate_spread_pct(
+        """Test edge case with token ask = 0 (now returns dict)"""
+        result = SpreadManager.calculate_spread_pct(
             token_bid=150.0,
             token_ask=0.0,
             stock_bid=100.0,
@@ -325,14 +326,15 @@ class TestSpreadManagerCalculations(unittest.TestCase):
         )
 
         # Should return NO_OPPORTUNITY when token_ask is 0
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertEqual(signal.theoretical_spread, 0.0)
-        self.assertIsNone(signal.executable_spread)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertEqual(result["theoretical_spread"], 0.0)
+        self.assertIsNone(result["executable_spread"])
         print("Zero token ask test passed")
 
     def test_calculate_spread_pct_equal_prices(self):
-        """Test all prices equal (now returns SpreadSignal)"""
-        signal = SpreadManager.calculate_spread_pct(
+        """Test all prices equal (now returns dict)"""
+        result = SpreadManager.calculate_spread_pct(
             token_bid=150.0,
             token_ask=150.0,
             stock_bid=150.0,
@@ -340,56 +342,57 @@ class TestSpreadManagerCalculations(unittest.TestCase):
         )
 
         # When prices are equal, should be NO_OPPORTUNITY
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertEqual(signal.theoretical_spread, 0.0)
-        self.assertIsNone(signal.executable_spread)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertEqual(result["theoretical_spread"], 0.0)
+        self.assertIsNone(result["executable_spread"])
         print("Equal prices test passed")
 
     def test_calculate_spread_pct_large_positive_spread(self):
         """Test large positive spread (token significantly higher than stock)"""
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid=200.0,
             token_ask=201.0,
             stock_bid=150.0,
             stock_ask=151.0
         )
 
-        # Should return SpreadSignal with CROSSED Market (token_bid > stock_ask)
-        self.assertIsInstance(signal, SpreadSignal)
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
+        # Should return dict with CROSSED Market (token_bid > stock_ask)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
         # Theoretical spread should be positive and large
-        self.assertGreater(signal.theoretical_spread, 0.2)  # Over 20%
+        self.assertGreater(result["theoretical_spread"], 0.2)  # Over 20%
         # Should have executable spread
-        self.assertIsNotNone(signal.executable_spread)
-        self.assertGreater(signal.executable_spread, 0.2)
-        print(f"Large positive spread test passed (spread={signal.theoretical_spread:.4f})")
+        self.assertIsNotNone(result["executable_spread"])
+        self.assertGreater(result["executable_spread"], 0.2)
+        print(f"Large positive spread test passed (spread={result['theoretical_spread']:.4f})")
 
     def test_calculate_spread_pct_large_negative_spread(self):
         """Test large negative spread (token significantly lower than stock)"""
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid=100.0,
             token_ask=101.0,
             stock_bid=150.0,
             stock_ask=151.0
         )
 
-        # Should return SpreadSignal with CROSSED Market (stock_bid > token_ask)
-        self.assertIsInstance(signal, SpreadSignal)
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "LONG_SPREAD")
+        # Should return dict with CROSSED Market (stock_bid > token_ask)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "LONG_SPREAD")
         # Theoretical spread should be negative and large
-        self.assertLess(signal.theoretical_spread, -0.3)  # Below -30%
+        self.assertLess(result["theoretical_spread"], -0.3)  # Below -30%
         # Should have executable spread (which will also be negative)
-        self.assertIsNotNone(signal.executable_spread)
-        self.assertLess(signal.executable_spread, -0.3)
-        print(f"Large negative spread test passed (spread={signal.theoretical_spread:.4f})")
+        self.assertIsNotNone(result["executable_spread"])
+        self.assertLess(result["executable_spread"], -0.3)
+        print(f"Large negative spread test passed (spread={result['theoretical_spread']:.4f})")
 
     def test_calculate_spread_pct_chooses_larger_absolute(self):
         """Test choosing larger absolute spread value"""
         # Scenario: short token spread = 0.2%, long token spread = 0.4%
         # Should choose 0.4% as theoretical spread
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid=150.5,
             token_ask=150.6,
             stock_bid=150.0,
@@ -397,19 +400,19 @@ class TestSpreadManagerCalculations(unittest.TestCase):
         )
 
         # This should be CROSSED Market (token_bid=150.5 > stock_ask=150.1)
-        self.assertIsInstance(signal, SpreadSignal)
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
 
         # Scenario 1 (SHORT_SPREAD): (150.5 - 150.1) / 150.5 = 0.266%
         # Scenario 2 (LONG_SPREAD): (150.6 - 150.0) / 150.6 = 0.398%
         # Theoretical spread should choose larger absolute value (Scenario 2)
-        self.assertAlmostEqual(signal.theoretical_spread, 0.00398, places=5)
+        self.assertAlmostEqual(result["theoretical_spread"], 0.00398, places=5)
 
         # Executable spread should be the SHORT_SPREAD (since that's the direction)
-        self.assertAlmostEqual(signal.executable_spread, 0.00266, places=5)
+        self.assertAlmostEqual(result["executable_spread"], 0.00266, places=5)
 
-        print(f"Larger absolute value selection test passed (theoretical={signal.theoretical_spread:.5f})")
+        print(f"Larger absolute value selection test passed (theoretical={result['theoretical_spread']:.5f})")
 
 
 class TestSpreadManagerObserverPattern(unittest.TestCase):
@@ -423,8 +426,8 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         # Create mock callback
         calls = []
 
-        def mock_callback(pair_symbol, spread_pct):
-            calls.append({'pair': pair_symbol, 'spread': spread_pct})
+        def mock_callback(spread_signal):
+            calls.append({'signal': spread_signal})
 
         # Register observer
         manager.register_observer(mock_callback)
@@ -440,7 +443,7 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
-        def mock_callback(pair_symbol, spread_pct):
+        def mock_callback(spread_signal):
             pass
 
         # Register then unregister
@@ -459,11 +462,11 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
 
         calls = []
 
-        def mock_callback(pair_symbol, spread_signal):
-            """Callback now receives SpreadSignal object instead of float"""
+        def mock_callback(spread_signal):
+            """Callback now receives only SpreadSignal object (contains pair_symbol)"""
             calls.append({
-                'crypto': pair_symbol[0],
-                'stock': pair_symbol[1],
+                'crypto': spread_signal.pair_symbol[0],
+                'stock': spread_signal.pair_symbol[1],
                 'signal': spread_signal
             })
 
@@ -477,18 +480,15 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
 
         # Create a SpreadSignal object
         test_signal = SpreadSignal(
+            pair_symbol=pair_symbol,
             market_state=MarketState.CROSSED,
             theoretical_spread=0.05,
             executable_spread=0.04,
-            direction="SHORT_SPREAD",
-            token_bid=150.5,
-            token_ask=150.6,
-            stock_bid=149.8,
-            stock_ask=150.0
+            direction="SHORT_SPREAD"
         )
 
-        # Notify observers with SpreadSignal
-        manager._notify_observers(pair_symbol, test_signal)
+        # Notify observers with SpreadSignal (only signal parameter)
+        manager._notify_observers(test_signal)
 
         # Verify callback was called
         self.assertEqual(len(calls), 1)
@@ -513,11 +513,11 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         calls1 = []
         calls2 = []
 
-        def callback1(pair_symbol, spread_signal):
+        def callback1(spread_signal):
             """First callback receives SpreadSignal"""
             calls1.append(spread_signal)
 
-        def callback2(pair_symbol, spread_signal):
+        def callback2(spread_signal):
             """Second callback receives SpreadSignal"""
             calls2.append(spread_signal)
 
@@ -530,18 +530,15 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
 
         test_signal = SpreadSignal(
+            pair_symbol=(crypto_symbol, stock_symbol),
             market_state=MarketState.LIMIT_OPPORTUNITY,
             theoretical_spread=0.03,
             executable_spread=None,  # LIMIT_OPPORTUNITY doesn't have executable_spread
-            direction="LONG_SPREAD",
-            token_bid=149.5,
-            token_ask=150.0,
-            stock_bid=150.3,
-            stock_ask=150.5
+            direction="LONG_SPREAD"
         )
 
         # Notify observers
-        manager._notify_observers((crypto_symbol, stock_symbol), test_signal)
+        manager._notify_observers(test_signal)
 
         # Verify both callbacks were called
         self.assertEqual(len(calls1), 1)
@@ -565,12 +562,12 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         calls = []
         error_calls = []
 
-        def broken_callback(pair_symbol, spread_signal):
+        def broken_callback(spread_signal):
             """Broken callback that raises an error"""
             error_calls.append(spread_signal)
             raise RuntimeError("Test error")
 
-        def working_callback(pair_symbol, spread_signal):
+        def working_callback(spread_signal):
             """Working callback that succeeds"""
             calls.append(spread_signal)
 
@@ -583,19 +580,16 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
 
         test_signal = SpreadSignal(
+            pair_symbol=(crypto_symbol, stock_symbol),
             market_state=MarketState.CROSSED,
             theoretical_spread=0.02,
             executable_spread=0.018,
-            direction="SHORT_SPREAD",
-            token_bid=150.2,
-            token_ask=150.3,
-            stock_bid=149.9,
-            stock_ask=150.0
+            direction="SHORT_SPREAD"
         )
 
         # The error should be caught internally and not propagate
         # No exception should be raised to the caller
-        manager._notify_observers((crypto_symbol, stock_symbol), test_signal)
+        manager._notify_observers(test_signal)
 
         # Verify broken observer was called (before it raised)
         self.assertEqual(len(error_calls), 1)
@@ -703,24 +697,24 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_bid = 149.8
         stock_ask = 150.0  # token_bid > stock_ask => Crossed
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Verify market state
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
-        # Use @property methods instead of fields
-        self.assertTrue(signal.is_crossed)
-        self.assertFalse(signal.has_limit_opportunity)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
 
         # Verify executable spread
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertIsNotNone(result["executable_spread"])
         expected_spread = (token_bid - stock_ask) / token_bid
-        self.assertAlmostEqual(signal.executable_spread, expected_spread, places=6)
+        self.assertAlmostEqual(result["executable_spread"], expected_spread, places=6)
 
         # Verify theoretical spread is also calculated
-        self.assertIsNotNone(signal.theoretical_spread)
+        self.assertIsNotNone(result["theoretical_spread"])
 
         print("Crossed market SHORT_SPREAD test passed")
 
@@ -732,21 +726,22 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_bid = 150.5  # stock_bid > token_ask => Crossed
         stock_ask = 150.6
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Verify market state
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "LONG_SPREAD")
-        self.assertTrue(signal.is_crossed)
-        self.assertFalse(signal.has_limit_opportunity)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "LONG_SPREAD")
 
         # Verify executable spread
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertIsNotNone(result["executable_spread"])
         # For LONG_SPREAD: (token_ask - stock_bid) / token_ask
         expected_spread = (token_ask - stock_bid) / token_ask
-        self.assertAlmostEqual(signal.executable_spread, expected_spread, places=6)
+        self.assertAlmostEqual(result["executable_spread"], expected_spread, places=6)
 
         print("Crossed market LONG_SPREAD test passed")
 
@@ -758,16 +753,17 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_bid = 149.5
         stock_ask = 150.4  # token_ask > stock_ask > token_bid > stock_bid
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be LIMIT_OPPORTUNITY because prices form the correct interval
-        self.assertEqual(signal.market_state, MarketState.LIMIT_OPPORTUNITY)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
-        self.assertIsNone(signal.executable_spread)  # No executable spread for LIMIT_OPPORTUNITY
-        self.assertTrue(signal.has_limit_opportunity)
-        self.assertFalse(signal.is_crossed)
+        self.assertEqual(result["market_state"], MarketState.LIMIT_OPPORTUNITY)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
+        self.assertIsNone(result["executable_spread"])  # No executable spread for LIMIT_OPPORTUNITY
 
         print("Limit opportunity SHORT_SPREAD test passed")
 
@@ -782,19 +778,20 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         # token_bid (149.5) < stock_ask (150.2)：不能 Short token + Long stock
         # stock_bid (150.0) < token_ask (150.5)：不能 Long token + Short stock
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be NO_OPPORTUNITY
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertIsNone(signal.executable_spread)
-        self.assertIsNone(signal.direction)
-        self.assertFalse(signal.is_crossed)
-        self.assertFalse(signal.has_limit_opportunity)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertIsNone(result["executable_spread"])
+        self.assertIsNone(result["direction"])
 
         # Theoretical spread should still be calculated
-        self.assertIsNotNone(signal.theoretical_spread)
+        self.assertIsNotNone(result["theoretical_spread"])
 
         print("No opportunity test passed")
 
@@ -810,37 +807,43 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         ]
 
         for token_bid, token_ask, stock_bid, stock_ask in test_cases:
-            signal = SpreadManager.calculate_spread_pct(
+            result = SpreadManager.calculate_spread_pct(
                 token_bid, token_ask, stock_bid, stock_ask
             )
+
+            # Verify return type is dict
+            self.assertIsInstance(result, dict)
 
             # Theoretical spread should always be calculated
-            self.assertIsNotNone(signal.theoretical_spread)
+            self.assertIsNotNone(result["theoretical_spread"])
 
             # Verify calling calculate_spread_pct again returns consistent results
-            signal2 = SpreadManager.calculate_spread_pct(
+            result2 = SpreadManager.calculate_spread_pct(
                 token_bid, token_ask, stock_bid, stock_ask
             )
-            self.assertAlmostEqual(signal.theoretical_spread, signal2.theoretical_spread, places=6)
+            self.assertAlmostEqual(result["theoretical_spread"], result2["theoretical_spread"], places=6)
 
         print("Theoretical spread always calculated test passed")
 
     def test_signal_contains_price_details(self):
-        """Test that signal contains all price details"""
+        """Test that result dict contains all necessary spread details"""
         token_bid = 150.5
         token_ask = 150.6
         stock_bid = 149.8
         stock_ask = 150.0
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
-        # Verify all prices are stored
-        self.assertEqual(signal.token_bid, token_bid)
-        self.assertEqual(signal.token_ask, token_ask)
-        self.assertEqual(signal.stock_bid, stock_bid)
-        self.assertEqual(signal.stock_ask, stock_ask)
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
+        # Verify all required keys are present
+        self.assertIn("market_state", result)
+        self.assertIn("theoretical_spread", result)
+        self.assertIn("executable_spread", result)
+        self.assertIn("direction", result)
 
         print("Signal contains price details test passed")
 
@@ -853,16 +856,19 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_ask = 150.0
 
         # Spread = (150.05 - 150.0) / 150.05 = 0.0333%
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be CROSSED because token_bid > stock_ask (no threshold filtering in this layer)
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertIsNotNone(result["executable_spread"])
         # Spread should be positive but small
-        self.assertGreater(signal.executable_spread, 0)
-        self.assertLess(signal.executable_spread, 0.001)  # < 0.1%
+        self.assertGreater(result["executable_spread"], 0)
+        self.assertLess(result["executable_spread"], 0.001)  # < 0.1%
 
         print("Crossed market tiny spread test passed")
 
@@ -883,13 +889,16 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         #   - Not: token_ask > stock_ask > token_bid > stock_bid (stock_bid > token_bid)
         #   - Not: stock_ask > token_ask > stock_bid > token_bid
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be NO_OPPORTUNITY (no crossing, no LIMIT interval match)
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertIsNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertIsNone(result["executable_spread"])
 
         print("No crossed no limit test passed")
 
@@ -901,16 +910,19 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_ask = 150.0
 
         # token_bid (150.3) > stock_ask (150.0) => CROSSED
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should detect CROSSED opportunity (no threshold filtering)
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
+        self.assertIsNotNone(result["executable_spread"])
         # Spread should be (150.3 - 150.0) / 150.3 = 0.1996%
-        self.assertAlmostEqual(signal.executable_spread, 0.001996, places=5)
+        self.assertAlmostEqual(result["executable_spread"], 0.001996, places=5)
 
         print("Clear crossed market test passed")
 
@@ -923,17 +935,20 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         stock_ask = 150.0
 
         # token_bid (150.08) > stock_ask (150.0) => CROSSED
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be CROSSED because token_bid > stock_ask
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertEqual(signal.direction, "SHORT_SPREAD")
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertEqual(result["direction"], "SHORT_SPREAD")
+        self.assertIsNotNone(result["executable_spread"])
         # Spread should be (150.08 - 150.0) / 150.08 = 0.0533%
-        self.assertGreater(signal.executable_spread, 0)
-        self.assertLess(signal.executable_spread, 0.001)
+        self.assertGreater(result["executable_spread"], 0)
+        self.assertLess(result["executable_spread"], 0.001)
 
         print("Small crossed market test passed")
 
@@ -949,15 +964,18 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         token_ask = 150.1
         stock_bid = 149.8
 
-        signal = SpreadManager.calculate_spread_pct(
+        result = SpreadManager.calculate_spread_pct(
             token_bid, token_ask, stock_bid, stock_ask
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should be CROSSED because token_bid > stock_ask
-        self.assertEqual(signal.market_state, MarketState.CROSSED)
-        self.assertIsNotNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.CROSSED)
+        self.assertIsNotNone(result["executable_spread"])
         # Spread should be exactly 0.1%
-        self.assertAlmostEqual(signal.executable_spread, 0.001, places=5)
+        self.assertAlmostEqual(result["executable_spread"], 0.001, places=5)
 
         print("Specific spread value test passed")
 
@@ -968,38 +986,43 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         # In practice, only one direction can be crossed at a time
 
         # Test SHORT_SPREAD direction
-        signal1 = SpreadManager.calculate_spread_pct(
+        result1 = SpreadManager.calculate_spread_pct(
             token_bid=150.5,  # > stock_ask
             token_ask=150.6,
             stock_bid=149.8,
             stock_ask=150.0
         )
-        self.assertEqual(signal1.direction, "SHORT_SPREAD")
+        self.assertIsInstance(result1, dict)
+        self.assertEqual(result1["direction"], "SHORT_SPREAD")
 
         # Test LONG_SPREAD direction
-        signal2 = SpreadManager.calculate_spread_pct(
+        result2 = SpreadManager.calculate_spread_pct(
             token_bid=149.8,
             token_ask=150.0,
             stock_bid=150.5,  # > token_ask
             stock_ask=150.6
         )
-        self.assertEqual(signal2.direction, "LONG_SPREAD")
+        self.assertIsInstance(result2, dict)
+        self.assertEqual(result2["direction"], "LONG_SPREAD")
 
         print("Both directions crossed test passed")
 
     def test_zero_prices_in_signal(self):
-        """Test analyze_spread_signal with zero prices (should still return theoretical spread as 0)"""
-        signal = SpreadManager.calculate_spread_pct(
+        """Test calculate_spread_pct with zero prices (should still return theoretical spread as 0)"""
+        result = SpreadManager.calculate_spread_pct(
             token_bid=0.0,
             token_ask=150.0,
             stock_bid=100.0,
             stock_ask=101.0
         )
 
+        # Verify return type is dict
+        self.assertIsInstance(result, dict)
+
         # Should return NO_OPPORTUNITY with theoretical_spread = 0
-        self.assertEqual(signal.market_state, MarketState.NO_OPPORTUNITY)
-        self.assertEqual(signal.theoretical_spread, 0.0)
-        self.assertIsNone(signal.executable_spread)
+        self.assertEqual(result["market_state"], MarketState.NO_OPPORTUNITY)
+        self.assertEqual(result["theoretical_spread"], 0.0)
+        self.assertIsNone(result["executable_spread"])
 
         print("Zero prices in signal test passed")
 
@@ -1019,18 +1042,20 @@ class TestSpreadManagerOnData(unittest.TestCase):
     """
 
     def test_on_data_logic_via_analyze_spread_signal(self):
-        """Test the core logic used by on_data via analyze_spread_signal"""
+        """Test the core logic used by on_data via calculate_spread_pct"""
         # This tests the same logic that on_data() uses internally
 
         # Test Case 1: Executable opportunity (should trigger observer)
-        signal1 = SpreadManager.calculate_spread_pct(150.5, 150.6, 149.8, 150.0)
-        self.assertIsNotNone(signal1.executable_spread)  # Would notify observers
+        result1 = SpreadManager.calculate_spread_pct(150.5, 150.6, 149.8, 150.0)
+        self.assertIsInstance(result1, dict)
+        self.assertIsNotNone(result1["executable_spread"])  # Would notify observers
 
         # Test Case 2: No opportunity (should NOT trigger observer)
-        signal2 = SpreadManager.calculate_spread_pct(149.5, 150.5, 150.0, 150.2)
-        self.assertIsNone(signal2.executable_spread)  # Would NOT notify observers
+        result2 = SpreadManager.calculate_spread_pct(149.5, 150.5, 150.0, 150.2)
+        self.assertIsInstance(result2, dict)
+        self.assertIsNone(result2["executable_spread"])  # Would NOT notify observers
 
-        print("on_data logic via analyze_spread_signal test passed")
+        print("on_data logic via calculate_spread_pct test passed")
 
 
 if __name__ == '__main__':

@@ -47,27 +47,24 @@ class SpreadSignal:
     价差信号（简化版 - 包含市场状态和可执行价差）
 
     设计理念（重构 2025-10-23）：
+    - pair_symbol: 交易对标识，包含完整上下文
     - theoretical_spread: 理论最大价差，始终有值（用于连续监控和可视化）
     - executable_spread: 可执行价差，只在 CROSSED 市场时有值（LIMIT_OPPORTUNITY 由执行层计算）
     - 移除冗余字段：crossed_bid_ask 和 limit_opportunity_exists 改用 @property 方法
+    - 移除价格字段：token_bid/ask, stock_bid/ask（可从 Security.Cache 获取）
 
     Attributes:
+        pair_symbol: (crypto_symbol, stock_symbol) 交易对
         market_state: 市场状态（CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY）
         theoretical_spread: 理论最大价差（用于监控和可视化，始终有值）
         executable_spread: 可执行价差（仅在 CROSSED 市场时非 None）
         direction: 交易方向（"LONG_SPREAD" 或 "SHORT_SPREAD"，无机会时为 None）
-        token_bid, token_ask, stock_bid, stock_ask: 价格明细（用于调试）
     """
+    pair_symbol: Tuple[Symbol, Symbol]
     market_state: MarketState
     theoretical_spread: float
     executable_spread: Optional[float]
     direction: Optional[str]
-
-    # 价格明细（用于调试和日志）
-    token_bid: float
-    token_ask: float
-    stock_bid: float
-    stock_ask: float
 
     @property
     def is_crossed(self) -> bool:
@@ -171,20 +168,20 @@ class SpreadManager:
             callback_name = getattr(callback, '__name__', repr(callback))
             self.algorithm.Debug(f"🗑️ Unregistered spread observer: {callback_name}")
 
-    def _notify_observers(self, pair_symbol: Tuple[Symbol, Symbol], spread_pct: float):
+    def _notify_observers(self, signal: SpreadSignal):
         """
         通知所有注册的观察者
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 交易对
-            spread_pct: 价差百分比
+            signal: SpreadSignal 对象（包含 pair_symbol 和所有价差信息）
         """
         for observer in self._spread_observers:
             try:
-                observer(pair_symbol, spread_pct)
+                observer(signal)
             except:
                 import traceback
                 error_msg = traceback.format_exc()
+                pair_symbol = signal.pair_symbol
                 self.algorithm.Debug(
                     f"❌ Observer error for {pair_symbol[0].Value}<->{pair_symbol[1].Value}: {error_msg}"
                 )
@@ -358,9 +355,9 @@ class SpreadManager:
 
     @staticmethod
     def calculate_spread_pct(token_bid: float, token_ask: float,
-                            stock_bid: float, stock_ask: float) -> SpreadSignal:
+                            stock_bid: float, stock_ask: float) -> dict:
         """
-        计算价差并分类市场状态（All-in-One，重构版）
+        计算价差并分类市场状态（核心计算逻辑，静态方法）
 
         功能整合（2025-10-23 重构）：
         - 原 calculate_spread_pct：计算理论价差
@@ -394,30 +391,27 @@ class SpreadManager:
             stock_ask: Stock 最佳卖价
 
         Returns:
-            SpreadSignal 对象，包含：
-            - market_state: 市场状态
-            - theoretical_spread: 理论价差（始终有值）
-            - executable_spread: 可执行价差（CROSSED 时有值）
-            - direction: 交易方向
-            - 价格明细
+            dict: 价差计算结果，包含以下键：
+                - market_state: MarketState - 市场状态
+                - theoretical_spread: float - 理论价差（始终有值）
+                - executable_spread: Optional[float] - 可执行价差（CROSSED 时有值）
+                - direction: Optional[str] - 交易方向
 
         Example:
-            >>> signal = SpreadManager.calculate_spread_pct(150.5, 150.6, 150.0, 150.1)
-            >>> signal.market_state  # MarketState.CROSSED
-            >>> signal.theoretical_spread  # 0.00398 (0.398%)
-            >>> signal.executable_spread  # 0.00265 (0.265%)
-            >>> signal.direction  # "SHORT_SPREAD"
+            >>> result = SpreadManager.calculate_spread_pct(150.5, 150.6, 150.0, 150.1)
+            >>> result["market_state"]  # MarketState.CROSSED
+            >>> result["theoretical_spread"]  # 0.00398 (0.398%)
+            >>> result["executable_spread"]  # 0.00265 (0.265%)
+            >>> result["direction"]  # "SHORT_SPREAD"
         """
         # 1. 数据验证
         if token_bid <= 0 or token_ask <= 0:
-            return SpreadSignal(
-                market_state=MarketState.NO_OPPORTUNITY,
-                theoretical_spread=0.0,
-                executable_spread=None,
-                direction=None,
-                token_bid=token_bid, token_ask=token_ask,
-                stock_bid=stock_bid, stock_ask=stock_ask
-            )
+            return {
+                "market_state": MarketState.NO_OPPORTUNITY,
+                "theoretical_spread": 0.0,
+                "executable_spread": None,
+                "direction": None
+            }
 
         # 2. 计算理论价差（始终计算）
         short_spread = (token_bid - stock_ask) / token_bid
@@ -427,57 +421,91 @@ class SpreadManager:
         # 3. CROSSED Market（优先级最高，立即可执行）
         if token_bid > stock_ask:
             # 卖 token @ bid，买 stock @ ask
-            return SpreadSignal(
-                market_state=MarketState.CROSSED,
-                theoretical_spread=theoretical_spread,
-                executable_spread=short_spread,
-                direction="SHORT_SPREAD",
-                token_bid=token_bid, token_ask=token_ask,
-                stock_bid=stock_bid, stock_ask=stock_ask
-            )
+            return {
+                "market_state": MarketState.CROSSED,
+                "theoretical_spread": theoretical_spread,
+                "executable_spread": short_spread,
+                "direction": "SHORT_SPREAD"
+            }
 
         if stock_bid > token_ask:
             # 买 token @ ask，卖 stock @ bid
-            return SpreadSignal(
-                market_state=MarketState.CROSSED,
-                theoretical_spread=theoretical_spread,
-                executable_spread=long_spread,
-                direction="LONG_SPREAD",
-                token_bid=token_bid, token_ask=token_ask,
-                stock_bid=stock_bid, stock_ask=stock_ask
-            )
+            return {
+                "market_state": MarketState.CROSSED,
+                "theoretical_spread": theoretical_spread,
+                "executable_spread": long_spread,
+                "direction": "LONG_SPREAD"
+            }
 
         # 4. LIMIT_OPPORTUNITY（需要挂单）
         # 场景 1: token 偏贵 (token_ask > stock_ask > token_bid > stock_bid)
         if token_ask > stock_ask > token_bid > stock_bid:
-            return SpreadSignal(
-                market_state=MarketState.LIMIT_OPPORTUNITY,
-                theoretical_spread=theoretical_spread,
-                executable_spread=None,  # 由执行层计算
-                direction="SHORT_SPREAD",
-                token_bid=token_bid, token_ask=token_ask,
-                stock_bid=stock_bid, stock_ask=stock_ask
-            )
+            return {
+                "market_state": MarketState.LIMIT_OPPORTUNITY,
+                "theoretical_spread": theoretical_spread,
+                "executable_spread": None,  # 由执行层计算
+                "direction": "SHORT_SPREAD"
+            }
 
         # 场景 2: token 偏便宜 (stock_ask > token_ask > stock_bid > token_bid)
         if stock_ask > token_ask > stock_bid > token_bid:
-            return SpreadSignal(
-                market_state=MarketState.LIMIT_OPPORTUNITY,
-                theoretical_spread=theoretical_spread,
-                executable_spread=None,  # 由执行层计算
-                direction="LONG_SPREAD",
-                token_bid=token_bid, token_ask=token_ask,
-                stock_bid=stock_bid, stock_ask=stock_ask
-            )
+            return {
+                "market_state": MarketState.LIMIT_OPPORTUNITY,
+                "theoretical_spread": theoretical_spread,
+                "executable_spread": None,  # 由执行层计算
+                "direction": "LONG_SPREAD"
+            }
 
         # 5. NO_OPPORTUNITY（其他价格区间）
+        return {
+            "market_state": MarketState.NO_OPPORTUNITY,
+            "theoretical_spread": theoretical_spread,
+            "executable_spread": None,
+            "direction": None
+        }
+
+    def calculate_spread_signal(self, pair_symbol: Tuple[Symbol, Symbol]) -> SpreadSignal:
+        """
+        计算价差信号（生产环境接口，实例方法）
+
+        封装了完整的价差计算流程：
+        1. 从 Security Cache 获取 bid/ask 价格
+        2. 调用静态方法 calculate_spread_pct 进行核心计算
+        3. 构造包含 pair_symbol 的 SpreadSignal 对象
+
+        Args:
+            pair_symbol: (crypto_symbol, stock_symbol) 交易对
+
+        Returns:
+            SpreadSignal 对象（包含 pair_symbol 和所有价差信息）
+
+        Example:
+            >>> signal = manager.calculate_spread_signal((crypto_symbol, stock_symbol))
+            >>> signal.pair_symbol  # (crypto_symbol, stock_symbol)
+            >>> signal.theoretical_spread  # 0.00398 (0.398%)
+        """
+        crypto_symbol, stock_symbol = pair_symbol
+
+        # 1. 获取 Security 对象
+        crypto_security = self.algorithm.Securities[crypto_symbol]
+        stock_security = self.algorithm.Securities[stock_symbol]
+
+        # 2. 从 Cache 获取价格
+        crypto_bid = crypto_security.Cache.BidPrice
+        crypto_ask = crypto_security.Cache.AskPrice
+        stock_bid = stock_security.Cache.BidPrice
+        stock_ask = stock_security.Cache.AskPrice
+
+        # 3. 调用静态方法计算（核心逻辑）
+        result = self.calculate_spread_pct(
+            float(crypto_bid), float(crypto_ask),
+            float(stock_bid), float(stock_ask)
+        )
+
+        # 4. 构造 SpreadSignal（添加 pair_symbol）
         return SpreadSignal(
-            market_state=MarketState.NO_OPPORTUNITY,
-            theoretical_spread=theoretical_spread,
-            executable_spread=None,
-            direction=None,
-            token_bid=token_bid, token_ask=token_ask,
-            stock_bid=stock_bid, stock_ask=stock_ask
+            pair_symbol=pair_symbol,
+            **result
         )
 
     def on_data(self, data: Slice):
@@ -485,7 +513,7 @@ class SpreadManager:
         处理数据更新 - 监控价差（简化重构版）
 
         简化设计（2025-10-23）：
-        1. 调用 calculate_spread_pct 计算价差并分类市场状态（All-in-One）
+        1. 调用 calculate_spread_signal 计算价差并分类市场状态（封装价格获取）
         2. 写入理论价差到监控后端（用于连续可视化）
         3. 通知策略（传递完整的 SpreadSignal 对象）
 
@@ -493,46 +521,41 @@ class SpreadManager:
             data: Slice对象，包含tick数据
         """
         for crypto_symbol, stock_symbol in self.get_all_pairs():
-            # 获取 Security 对象
-            if crypto_symbol not in self.algorithm.Securities or stock_symbol not in self.algorithm.Securities:
+            pair_symbol = (crypto_symbol, stock_symbol)
+
+            # 验证 Security 对象存在
+            if crypto_symbol not in self.algorithm.Securities:
+                continue
+            if stock_symbol not in self.algorithm.Securities:
                 continue
 
-            crypto_security = self.algorithm.Securities[crypto_symbol]
-            stock_security = self.algorithm.Securities[stock_symbol]
-
-            # 直接使用 Cache 的 BidPrice/AskPrice（自动从 OrderbookDepth 或 Tick 更新）
-            crypto_bid = crypto_security.Cache.BidPrice
-            crypto_ask = crypto_security.Cache.AskPrice
-            stock_bid = stock_security.Cache.BidPrice
-            stock_ask = stock_security.Cache.AskPrice
-
-            # 验证价格有效性
-            if crypto_bid <= 0 or crypto_ask <= 0 or stock_bid <= 0 or stock_ask <= 0:
+            # 1. 计算价差信号（封装了价格获取和计算）
+            try:
+                signal = self.calculate_spread_signal(pair_symbol)
+            except Exception as e:
+                # 捕获价格获取异常（如价格无效）
                 continue
 
-            # 1. 计算价差并分类市场状态（All-in-One）
-            signal = self.calculate_spread_pct(
-                float(crypto_bid),
-                float(crypto_ask),
-                float(stock_bid),
-                float(stock_ask)
-            )
+            # 2. 验证价格有效性（通过检查 theoretical_spread）
+            if signal.theoretical_spread == 0.0 and signal.market_state == MarketState.NO_OPPORTUNITY:
+                continue
 
-            # 2. Debug: 检测异常价差
+            # 3. Debug: 检测异常价差
             if abs(signal.theoretical_spread) > 0.5:  # 超过50%的价差肯定有问题
+                crypto_security = self.algorithm.Securities[crypto_symbol]
+                stock_security = self.algorithm.Securities[stock_symbol]
                 self.algorithm.Debug(
                     f"⚠️ 异常价差 {signal.theoretical_spread*100:.2f}% | "
-                    f"{crypto_symbol.Value}: bid={crypto_bid:.2f} ask={crypto_ask:.2f} | "
-                    f"{stock_symbol.Value}: bid={stock_bid:.2f} ask={stock_ask:.2f}"
+                    f"{crypto_symbol.Value}: bid={crypto_security.Cache.BidPrice:.2f} ask={crypto_security.Cache.AskPrice:.2f} | "
+                    f"{stock_symbol.Value}: bid={stock_security.Cache.BidPrice:.2f} ask={stock_security.Cache.AskPrice:.2f}"
                 )
 
-            # 3. 写入理论价差到监控后端（用于连续可视化）
-            pair_symbol = (crypto_symbol, stock_symbol)
+            # 4. 写入理论价差到监控后端（用于连续可视化）
             if self.monitor:
                 self.monitor.write_spread(pair_symbol, signal.theoretical_spread)
 
-            # 4. 通知策略（始终通知，策略自己决定如何处理）
-            self._notify_observers(pair_symbol, signal)
+            # 5. 通知策略（只传 signal，包含完整上下文）
+            self._notify_observers(signal)
 
             # 5. 额外记录可执行机会到监控后端（仅在有可执行机会时）
             if signal.executable_spread is not None and self.monitor:
