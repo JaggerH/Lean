@@ -552,7 +552,7 @@ class SpreadManager:
 
             # 4. 写入理论价差到监控后端（用于连续可视化）
             if self.monitor:
-                self.monitor.write_spread(pair_symbol, signal.theoretical_spread)
+                self.monitor.write_spread(signal)
 
             # 5. 通知策略（只传 signal，包含完整上下文）
             self._notify_observers(signal)
