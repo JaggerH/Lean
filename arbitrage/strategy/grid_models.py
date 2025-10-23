@@ -194,33 +194,3 @@ class GridPosition:
         self._leg1_qty += leg1_qty
         self._leg2_qty += leg2_qty
 
-
-# ============================================================================
-#                      辅助函数
-# ============================================================================
-
-def generate_order_tag(pair_symbol: Tuple[Symbol, Symbol], level_id: str) -> str:
-    """
-    生成订单标签（用于调试和追踪）
-
-    格式：{crypto_ticker}_{stock_ticker}_{level_id}
-
-    Args:
-        pair_symbol: (crypto_symbol, stock_symbol)
-        level_id: 网格线配置ID
-
-    Returns:
-        订单标签字符串
-
-    Example:
-        >>> generate_order_tag((TSLAxUSD, TSLA), "entry_long_crypto")
-        "TSLAxUSD_TSLA_entry_long_crypto"
-
-    Note:
-        这个函数只用于生成订单的 tag，用于调试和日志追踪。
-        内部存储和查找都直接使用 level_id。
-    """
-    crypto_symbol, stock_symbol = pair_symbol
-    crypto_ticker = crypto_symbol.value.replace("/", "").replace(" ", "")
-    stock_ticker = stock_symbol.value.replace("/", "").replace(" ", "")
-    return f"{crypto_ticker}_{stock_ticker}_{level_id}"

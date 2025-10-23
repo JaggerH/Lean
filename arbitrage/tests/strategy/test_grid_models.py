@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import AlgorithmImports (will be available when run via PythonTestRunner)
 from AlgorithmImports import Symbol, SecurityType, Market
-from strategy.grid_models import GridLevel, GridPosition, generate_order_tag
+from strategy.grid_models import GridLevel, GridPosition
 
 
 class TestGridLevel(unittest.TestCase):
@@ -135,35 +135,6 @@ class TestGridLevel(unittest.TestCase):
 
         self.assertEqual(entry_short.direction, "SHORT_SPREAD")
         print("✅ SHORT_SPREAD direction test passed")
-
-
-class TestOrderTagGeneration(unittest.TestCase):
-    """Test order tag generation for debugging and tracking"""
-
-    def test_generate_order_tag(self):
-        """Test order tag generation"""
-        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
-
-        order_tag = generate_order_tag((crypto_symbol, stock_symbol), "entry_long_crypto")
-        # Note: Symbol.value in LEAN is uppercase
-        expected = "TSLAXUSD_TSLA_entry_long_crypto"
-
-        self.assertEqual(order_tag, expected)
-        print(f"✅ Order tag generated: {order_tag}")
-
-    def test_generate_order_tag_with_special_chars(self):
-        """Test order tag generation with special characters in symbol"""
-        # Note: Symbol.value already handles normalization
-        crypto_symbol = Symbol.Create("BTC/USD", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("BTC", SecurityType.Equity, Market.USA)
-
-        order_tag = generate_order_tag((crypto_symbol, stock_symbol), "entry_1")
-
-        # Verify special chars are removed
-        self.assertNotIn("/", order_tag)
-        self.assertNotIn(" ", order_tag)
-        print(f"✅ Order tag with special chars: {order_tag}")
 
 
 class TestOrderGroup(unittest.TestCase):

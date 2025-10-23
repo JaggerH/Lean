@@ -7,7 +7,7 @@ Grid Strategy - 网格交易策略基类
 from AlgorithmImports import QCAlgorithm, Symbol, OrderStatus
 from typing import Tuple, List, Dict, Optional, TYPE_CHECKING
 from .base_strategy import BaseStrategy
-from .grid_models import GridLevel, GridPosition, generate_order_tag
+from .grid_models import GridLevel, GridPosition
 from .grid_level_manager import GridLevelManager
 from .grid_position_manager import GridPositionManager
 from .execution_manager import ExecutionManager
