@@ -2932,6 +2932,81 @@ namespace QuantConnect.Algorithm
         }
 
         /// <summary>
+        /// Manually trigger state persistence to save current portfolio state (cash, holdings, orders).
+        /// Only available in live trading mode with LiveTradingRecoveryResultHandler.
+        /// State is automatically saved on algorithm exit, so this method is typically used
+        /// to save state at critical moments (e.g., after important order fills).
+        ///
+        /// Requires "multi-account-persistence" config to specify the save file path.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// public override void OnOrderEvent(OrderEvent orderEvent)
+        /// {
+        ///     if (orderEvent.Status == OrderStatus.Filled)
+        ///     {
+        ///         // Save state immediately after important fills
+        ///         SaveState();
+        ///     }
+        /// }
+        /// </code>
+        /// </example>
+        [DocumentationAttribute(Logging)]
+        public void SaveState()
+        {
+            if (!LiveMode)
+            {
+                Debug("SaveState(): Only available in live trading mode");
+                return;
+            }
+
+            try
+            {
+                // Try to get the ResultHandler from Composer (Engine assembly)
+                // We use object type to avoid adding Engine dependency to Algorithm project
+                var composerMethod = typeof(Composer).GetMethod("GetPart");
+                if (composerMethod != null)
+                {
+                    // Use reflection to call Composer.Instance.GetPart<IResultHandler>()
+                    var resultHandlerInterfaceType = Type.GetType("QuantConnect.Lean.Engine.Results.IResultHandler, QuantConnect.Lean.Engine");
+                    if (resultHandlerInterfaceType != null)
+                    {
+                        var genericMethod = composerMethod.MakeGenericMethod(resultHandlerInterfaceType);
+                        var resultHandler = genericMethod.Invoke(Composer.Instance, null);
+
+                        // Check if it's LiveTradingRecoveryResultHandler
+                        var resultHandlerType = resultHandler?.GetType();
+                        if (resultHandlerType != null && resultHandlerType.Name == "LiveTradingRecoveryResultHandler")
+                        {
+                            var saveMethod = resultHandlerType.GetMethod("SaveMultiAccountState");
+                            if (saveMethod != null)
+                            {
+                                Debug("SaveState(): Triggering state save...");
+                                saveMethod.Invoke(resultHandler, null);
+                            }
+                            else
+                            {
+                                Debug("SaveState(): SaveMultiAccountState method not found");
+                            }
+                        }
+                        else
+                        {
+                            Debug("SaveState(): Requires LiveTradingRecoveryResultHandler (set 'result-handler' in config)");
+                        }
+                    }
+                    else
+                    {
+                        Debug("SaveState(): Could not load IResultHandler type");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Error($"SaveState(): Failed to save state: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Converts the string 'ticker' symbol into a full <see cref="Symbol"/> object
         /// This requires that the string 'ticker' has been added to the algorithm
         /// </summary>

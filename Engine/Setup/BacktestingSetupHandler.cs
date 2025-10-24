@@ -27,6 +27,7 @@ using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Brokerages.Backtesting;
 using QuantConnect.Orders;
 using QuantConnect.Securities;
+using QuantConnect.Data.Market;
 using Newtonsoft.Json;
 using QuantConnect.Algorithm;
 
@@ -271,6 +272,9 @@ namespace QuantConnect.Lean.Engine.Setup
                     // after we call initialize
                     BaseSetupHandler.LoadBacktestJobCashAmount(algorithm, job);
 
+                    // Load multi-account state from file if available (for state recovery testing)
+                    LoadMultiAccountState(algorithm, parameters.Brokerage);
+
                     // after algorithm was initialized, should set trading days per year for our great portfolio statistics
                     BaseSetupHandler.SetBrokerageTradingDayPerYear(algorithm);
 
@@ -454,6 +458,108 @@ namespace QuantConnect.Lean.Engine.Setup
         }
 
         #endregion
+
+        /// <summary>
+        /// Loads multi-account state from file if configured
+        /// This enables state recovery in backtest mode for testing purposes
+        /// </summary>
+        private void LoadMultiAccountState(IAlgorithm algorithm, IBrokerage brokerage)
+        {
+            try
+            {
+                // Check if this is multi-account mode
+                if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+                {
+                    // Check if brokerage supports multi-account state recovery
+                    if (brokerage is BacktestingBrokerage backtestingBrokerage)
+                    {
+
+                        foreach (var accountKvp in multiPortfolio.SubAccounts)
+                        {
+                            var accountName = accountKvp.Key;
+                            var subAccount = accountKvp.Value;
+
+                            // Try to restore cash balance for this account
+                            var accountCashBalance = backtestingBrokerage.GetCashBalanceForAccount(accountName);
+
+                            if (accountCashBalance != null && accountCashBalance.Count > 0)
+                            {
+                                // Restore cash balance
+                                foreach (var cash in accountCashBalance)
+                                {
+
+                                    // Add currency if it doesn't exist with initial conversion rate
+                                    // LEAN will update the conversion rate from market data as the algorithm runs
+                                    if (!subAccount.CashBook.ContainsKey(cash.Currency))
+                                    {
+                                        // Use 1.0 as initial conversion rate for crypto, LEAN will update it from market data
+                                        subAccount.SetCash(cash.Currency, 0, 1.0m);
+                                    }
+
+                                    // Set the amount directly
+                                    subAccount.CashBook[cash.Currency].SetAmount(cash.Amount);
+                                }
+                            }
+
+                            // Try to restore holdings for this account
+                            var accountHoldings = backtestingBrokerage.GetAccountHoldingsForAccount(accountName);
+
+                            if (accountHoldings != null && accountHoldings.Count > 0)
+                            {
+
+                                var utcNow = DateTime.UtcNow;
+                                foreach (var holding in accountHoldings)
+                                {
+                                    // Find the matching security by ticker and type (don't use Symbol.ID directly as it changes between runs)
+                                    Security security = null;
+                                    foreach (var kvp in algorithm.Securities)
+                                    {
+                                        if (kvp.Key.Value == holding.Symbol.Value &&
+                                            kvp.Key.SecurityType == holding.Symbol.SecurityType)
+                                        {
+                                            security = kvp.Value;
+                                            break;
+                                        }
+                                    }
+
+                                    if (security == null)
+                                    {
+                                        Log.Error($"BacktestingSetupHandler.LoadMultiAccountState(): Could not find security for {holding.Symbol.Value} ({holding.Symbol.SecurityType}) in account '{accountName}'");
+                                        continue;
+                                    }
+
+                                    security.Holdings.SetHoldings(holding.AveragePrice, holding.Quantity);
+
+                                    // Set market price
+                                    security.SetMarketPrice(new TradeBar
+                                    {
+                                        Time = utcNow,
+                                        Symbol = security.Symbol,
+                                        Open = holding.MarketPrice,
+                                        High = holding.MarketPrice,
+                                        Low = holding.MarketPrice,
+                                        Close = holding.MarketPrice
+                                    });
+
+                                }
+                            }
+
+                            // Note: Open orders restoration is handled by the Python algorithm
+                            // Orders are saved to the state file but restored via Python code
+                            // This allows the algorithm to use its normal order submission methods
+                            var accountOrders = backtestingBrokerage.GetOpenOrdersForAccount(accountName);
+                            if (accountOrders != null && accountOrders.Count > 0)
+                            {
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"BacktestingSetupHandler.LoadMultiAccountState(): Failed to load multi-account state: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.

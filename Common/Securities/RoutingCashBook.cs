@@ -118,6 +118,24 @@ namespace QuantConnect.Securities
         }
 
         /// <summary>
+        /// Gets the total value of all currencies in the CashBook, expressed in the account currency.
+        /// Aggregates values from all sub-accounts instead of using the main CashBook's static value.
+        /// </summary>
+        public new decimal TotalValueInAccountCurrency
+        {
+            get
+            {
+                // Sum up cash values from all sub-accounts
+                decimal total = 0m;
+                foreach (var subAccount in _subAccounts.Values)
+                {
+                    total += subAccount.CashBook.TotalValueInAccountCurrency;
+                }
+                return total;
+            }
+        }
+
+        /// <summary>
         /// Checks if the CashBook contains the specified currency
         /// </summary>
         public override bool ContainsKey(string symbol)

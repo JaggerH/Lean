@@ -1,0 +1,99 @@
+{
+  "comment": "Multi-Account State Persistence Test - Example Configuration",
+  "comment2": "Copy this file to persistence-config.json and fill in your API credentials",
+
+  "environment": "live-arbitrage",
+  "live-mode": true,
+  "data-queue-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+  "live-mode-brokerage": "PaperBrokerage",
+  "setup-handler": "QuantConnect.Lean.Engine.Setup.BrokerageRecoverySetupHandler",
+  "result-handler": "QuantConnect.Lean.Engine.Results.LiveTradingRecoveryResultHandler",
+  "data-feed-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+  "real-time-handler": "QuantConnect.Lean.Engine.RealTime.LiveTradingRealTimeHandler",
+  "transaction-handler": "QuantConnect.Lean.Engine.TransactionHandlers.BrokerageTransactionHandler",
+  "history-provider": "BrokerageHistoryProvider",
+
+  "algorithm-type-name": "AccountRestoreTest",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/integration/test_account_restore/persistence.py",
+
+  "data-folder": "../../../Data/",
+  "cache-location": "../../../Data",
+  "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+
+  "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+  "messaging-handler": "QuantConnect.Messaging.Messaging",
+  "job-queue-handler": "QuantConnect.Queues.JobQueue",
+  "api-handler": "QuantConnect.Api.Api",
+  "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+  "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+
+  "close-automatically": true,
+
+  "maximum-warmup-history-days": 5,
+  "maximum-chart-series": 10,
+
+  "comment-persistence": "=== Multi-Account State Persistence ===",
+  "multi-account-persistence": "../../../arbitrage/tests/integration/test_account_restore/.state/recovery.json",
+
+  "comment3": "=== Multi-Account Configuration ===",
+  "multi-account-config": {
+    "accounts": {
+      "IBKR": 50000,
+      "Kraken": 50000
+    },
+    "router": {
+      "type": "Market",
+      "mappings": {
+        "USA": "IBKR",
+        "Kraken": "Kraken"
+      },
+      "default": "IBKR"
+    }
+  },
+
+  "comment-data": "=== Data Configuration ===",
+  "data-channel-limit": 20000,
+
+  "comment-kraken": "=== Kraken Configuration (REPLACE WITH YOUR API KEYS) ===",
+  "kraken-api-secret": "YOUR_KRAKEN_API_SECRET_HERE",
+  "kraken-api-key": "YOUR_KRAKEN_API_KEY_HERE",
+  "kraken-verification-tier": "Starter",
+
+  "comment-ibkr": "=== Interactive Brokers Configuration (REPLACE WITH YOUR CREDENTIALS) ===",
+  "ib-account": "YOUR_IB_ACCOUNT_NUMBER",
+  "ib-user-name": "YOUR_IB_USERNAME",
+  "ib-password": "YOUR_IB_PASSWORD",
+  "ib-host": "127.0.0.1",
+  "ib-port": "4002",
+  "ib-agent-description": "Individual",
+  "ib-tws-dir": "C:\\Jts",
+  "ib-version": "1040",
+  "ib-trading-mode": "paper",
+  "ib-enable-delayed-streaming-data": false,
+  "ib-weekly-restart-utc-time": "22:00:00",
+  "ib-financial-advisors-group-filter": "",
+
+  "comment-strategy": "=== Strategy Parameters ===",
+  "strategy-entry-threshold": -0.01,
+  "strategy-exit-threshold": 0.02,
+  "strategy-position-size-pct": 0.80,
+
+  "comment-limits": "=== Trading Limits ===",
+  "max-trading-pairs": 5,
+  "max-position-per-pair": 100000,
+
+  "environments": {
+    "live-arbitrage": {
+      "live-mode": true,
+      "live-mode-brokerage": "PaperBrokerage",
+      "data-queue-handler": [ "KrakenBrokerage", "InteractiveBrokersBrokerage" ],
+      "setup-handler": "QuantConnect.Lean.Engine.Setup.BrokerageRecoverySetupHandler",
+      "result-handler": "QuantConnect.Lean.Engine.Results.LiveTradingRecoveryResultHandler",
+      "data-feed-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+      "real-time-handler": "QuantConnect.Lean.Engine.RealTime.LiveTradingRealTimeHandler",
+      "transaction-handler": "QuantConnect.Lean.Engine.TransactionHandlers.BacktestingTransactionHandler",
+      "history-provider": [ "BrokerageHistoryProvider", "SubscriptionDataReaderHistoryProvider" ]
+    }
+  }
+}
