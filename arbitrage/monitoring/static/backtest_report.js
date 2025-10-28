@@ -31,7 +31,8 @@ class BacktestReportRenderer {
         this.filters = {
             showEntry: true,
             showExit: true,
-            showCanceled: true
+            showCanceled: true,
+            showPartiallyFilled: true  // 默认显示 PartiallyFilled
         };
     }
 
@@ -147,11 +148,15 @@ class BacktestReportRenderer {
                 <input type="checkbox" id="showCanceled" checked>
                 Show Canceled
             </label>
+            <label>
+                <input type="checkbox" id="showPartiallyFilled" checked>
+                Show PartiallyFilled
+            </label>
         </div>
         `;
 
-        const targetCards = this.executionTargets.map(target =>
-            this.buildExecutionTargetCard(target)
+        const targetCards = this.executionTargets.map((target, index) =>
+            this.buildExecutionTargetCard(target, index)
         ).join('');
 
         return `
@@ -168,7 +173,7 @@ class BacktestReportRenderer {
     /**
      * 构建单个ExecutionTarget卡片
      */
-    buildExecutionTargetCard(target) {
+    buildExecutionTargetCard(target, index) {
         const gridId = target.grid_id || 'N/A';
         const levelType = target.level_type || 'N/A';
         const statusCode = target.status || '0';
@@ -283,7 +288,9 @@ class BacktestReportRenderer {
                 this.buildOrderGroupCard(i + 1, og)
             ).join('');
 
-            const collapseId = `collapse-${gridId.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            // ✅ 使用数组索引生成唯一 ID（最可靠的方案）
+            const collapseId = `collapse-target-${index}`;
+
             orderGroupsHtml = `
             <div class="order-groups">
                 <h3 class="collapsible collapsed" data-collapse-id="${collapseId}">Order Groups Details</h3>
@@ -586,10 +593,12 @@ class BacktestReportRenderer {
         const showEntry = document.getElementById('showEntry');
         const showExit = document.getElementById('showExit');
         const showCanceled = document.getElementById('showCanceled');
+        const showPartiallyFilled = document.getElementById('showPartiallyFilled');
 
         if (showEntry) showEntry.addEventListener('change', () => this.applyFilters());
         if (showExit) showExit.addEventListener('change', () => this.applyFilters());
         if (showCanceled) showCanceled.addEventListener('change', () => this.applyFilters());
+        if (showPartiallyFilled) showPartiallyFilled.addEventListener('change', () => this.applyFilters());
 
         // 折叠事件 - 使用事件委托
         const container = document.getElementById(this.containerId);
@@ -610,6 +619,7 @@ class BacktestReportRenderer {
         const showEntry = document.getElementById('showEntry');
         const showExit = document.getElementById('showExit');
         const showCanceled = document.getElementById('showCanceled');
+        const showPartiallyFilled = document.getElementById('showPartiallyFilled');
 
         const cards = document.querySelectorAll('.execution-card');
 
@@ -626,6 +636,9 @@ class BacktestReportRenderer {
                 visible = false;
             }
             if (status === 'Canceled' && showCanceled && !showCanceled.checked) {
+                visible = false;
+            }
+            if (status === 'PartiallyFilled' && showPartiallyFilled && !showPartiallyFilled.checked) {
                 visible = false;
             }
 

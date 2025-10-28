@@ -28,6 +28,11 @@ class TradingMonitor {
             threshold: 1.0  // 1%
         };
 
+        // 交易机会过滤状态
+        this.opportunityFilter = {
+            enabled: false  // 默认不启用，显示所有价差
+        };
+
         // 网格持仓过滤状态
         this.gridPositionFilter = {
             enabled: true  // 默认启用过滤
@@ -73,6 +78,7 @@ class TradingMonitor {
         this.initialLoad();
         this.startHeartbeat();
         this.setupSpreadFilter();
+        this.setupOpportunityFilter();
         this.setupGridPositionFilter();
 
         // 3秒后如果WebSocket还没连接，启动轮询
@@ -90,6 +96,18 @@ class TradingMonitor {
             checkbox.addEventListener('change', (e) => {
                 this.spreadFilter.enabled = e.target.checked;
                 console.log(`[INFO] 价差过滤已${this.spreadFilter.enabled ? '启用' : '禁用'}`);
+                // 立即重新渲染价差数据
+                this.renderSpreads(this.spreadsCache);
+            });
+        }
+    }
+
+    setupOpportunityFilter() {
+        const checkbox = document.getElementById('opportunity-filter-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('change', (e) => {
+                this.opportunityFilter.enabled = e.target.checked;
+                console.log(`[INFO] 交易机会过滤已${this.opportunityFilter.enabled ? '启用' : '禁用'}`);
                 // 立即重新渲染价差数据
                 this.renderSpreads(this.spreadsCache);
             });
@@ -498,17 +516,34 @@ class TradingMonitor {
 
         // 过滤价差数据
         let filteredSpreads = spreads;
+
+        // 应用价差阈值过滤
         if (this.spreadFilter.enabled) {
             filteredSpreads = {};
             for (const [pair, spread] of Object.entries(spreads)) {
-                const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
+                // 使用 theoretical_spread 作为过滤依据
+                const theoreticalSpread = parseFloat(spread.theoretical_spread || spread.spread_pct || 0) * 100;
                 const threshold = this.spreadFilter.threshold;
 
-                // 只显示 spread_pct > threshold% 或 < -threshold% 的交易对
-                if (Math.abs(spreadPct) > threshold) {
+                // 只显示 theoretical_spread > threshold% 或 < -threshold% 的交易对
+                if (Math.abs(theoreticalSpread) > threshold) {
                     filteredSpreads[pair] = spread;
                 }
             }
+        }
+
+        // 应用交易机会过滤
+        if (this.opportunityFilter.enabled) {
+            const tempFiltered = {};
+            for (const [pair, spread] of Object.entries(filteredSpreads)) {
+                const marketState = spread.market_state || 'none';
+                // 只显示 market_state 不为 'none' 的交易对
+                // market_state 可能的值: 'crossed', 'limit', 'none'
+                if (marketState !== 'none') {
+                    tempFiltered[pair] = spread;
+                }
+            }
+            filteredSpreads = tempFiltered;
         }
 
         // 检查过滤后是否有数据
@@ -521,8 +556,9 @@ class TradingMonitor {
         let html = '<div class="spreads-grid">';
 
         for (const [pair, spread] of Object.entries(filteredSpreads)) {
-            const spreadPct = parseFloat(spread.spread_pct || 0) * 100;
-            const spreadClass = spreadPct >= 0 ? 'positive' : 'negative';
+            // 使用 theoretical_spread 作为主显示（向后兼容 spread_pct）
+            const theoreticalSpread = parseFloat(spread.theoretical_spread || spread.spread_pct || 0) * 100;
+            const theoreticalClass = theoreticalSpread >= 0 ? 'positive' : 'negative';
 
             const cryptoBid = parseFloat(spread.crypto_bid || 0);
             const cryptoAsk = parseFloat(spread.crypto_ask || 0);
@@ -531,6 +567,36 @@ class TradingMonitor {
 
             // 格式化时间戳
             const timestamp = spread.timestamp ? new Date(spread.timestamp).toLocaleTimeString('zh-CN') : '-';
+
+            // 检查是否有可执行价差
+            const hasExecutableSpread = spread.executable_spread !== null && spread.executable_spread !== undefined;
+            let executableSpreadHtml = '';
+
+            if (hasExecutableSpread) {
+                const executableSpread = parseFloat(spread.executable_spread) * 100;
+                const executableClass = executableSpread >= 0 ? 'positive' : 'negative';
+                const direction = spread.direction;
+
+                // 方向图标和文本
+                let directionDisplay = '';
+                if (direction === 'LONG_SPREAD') {
+                    directionDisplay = '📈 Long';
+                } else if (direction === 'SHORT_SPREAD') {
+                    directionDisplay = '📉 Short';
+                }
+
+                executableSpreadHtml = `
+                    <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #3e3e42;">
+                        <div style="font-size: 11px; color: #888; margin-bottom: 2px;">可执行价差</div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 11px; color: #dcdcaa;">${directionDisplay}</span>
+                            <span class="${executableClass}" style="font-size: 16px; font-weight: 600;">
+                                ${executableSpread >= 0 ? '+' : ''}${executableSpread.toFixed(2)}%
+                            </span>
+                        </div>
+                    </div>
+                `;
+            }
 
             html += `
                 <div class="spread-item">
@@ -551,10 +617,14 @@ class TradingMonitor {
 
                     <!-- 右侧：价差百分比 -->
                     <div class="spread-right">
-                        <div class="spread-value ${spreadClass}">
-                            ${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(2)}%
+                        <div style="text-align: right;">
+                            <div style="font-size: 11px; color: #888; margin-bottom: 2px;">理论价差</div>
+                            <div class="spread-value ${theoreticalClass}">
+                                ${theoreticalSpread >= 0 ? '+' : ''}${theoreticalSpread.toFixed(2)}%
+                            </div>
                         </div>
-                        <div class="spread-timestamp">${timestamp}</div>
+                        ${executableSpreadHtml}
+                        <div class="spread-timestamp" style="margin-top: 8px;">${timestamp}</div>
                     </div>
                 </div>
             `;

@@ -1141,10 +1141,16 @@
         <div class="card" style="margin-bottom: 20px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h2 style="margin: 0;">📈 交易对价差</h2>
-                <label style="font-size: 13px; cursor: pointer; user-select: none;">
-                    <input type="checkbox" id="spread-filter-checkbox" style="margin-right: 8px;">
-                    只显示 |价差| > 1%
-                </label>
+                <div style="display: flex; gap: 16px;">
+                    <label style="font-size: 13px; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="spread-filter-checkbox" style="margin-right: 8px;">
+                        只显示 |价差| > 1%
+                    </label>
+                    <label style="font-size: 13px; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="opportunity-filter-checkbox" style="margin-right: 8px;">
+                        只显示存在交易机会
+                    </label>
+                </div>
             </div>
             <div id="spreads-container" class="loader">加载中...</div>
         </div>
