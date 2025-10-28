@@ -60,6 +60,18 @@ BROKERAGES = [
             }
         ],
         "dependencies": ["IBAutomater"]
+    },
+    {
+        "name": "Bitfinex",
+        "repo_url": "",
+        "target_dir": "../Lean.Brokerages.Bitfinex",
+        "solution_file": "QuantConnect.BitfinexBrokerage.sln",
+        "dlls": [
+            {
+                "src": "QuantConnect.BitfinexBrokerage/bin/Debug/QuantConnect.BitfinexBrokerage.dll",
+                "dst": "Launcher/bin/Debug/QuantConnect.BitfinexBrokerage.dll"
+            }
+        ]
     }
 ]
 
@@ -108,7 +120,7 @@ def clone_repo(repo_url: str, target_dir: str) -> bool:
     Clone a git repository to the target directory.
 
     Args:
-        repo_url: Git repository URL
+        repo_url: Git repository URL (can be empty for local-only brokerages)
         target_dir: Target directory path (relative to Lean/)
 
     Returns:
@@ -119,6 +131,15 @@ def clone_repo(repo_url: str, target_dir: str) -> bool:
     if target_path.exists():
         log_skip(f"Repository already exists: {target_dir}")
         return True
+
+    # Skip cloning if repo_url is empty (local-only brokerage)
+    if not repo_url or repo_url.strip() == "":
+        if target_path.exists():
+            log_skip(f"Local brokerage directory exists: {target_dir}")
+            return True
+        else:
+            log_error(f"Local brokerage directory not found: {target_dir}")
+            return False
 
     log_info(f"Cloning repository: {repo_url}")
     log_info(f"Target directory: {target_dir}")
@@ -502,6 +523,7 @@ Examples:
 Available Brokerages:
   - Kraken
   - InteractiveBrokers (automatically downloads IBAutomater from NuGet)
+  - Bitfinex
         """
     )
 
