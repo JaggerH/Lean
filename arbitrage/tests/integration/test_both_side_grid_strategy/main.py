@@ -212,13 +212,10 @@ class BothSideGridTest(QCAlgorithm):
                 backtest_history_dir = Path(arbitrage_path) / 'monitoring' / 'backtest_history'
                 manager = BacktestManager(history_dir=str(backtest_history_dir))
 
-                # HTML 文件路径
-                html_filepath = json_filepath.replace('.json', '_grid.html')
-
-                # 添加到回测历史
+                # 添加到回测历史（只保存 JSON，不生成 HTML）
                 backtest_id = manager.add_backtest(
                     json_file=json_filepath,
-                    html_file=html_filepath if Path(html_filepath).exists() else None,
+                    html_file=None,  # 不再生成 HTML，前端直接处理 JSON
                     name=f"Both Side Grid Test - {self.time.strftime('%Y-%m-%d')}",
                     description=f"AAPL/AAPLxUSD both-side grid trading from {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}",
                     algorithm="BothSideGridTest"

@@ -41,7 +41,6 @@ sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
 from spread_manager import SpreadManager
 from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
-from monitoring.order_tracker import OrderTracker as EnhancedOrderTracker
 
 class LongCryptoGridTest(QCAlgorithm):
     """Long Crypto Grid Strategy 集成测试"""
@@ -50,7 +49,7 @@ class LongCryptoGridTest(QCAlgorithm):
         """初始化算法"""
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 27)
+        self.set_end_date(2025, 9, 5)
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
@@ -108,13 +107,6 @@ class LongCryptoGridTest(QCAlgorithm):
         self.debug("🔧 Initializing grid levels for trading pairs...")
         self.strategy.initialize_pair((aapl_crypto_symbol, aapl_stock_symbol))
         self.strategy.initialize_pair((tsla_crypto_symbol, tsla_stock_symbol))
-
-        # === 5. 初始化独立的订单追踪器 (Grid Version) ===
-        self.debug("📊 Initializing GridOrderTracker for tracking ExecutionTargets and Round Trips...")
-        self.order_tracker = EnhancedOrderTracker(self, self.strategy, debug=True)
-
-        # 注入到 Strategy 中（让 Strategy 能够调用 tracker）
-        self.strategy.order_tracker = self.order_tracker
 
         # 追踪 spread 更新
         self.spread_count = 0
@@ -177,13 +169,14 @@ class LongCryptoGridTest(QCAlgorithm):
         self.debug("=" * 60)
 
         try:
-            # 导出 JSON 数据到临时位置
+            # 导出 JSON 数据到临时位置（使用策略内部的 OrderTracker）
             json_filepath = "LongCryptoGridTest.json"
-            self.order_tracker.export_json(json_filepath)
+            order_tracker = self.strategy.monitoring_context.order_tracker
+            order_tracker.export_json(json_filepath)
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
             # 显示 GridOrderTracker 统计
-            tracker_stats = self.order_tracker.get_statistics()
+            tracker_stats = order_tracker.get_statistics()
             self.debug("")
             self.debug("📈 GridOrderTracker Summary:")
             self.debug(f"  Total ExecutionTargets: {tracker_stats['total_execution_targets']}")
@@ -208,13 +201,10 @@ class LongCryptoGridTest(QCAlgorithm):
                 backtest_history_dir = Path(arbitrage_path) / 'monitoring' / 'backtest_history'
                 manager = BacktestManager(history_dir=str(backtest_history_dir))
 
-                # HTML 文件路径
-                html_filepath = json_filepath.replace('.json', '_grid.html')
-
-                # 添加到回测历史
+                # 添加到回测历史（只保存 JSON，不生成 HTML）
                 backtest_id = manager.add_backtest(
                     json_file=json_filepath,
-                    html_file=html_filepath if Path(html_filepath).exists() else None,
+                    html_file=None,  # 不再生成 HTML，前端直接处理 JSON
                     name=f"Long Crypto Grid Test - {self.time.strftime('%Y-%m-%d')}",
                     description=f"AAPL/AAPLxUSD grid trading from {self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}",
                     algorithm="LongCryptoGridTest"

@@ -47,34 +47,6 @@ class Arbitrage(QCAlgorithm):
         # 设置时区为UTC
         self.set_time_zone("UTC")
 
-        # === 0. 初始化监控上下文 (统一管理监控组件) ===
-        self.debug("="*60)
-        self.debug("🔍 Initializing Monitoring Context")
-        self.debug("="*60)
-
-        # 检查监控模块是否可用
-        if not MONITORING_AVAILABLE:
-            error_msg = (
-                f"❌ 监控模块导入失败: {MONITORING_IMPORT_ERROR}\n"
-                f"   Live模式需要监控模块以避免数据丢失\n"
-                f"   请检查:\n"
-                f"   1. monitoring目录是否存在\n"
-                f"   2. 依赖是否已安装: pip install -r arbitrage/monitoring/requirements.txt"
-            )
-            self.debug(error_msg)
-            # Live 模式强制要求监控模块
-            if self.live_mode:
-                raise RuntimeError(error_msg)
-
-        # 创建监控上下文（自动检测 Live/Backtest 模式）
-        self.monitoring = MonitoringContext(
-            algorithm=self,
-            mode='auto',          # 自动检测模式
-            fail_on_error=True    # Live 模式强制要求 Redis
-        )
-
-        self.debug("="*60)
-
         # === 1. 杠杆配置 ===
         self.leverage_config = {
             'stock': 2.0,   # 股票2x杠杆
@@ -87,14 +59,7 @@ class Arbitrage(QCAlgorithm):
             "kraken": KrakenSymbolManager()
         }
 
-        # === 3. 初始化 SpreadManager (在订阅交易对之前) ===
-        self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(
-            algorithm=self,
-            monitor_adapter=self.monitoring.get_spread_monitor()  # 从监控上下文获取
-        )
-
-        # === 4. 初始化双边网格策略 ===
+        # === 3. 创建双边网格策略（自包含所有组件）===
         self.debug("📋 Initializing BothSideGridStrategy...")
         self.strategy = BothSideGridStrategy(
             algorithm=self,
@@ -103,30 +68,37 @@ class Arbitrage(QCAlgorithm):
             short_crypto_entry=0.03,   # 3% (short crypto entry threshold)
             short_crypto_exit=-0.009,  # -0.9% (short crypto exit threshold)
             position_size_pct=0.80,    # 80% (考虑杠杆和费用)
-            state_persistence=self.monitoring.get_state_persistence()  # 从监控上下文获取
+            enable_monitoring=True     # ✅ 策略内部会创建 MonitoringContext
         )
 
-        # === 5. 注册策略到 SpreadManager（观察者模式）===
+        # === 4. 初始化 SpreadManager（不再直接注入 monitor）===
+        self.debug("📊 Initializing SpreadManager...")
+        self.spread_manager = SpreadManager(algorithm=self)
+
+        # === 5. 注册监控系统为观察者（观察者模式）===
+        if self.strategy.monitoring_context:
+            spread_monitor = self.strategy.monitoring_context.get_spread_monitor()
+            if spread_monitor:
+                self.debug("🔗 Registering monitor as pair/spread observer...")
+                self.spread_manager.register_pair_observer(spread_monitor.write_pair_mapping)
+                self.spread_manager.register_observer(spread_monitor.write_spread)
+
+        # === 6. 注册策略到 SpreadManager（观察者模式）===
         self.debug("🔗 Registering strategy as spread observer...")
         self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 6. 动态订阅交易对 ===
+        # === 7. 动态订阅交易对（配置 grid levels）===
         self._subscribe_trading_pairs()
 
-        # === 7. 初始化订单追踪器 (通过监控上下文创建) ===
-        self.debug("📊 Initializing EnhancedOrderTracker...")
-        self.order_tracker = self.monitoring.create_order_tracker(
-            self.strategy,
-            debug=False
-        )
+        # === 8. 恢复策略状态（✅ 在所有 pairs 初始化完成后）===
+        self.strategy.restore_state()
 
-        # 注入到策略中
-        self.strategy.order_tracker = self.order_tracker
+        # === 9. 捕获初始快照 ===
+        if self.strategy.monitoring_context and self.strategy.monitoring_context.order_tracker:
+            self.strategy.monitoring_context.order_tracker.capture_initial_snapshot()
+            self.debug("📸 Initial portfolio snapshot captured")
 
-        # === 8. 捕获初始快照 ===
-        self.order_tracker.capture_initial_snapshot()
-
-        # === 9. 调试追踪器 ===
+        # === 10. 调试追踪器 ===
         self.last_cashbook_debug_time = self.time  # 上次打印 CashBook 的时间
 
         self.debug("="*60)
@@ -170,52 +142,42 @@ class Arbitrage(QCAlgorithm):
         self.spread_manager.on_data(data)
 
     def on_order_event(self, order_event: OrderEvent):
-        """处理订单事件 - 验证多账户路由"""
-        # 委托给 Strategy 的 on_order_event 处理订单事件
+        """
+        订单事件处理（最简化）
+
+        只需转发给 Strategy，剩下的自动流转：
+        ExecutionManager → GridStrategy.on_execution_event → MonitoringContext
+        """
         self.strategy.on_order_event(order_event)
 
     def on_end_of_algorithm(self):
         """算法结束 - 输出统计信息和验证多账户Margin模式行为"""
-        # === Finalize Open Round Trips ===
-        self.debug("=" * 60)
-        self.debug("📊 Finalizing Open Round Trips")
-        self.debug("=" * 60)
-        try:
-            self.order_tracker.finalize_open_round_trips()
-        except Exception as e:
-            self.debug(f"❌ Error finalizing open round trips: {e}")
-            import traceback
-            self.debug(traceback.format_exc())
 
-        # === 导出 JSON 数据 (Enhanced OrderTracker) ===
-        self.debug("=" * 60)
-        self.debug("📊 Exporting Enhanced OrderTracker Data")
-        self.debug("=" * 60)
+        # === 导出 OrderTracker 数据 ===
+        if self.strategy.monitoring_context and self.strategy.monitoring_context.order_tracker:
+            self.debug("=" * 60)
+            self.debug("📊 Exporting OrderTracker Data")
+            self.debug("=" * 60)
 
-        try:
-            # 导出 JSON 数据
-            json_filepath = "order_tracker_data_live.json"
-            self.order_tracker.export_json(json_filepath)
-            self.debug(f"✅ JSON data exported to: {json_filepath}")
+            try:
+                # 导出 JSON 数据
+                json_filepath = "order_tracker_data_live.json"
+                self.strategy.monitoring_context.order_tracker.export_json(json_filepath)
+                self.debug(f"✅ JSON data exported to: {json_filepath}")
 
-            # 生成 HTML 可视化报告
-            from monitoring.html_generator import generate_html_report
-            html_filepath = "order_tracker_report_live.html"
-            generate_html_report(json_filepath, html_filepath)
-            self.debug(f"✅ HTML report generated: {html_filepath}")
+                # 显示统计信息
+                stats = self.strategy.monitoring_context.order_tracker.get_statistics()
+                self.debug("")
+                self.debug("📈 OrderTracker Summary:")
+                self.debug(f"  Total Execution Targets: {stats['total_execution_targets']}")
+                self.debug(f"  Total Portfolio Snapshots: {stats['total_snapshots']}")
+                self.debug(f"  Total Grid Position Snapshots: {stats['total_grid_positions']}")
+                self.debug("")
 
-            # 显示摘要信息
-            self.debug("")
-            self.debug("📈 Report Summary:")
-            self.debug(f"  Total Snapshots: {len(self.order_tracker.snapshots)}")
-            self.debug(f"  Total Orders Tracked: {len(self.order_tracker.orders)}")
-            self.debug(f"  Realized PnL: ${self.order_tracker.realized_pnl:.2f}")
-            self.debug("")
-
-        except Exception as e:
-            self.debug(f"❌ Error generating reports: {e}")
-            import traceback
-            self.debug(traceback.format_exc())
+            except Exception as e:
+                self.debug(f"❌ Error exporting OrderTracker data: {e}")
+                import traceback
+                self.debug(traceback.format_exc())
 
         # === 输出最终多账户状态 ===
         if hasattr(self.portfolio, 'GetAccount'):

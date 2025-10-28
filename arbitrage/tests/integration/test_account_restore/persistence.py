@@ -1,32 +1,22 @@
 """
-账户状态持久化测试 - Account State Persistence Test
+State Persistence 测试 - 阶段1
 
-第一次运行：执行简单的4小时轮换交易策略，建立持仓，并保存状态到文件
+测试目标:
+1. 在 Backtest 环境下触发 state_persistence
+2. 在 ExecutionTarget PartiallyFilled 时保存状态并退出
+3. 验证保存的数据格式是否正确
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
-- 交易对: AAPL/AAPLxUSD, TSLA/TSLAxUSD
-- 时间范围: 2025-09-02 至 2025-09-04
-- 账户配置:
-  * IBKR账户: $50,000 - 交易股票 (USA market) - Margin模式 2x杠杆
-  * Kraken账户: $50,000 - 交易加密货币 (Kraken market) - Margin模式 5x杠杆
-- 交易策略: 每10秒轮换方向的简单策略
-  - 0-10s: 不下单（等待数据稳定）
-  - 10-20s: 开仓 Long Crypto + Short Stock
-  - 20-30s: 切换到 Short Crypto + Long Stock
-  - 30-40s: 切换回 Long Crypto + Short Stock
-  - 以此类推，来回切换
-- 从第20秒起始终保持持仓状态
-
-测试目标:
-- 执行简单的交易策略建立持仓
-- 在算法结束时保存多账户状态到文件
-- 为第二次运行（recovery.py）准备状态文件
+- 交易对: AAPL/AAPLxUSD
+- 日期范围: 2025-09-02 至 2025-09-05
+- 策略: LongCryptoGridStrategy
 """
 
 import sys
 from pathlib import Path
 from datetime import timedelta
+import json
 
 # Add arbitrage directory to path
 arbitrage_path = str(Path(__file__).parent.parent.parent.parent)
@@ -37,15 +27,17 @@ from AlgorithmImports import *
 # Add arbitrage to path for imports
 sys.path.insert(0, str(Path(arbitrage_path) / 'arbitrage'))
 
+from spread_manager import SpreadManager
+from strategy.long_crypto_grid_strategy import LongCryptoGridStrategy
 
-class AccountPersistenceTest(QCAlgorithm):
-    """账户状态持久化测试 - 第一次运行"""
+class StatePersistenceTest(QCAlgorithm):
+    """State Persistence 测试"""
 
     def initialize(self):
         """初始化算法"""
         # 设置回测时间范围
         self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 4)
+        self.set_end_date(2025, 9, 5)
 
         # 设置时区为UTC
         self.set_time_zone("UTC")
@@ -55,230 +47,244 @@ class AccountPersistenceTest(QCAlgorithm):
         self.settings.minimum_order_margin_portfolio_percentage = 0
         self.debug("⚙️ Disabled minimum order margin filter")
 
-        self.debug("=" * 80)
-        self.debug("💾 PERSISTENCE TEST - First Run")
-        self.debug("=" * 80)
+        # 追踪测试状态
+        self._partial_fill_detected = False
+        self._state_saved = False
 
-        # === 订阅交易对 ===
+        # === 1. 初始化 SpreadManager ===
+        self.debug("📊 Initializing SpreadManager...")
+        self.spread_manager = SpreadManager(algorithm=self)
+
+        # === 2. 初始化 Long Crypto Grid Strategy ===
+        self.debug("📋 Initializing LongCryptoGridStrategy...")
+        self.strategy = LongCryptoGridStrategy(
+            algorithm=self,
+            entry_threshold=-0.01,  # -1%
+            exit_threshold=0.02,    # 2%
+            position_size_pct=0.80,  # 80% (考虑杠杆和费用)
+        )
+
+        # 启用debug模式
+        self.strategy.debug = True
+
+        # === 3. 使用 Observer 模式连接 SpreadManager 和 Strategy ===
+        self.debug("🔗 Registering strategy as spread observer...")
+        self.spread_manager.register_observer(self.strategy.on_spread_update)
+
+        # === 4. 订阅交易对 ===
         self.debug("📡 Subscribing to trading pairs...")
 
         # 订阅 AAPL 交易对
-        self.aapl_crypto = self.add_crypto("AAPLxUSD", Resolution.TICK, Market.Kraken)
-        self.aapl_stock = self.add_equity("AAPL", Resolution.TICK, Market.USA, extended_market_hours=True)
-        self.debug(f"✅ Subscribed: AAPLxUSD (Kraken) <-> AAPL (USA)")
+        aapl_crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
+        aapl_stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
 
-        # 订阅 TSLA 交易对
-        self.tsla_crypto = self.add_crypto("TSLAxUSD", Resolution.TICK, Market.Kraken)
-        self.tsla_stock = self.add_equity("TSLA", Resolution.TICK, Market.USA, extended_market_hours=True)
-        self.debug(f"✅ Subscribed: TSLAxUSD (Kraken) <-> TSLA (USA)")
+        self.aapl_crypto, self.aapl_stock = self.spread_manager.subscribe_trading_pair(
+            pair_symbol=(aapl_crypto_symbol, aapl_stock_symbol),
+        )
 
-        # === 交易控制变量 ===
-        self.trade_interval = timedelta(seconds=10)
-        self.last_trade_time = None
-        self.trade_count = 0
+        self.debug(f"✅ Subscribed: {aapl_crypto_symbol.value} <-> {aapl_stock_symbol.value}")
 
-        # 当前目标持仓状态 (1 = Long Crypto + Short Stock, -1 = Short Crypto + Long Stock)
-        self.target_position = 0
-
-        self.debug("")
-        self.debug("⏰ Trading Schedule:")
-        self.debug("   0-10s:   No trading (waiting for data)")
-        self.debug("   10-20s:  Open Long Crypto + Short Stock")
-        self.debug("   20-30s:  Flip to Short Crypto + Long Stock")
-        self.debug("   30-40s:  Flip to Long Crypto + Short Stock")
-        self.debug("   ... continue flipping every 10 seconds")
-        self.debug(f"✅ SaveState API available: {hasattr(self, 'save_state')}")
-        self.debug("=" * 80)
+        # === 5. 初始化Grid Levels ===
+        self.debug("🔧 Initializing grid levels for trading pairs...")
+        self.strategy.initialize_pair((aapl_crypto_symbol, aapl_stock_symbol))
 
     def on_data(self, data: Slice):
-        """处理数据 - 每10秒执行一次交易"""
-        # 添加日志：每5秒输出一次数据接收情况
-        if not hasattr(self, '_last_log_time'):
-            self._last_log_time = self.time
-            self.debug(f"📊 First on_data call at {self.time}")
-            self.debug(f"   Data count: {data.Count}")
-            self.debug(f"   Has AAPL: {data.ContainsKey(self.aapl_stock.symbol)}")
-            self.debug(f"   Has AAPLxUSD: {data.ContainsKey(self.aapl_crypto.symbol)}")
-            self.debug(f"   Has TSLA: {data.ContainsKey(self.tsla_stock.symbol)}")
-            self.debug(f"   Has TSLAxUSD: {data.ContainsKey(self.tsla_crypto.symbol)}")
-
-        if (self.time - self._last_log_time).total_seconds() >= 5:
-            self.debug(f"📊 on_data called at {self.time} | Data count: {data.Count} | Keys: {[str(k) for k in data.Keys]}")
-            self._last_log_time = self.time
-
-        # 检查是否到了交易时间
-        if self.last_trade_time is None:
-            self.last_trade_time = self.time
+        """处理数据 - 委托给SpreadManager处理"""
+        if not data.ticks or len(data.ticks) == 0:
             return
-
-        time_since_last_trade = self.time - self.last_trade_time
-
-        if time_since_last_trade >= self.trade_interval:
-            self.execute_trade()
-            self.last_trade_time = self.time
-            self.trade_count += 1
-
-    def execute_trade(self):
-        """执行交易"""
-        self.debug("")
-        self.debug("=" * 80)
-        self.debug(f"⏰ Trade Interval #{self.trade_count} - Time: {self.time}")
-        self.debug("=" * 80)
-
-        if self.trade_count == 0:
-            # 第一次不下单
-            self.debug("🚫 First interval - No trading (waiting for data)")
-            return
-
-        if self.trade_count == 1:
-            # 第二次开仓: Long Crypto + Short Stock
-            self.debug("📈 Opening positions: Long Crypto + Short Stock")
-            self.market_order(self.aapl_crypto.symbol, 1)
-            self.market_order(self.aapl_stock.symbol, -1)
-            self.market_order(self.tsla_crypto.symbol, 1)
-            self.market_order(self.tsla_stock.symbol, -1)
-            self.target_position = 1
-        else:
-            # 之后每次反向切换
-            if self.target_position == 1:
-                # 从 Long Crypto + Short Stock 切换到 Short Crypto + Long Stock
-                self.debug("🔄 Flipping to: Short Crypto + Long Stock")
-                self.market_order(self.aapl_crypto.symbol, -2)  # +1 -> -1
-                self.market_order(self.aapl_stock.symbol, 2)    # -1 -> +1
-                self.market_order(self.tsla_crypto.symbol, -2)
-                self.market_order(self.tsla_stock.symbol, 2)
-                self.target_position = -1
-            else:
-                # 从 Short Crypto + Long Stock 切换到 Long Crypto + Short Stock
-                self.debug("🔄 Flipping to: Long Crypto + Short Stock")
-                self.market_order(self.aapl_crypto.symbol, 2)   # -1 -> +1
-                self.market_order(self.aapl_stock.symbol, -2)   # +1 -> -1
-                self.market_order(self.tsla_crypto.symbol, 2)
-                self.market_order(self.tsla_stock.symbol, -2)
-                self.target_position = 1
-
-        self.debug(f"✅ Orders placed for interval #{self.trade_count}")
+        self.strategy.on_data(data)
+        self.spread_manager.on_data(data)
 
     def on_order_event(self, order_event: OrderEvent):
-        """处理订单事件"""
-        if order_event.Status == OrderStatus.Filled:
-            order = self.transactions.get_order_by_id(order_event.order_id)
-            # Use new C# SaveState API
-            self.save_state()
-            self.debug(
-                f"✅ Order Filled: {order.symbol.value} | "
-                f"Qty: {order_event.fill_quantity} | "
-                f"Price: ${order_event.fill_price:.2f} | "
-                f"Account: {order_event.account_name if hasattr(order_event, 'account_name') else 'N/A'}"
-            )
-        elif order_event.Status == OrderStatus.Invalid:
-            self.error(f"❌ Order Invalid: {order_event.message}")
+        """处理订单事件 - 在有交易活动后保存状态"""
+        # 委托给 Strategy 的 on_order_event 处理订单事件
+        self.strategy.on_order_event(order_event)
+
+        # 在第一笔订单成交后，检查是否有需要保存的状态
+        if not self._partial_fill_detected and order_event.Status == OrderStatus.Filled:
+            # 检查是否有活跃的 ExecutionTarget 或 GridPosition
+            has_active_targets = len(self.strategy.execution_manager.active_targets) > 0
+            has_positions = len(self.strategy.grid_position_manager.grid_positions) > 0
+
+            if has_active_targets or has_positions:
+                self._partial_fill_detected = True
+                self.debug("="*60)
+                self.debug("🎯 Detected trading activity! Triggering state save...")
+                self.debug(f"Active ExecutionTargets: {len(self.strategy.execution_manager.active_targets)}")
+                self.debug(f"Grid Positions: {len(self.strategy.grid_position_manager.grid_positions)}")
+
+                # 输出 ExecutionTarget 详情
+                for hash_key, target in self.strategy.execution_manager.active_targets.items():
+                    crypto_filled, stock_filled = target.quantity_filled
+                    crypto_symbol, stock_symbol = target.pair_symbol
+                    crypto_target = target.target_qty[crypto_symbol]
+                    stock_target = target.target_qty[stock_symbol]
+                    # target.status 是 ExecutionStatus enum
+                    status_name = target.status.name if hasattr(target.status, 'name') else str(target.status)
+                    self.debug(f"  Target {target.grid_id}: Status={status_name}, "
+                              f"Filled={crypto_filled:.4f}/{crypto_target:.4f}, {stock_filled:.4f}/{stock_target:.4f}")
+
+                self.debug("="*60)
+
+                # 立即保存状态（订单已成交）
+                self._save_state_and_exit()
+
+        if order_event.Status == OrderStatus.Invalid:
+            self.error(f"Order failed: {order_event.Message}")
             sys.exit(1)
 
-    def on_end_of_algorithm(self):
-        """算法结束 - 保存状态"""
-        self.debug("")
-        self.debug("=" * 80)
-        self.debug("📊 Algorithm Ending - Saving State")
-        self.debug("=" * 80)
+    def _save_state_and_exit(self):
+        """保存状态并验证数据格式"""
+        if self._state_saved:
+            return
 
-        # 打印最终账户状态
-        self.print_final_account_state()
+        self._state_saved = True
 
-        # 保存状态
-        self.save_state_for_recovery()
-
-        super().on_end_of_algorithm()
-
-    def save_state_for_recovery(self):
-        """保存状态以供恢复测试"""
-        self.debug("")
-        self.debug("=" * 80)
-        self.debug("💾 Saving Multi-Account State (using C# SaveState)")
-        self.debug("=" * 80)
+        self.debug("="*60)
+        self.debug("💾 Saving state and verifying format...")
+        self.debug("="*60)
 
         try:
-            # Use new C# SaveState API
-            self.save_state()
+            # 1. 触发持久化（检查 state_persistence 是否可用，而不是 is_enabled）
+            if self.strategy.monitoring_context and self.strategy.monitoring_context.state_persistence:
+                # 调用 persist() 并传入当前状态
+                self.strategy.monitoring_context.state_persistence.persist(
+                    grid_positions=self.strategy.grid_position_manager.grid_positions,
+                    execution_targets=self.strategy.execution_manager.active_targets
+                )
 
-            # 读取并显示保存的内容
-            from QuantConnect.Configuration import Config
-            import json
-            state_path = Config.Get("multi-account-persistence", "")
+                # 2. 读取保存的数据
+                state_data = self.strategy.monitoring_context.state_persistence.restore()
 
-            if state_path:
-                with open(state_path, 'r') as f:
-                    saved_state = json.load(f)
+                if not state_data:
+                    self.error("❌ No state data found after persistence!")
+                    self.Quit()
+                    return
 
-                self.debug("")
-                self.debug("📄 Saved State Summary:")
-                self.debug(f"   File: {state_path}")
-                self.debug(f"   Timestamp: {saved_state.get('Timestamp', 'N/A')}")
-                self.debug(f"   Accounts: {list(saved_state.get('Accounts', {}).keys())}")
+                # 3. 验证数据格式
+                self._verify_persistence_format(state_data)
 
-                for account_name, account_data in saved_state.get('Accounts', {}).items():
-                    self.debug(f"   - {account_name}:")
-                    self.debug(f"     Cash entries: {len(account_data.get('cash', []))}")
-                    self.debug(f"     Holdings: {len(account_data.get('holdings', []))}")
+                # 4. 输出详细快照
+                self._output_state_snapshot(state_data)
 
-                self.debug("")
-                self.debug("📌 Next step: Run recovery.py to verify state recovery")
+            else:
+                self.error("❌ StatePersistence not available!")
 
         except Exception as e:
-            self.debug(f"❌ Error saving state: {e}")
+            self.error(f"❌ Error during state persistence: {e}")
             import traceback
-            self.debug(traceback.format_exc())
+            self.error(traceback.format_exc())
 
-        self.debug("=" * 80)
+        finally:
+            # 5. 退出算法
+            self.debug("="*60)
+            self.debug("✅ State persistence test completed, exiting...")
+            self.debug("="*60)
+            self.Quit()
 
-    def print_final_account_state(self):
-        """打印最终账户状态"""
-        self.debug("")
-        self.debug("=" * 80)
-        self.debug("💰 Final Multi-Account State")
-        self.debug("=" * 80)
+    def _verify_persistence_format(self, state_data: dict):
+        """验证持久化数据格式"""
+        self.debug("\n📋 Verifying persistence format...")
 
-        if hasattr(self.Portfolio, 'SubAccounts'):
-            multi_portfolio = self.Portfolio
+        errors = []
 
-            for account_name in multi_portfolio.SubAccounts.Keys:
-                sub_account = multi_portfolio.GetAccount(account_name)
+        # 检查 timestamp
+        if "timestamp" not in state_data:
+            errors.append("Missing 'timestamp' field")
+        else:
+            self.debug(f"  ✅ timestamp: {state_data['timestamp']}")
 
-                self.debug(f"\n📊 Account: {account_name}")
-                self.debug("-" * 80)
+        # 检查 grid_positions
+        if "grid_positions" not in state_data:
+            errors.append("Missing 'grid_positions' field")
+        else:
+            grid_positions = state_data["grid_positions"]
+            self.debug(f"  ✅ grid_positions: {len(grid_positions)} positions")
 
-                # 现金
-                self.debug("  💰 Cash:")
-                for currency in sub_account.CashBook.Keys:
-                    cash = sub_account.CashBook[currency]
-                    self.debug(f"    {currency}: ${cash.Amount:,.2f}")
+            for hash_key, position_data in grid_positions.items():
+                if "level_data" not in position_data:
+                    errors.append(f"GridPosition {hash_key} missing 'level_data'")
+                if "leg1_qty" not in position_data:
+                    errors.append(f"GridPosition {hash_key} missing 'leg1_qty'")
+                if "leg2_qty" not in position_data:
+                    errors.append(f"GridPosition {hash_key} missing 'leg2_qty'")
 
-                # 持仓 - 使用全局Securities字典按market过滤
-                self.debug("  📦 Holdings:")
-                account_market = "kraken" if account_name == "Kraken" else "usa"
-                holdings_count = 0
+        # 检查 execution_targets
+        if "execution_targets" not in state_data:
+            errors.append("Missing 'execution_targets' field")
+        else:
+            execution_targets = state_data["execution_targets"]
+            self.debug(f"  ✅ execution_targets: {len(execution_targets)} targets")
 
-                for symbol in self.Securities.Keys:
-                    security = self.Securities[symbol]
-                    market_str = str(symbol.ID.Market).lower()
+            for hash_key, target_data in execution_targets.items():
+                # 检查必需字段
+                required_fields = ['grid_id', 'target_qty', 'status', 'order_groups']
+                for field in required_fields:
+                    if field not in target_data:
+                        errors.append(f"ExecutionTarget {hash_key} missing '{field}'")
 
-                    # Skip crypto (它们的持仓在现金中)
-                    if symbol.SecurityType == SecurityType.Crypto:
-                        continue
+                # 检查 order_groups 结构
+                if "order_groups" in target_data:
+                    for idx, og_data in enumerate(target_data["order_groups"]):
+                        if "completed_tickets_json" not in og_data:
+                            errors.append(f"OrderGroup {idx} missing 'completed_tickets_json'")
+                        if "active_broker_ids" not in og_data:
+                            errors.append(f"OrderGroup {idx} missing 'active_broker_ids'")
 
-                    # 按market过滤
-                    if market_str == account_market and security.Holdings.AbsoluteQuantity > 0:
-                        holdings_count += 1
-                        self.debug(
-                            f"    {symbol.Value}: Qty={security.Holdings.Quantity}, "
-                            f"AvgPrice=${security.Holdings.AveragePrice:.2f}, "
-                            f"Value=${security.Holdings.HoldingsValue:,.2f}"
-                        )
+        # 输出验证结果
+        if errors:
+            self.error("\n❌ Format validation FAILED:")
+            for error in errors:
+                self.error(f"  - {error}")
+        else:
+            self.debug("\n✅ Format validation PASSED!")
 
-                if holdings_count == 0:
-                    self.debug("    (No holdings)")
+    def _output_state_snapshot(self, state_data: dict):
+        """输出状态快照详情"""
+        self.debug("\n" + "="*60)
+        self.debug("📊 State Snapshot Details")
+        self.debug("="*60)
 
-                # 账户价值
-                self.debug(f"  💼 Total Portfolio Value: ${sub_account.TotalPortfolioValue:,.2f}")
+        # 输出 GridPositions
+        grid_positions = state_data.get("grid_positions", {})
+        self.debug(f"\n📦 GridPositions ({len(grid_positions)} total):")
+        for hash_key, position_data in grid_positions.items():
+            level_data = position_data.get("level_data", {})
+            self.debug(f"  Hash: {hash_key}")
+            self.debug(f"    Level ID: {level_data.get('level_id')}")
+            self.debug(f"    Type: {level_data.get('type')}")
+            self.debug(f"    Spread: {level_data.get('spread_pct'):.4f}")
+            self.debug(f"    Direction: {level_data.get('direction')}")
+            self.debug(f"    Leg1 Qty: {position_data.get('leg1_qty', 0):.4f}")
+            self.debug(f"    Leg2 Qty: {position_data.get('leg2_qty', 0):.4f}")
 
-        self.debug("=" * 80)
+        # 输出 ExecutionTargets
+        execution_targets = state_data.get("execution_targets", {})
+        self.debug(f"\n🎯 ExecutionTargets ({len(execution_targets)} total):")
+        for hash_key, target_data in execution_targets.items():
+            self.debug(f"  Hash: {hash_key}")
+            self.debug(f"    Grid ID: {target_data.get('grid_id')}")
+            self.debug(f"    Status: {target_data.get('status')}")
+            self.debug(f"    Target Qty: {target_data.get('target_qty')}")
+            self.debug(f"    Spread Direction: {target_data.get('spread_direction')}")
+
+            order_groups = target_data.get("order_groups", [])
+            self.debug(f"    OrderGroups: {len(order_groups)}")
+            for idx, og_data in enumerate(order_groups):
+                completed_count = len(og_data.get("completed_tickets_json", []))
+                active_count = len(og_data.get("active_broker_ids", []))
+                self.debug(f"      Group {idx}: {completed_count} completed, {active_count} active")
+
+        self.debug("="*60)
+
+    def error(self, error: str):
+        """捕获错误消息"""
+        self.debug(f"❌ ERROR: {error}")
+        super().error(error)
+
+    def on_end_of_algorithm(self):
+        """算法结束"""
+        super().on_end_of_algorithm()
+        self.debug("="*60)
+        self.debug("📊 State Persistence Test Completed")
+        self.debug("="*60)

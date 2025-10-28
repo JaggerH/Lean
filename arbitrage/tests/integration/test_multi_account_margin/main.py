@@ -306,12 +306,6 @@ class MultiAccountMarginTest(TestableAlgorithm):
             self.order_tracker.export_json(json_filepath)
             self.debug(f"✅ JSON data exported to: {json_filepath}")
 
-            # 生成 HTML 可视化报告
-            from monitoring.html_generator import generate_html_report
-            html_filepath = "order_tracker_report.html"
-            generate_html_report(json_filepath, html_filepath)
-            self.debug(f"✅ HTML report generated: {html_filepath}")
-
             # 显示摘要信息
             self.debug("")
             self.debug("📈 Report Summary:")

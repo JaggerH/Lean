@@ -178,7 +178,7 @@ class BacktestManager:
         reverse: bool = True
     ) -> List[Dict]:
         """
-        列出所有回测
+        列出所有回测（通过遍历文件夹）
 
         Args:
             limit: 最大数量限制
@@ -188,9 +188,29 @@ class BacktestManager:
         Returns:
             回测元数据列表
         """
-        # 重新加载索引，确保获取最新数据
-        self.index = self._load_index()
-        backtests = self.index.get("backtests", [])
+        backtests = []
+
+        # 遍历 backtest_history 目录下的所有子目录
+        if not self.history_dir.exists():
+            return backtests
+
+        for backtest_dir in self.history_dir.iterdir():
+            # 跳过非目录和 index.json 文件
+            if not backtest_dir.is_dir():
+                continue
+
+            # 读取 metadata.json
+            metadata_file = backtest_dir / "metadata.json"
+            if not metadata_file.exists():
+                continue
+
+            try:
+                with open(metadata_file, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                    backtests.append(metadata)
+            except Exception as e:
+                print(f"[WARN] Failed to load metadata from {metadata_file}: {e}")
+                continue
 
         # 排序
         if sort_by in ["created_at", "total_pnl", "total_round_trips"]:
@@ -208,7 +228,7 @@ class BacktestManager:
 
     def get_backtest(self, backtest_id: str) -> Optional[Dict]:
         """
-        获取指定回测的详细信息
+        获取指定回测的详细信息（从文件夹读取）
 
         Args:
             backtest_id: 回测唯一标识符
@@ -216,13 +236,19 @@ class BacktestManager:
         Returns:
             回测元数据，如果不存在返回 None
         """
-        # 重新加载索引，确保获取最新数据
-        self.index = self._load_index()
-        backtests = self.index.get("backtests", [])
-        for bt in backtests:
-            if bt.get("backtest_id") == backtest_id:
-                return bt
-        return None
+        # 直接从文件夹读取 metadata.json
+        backtest_dir = self.history_dir / backtest_id
+        metadata_file = backtest_dir / "metadata.json"
+
+        if not metadata_file.exists():
+            return None
+
+        try:
+            with open(metadata_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[WARN] Failed to load metadata from {metadata_file}: {e}")
+            return None
 
     def get_backtest_data(self, backtest_id: str) -> Optional[Dict]:
         """
@@ -335,8 +361,8 @@ class BacktestManager:
         print(f"[OK] Imported {imported} backtests")
 
     def get_statistics(self) -> Dict[str, Any]:
-        """获取回测历史统计信息"""
-        backtests = self.index.get("backtests", [])
+        """获取回测历史统计信息（从文件夹读取）"""
+        backtests = self.list_backtests()
 
         total_pnl = sum(bt.get("total_pnl", 0) for bt in backtests)
         total_round_trips = sum(bt.get("total_round_trips", 0) for bt in backtests)
@@ -353,7 +379,11 @@ class BacktestManager:
 if __name__ == "__main__":
     import sys
 
-    manager = BacktestManager()
+    # CLI 工具默认使用 monitoring/backtest_history 路径
+    # 如果从 monitoring 目录运行，则使用 backtest_history
+    # 如果从 arbitrage 目录运行，则使用 monitoring/backtest_history
+    default_history_dir = Path(__file__).parent / "backtest_history"
+    manager = BacktestManager(history_dir=str(default_history_dir))
 
     if len(sys.argv) < 2:
         print("Usage:")
