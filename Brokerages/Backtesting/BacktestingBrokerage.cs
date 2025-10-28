@@ -16,10 +16,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using Newtonsoft.Json;
-using QuantConnect.Configuration;
 using QuantConnect.Data.Market;
 using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
@@ -33,77 +30,6 @@ using QuantConnect.Util;
 
 namespace QuantConnect.Brokerages.Backtesting
 {
-    /// <summary>
-    /// Model class for multi-account state file
-    /// </summary>
-    internal class StateFile
-    {
-        [JsonProperty("timestamp")]
-        public string Timestamp { get; set; }
-
-        [JsonProperty("accounts")]
-        public Dictionary<string, AccountState> Accounts { get; set; } = new Dictionary<string, AccountState>();
-    }
-
-    /// <summary>
-    /// Model class for per-account state
-    /// </summary>
-    internal class AccountState
-    {
-        [JsonProperty("cash")]
-        public List<CashAmount> Cash { get; set; } = new List<CashAmount>();
-
-        [JsonProperty("holdings")]
-        public List<Holding> Holdings { get; set; } = new List<Holding>();
-
-        [JsonProperty("orders")]
-        public List<SavedOrder> Orders { get; set; } = new List<SavedOrder>();
-    }
-
-    /// <summary>
-    /// Model class for saved order information
-    /// </summary>
-    public class SavedOrder
-    {
-        [JsonProperty("Symbol")]
-        public SymbolInfo Symbol { get; set; }
-
-        [JsonProperty("Type")]
-        public int Type { get; set; }
-
-        [JsonProperty("Status")]
-        public int Status { get; set; }
-
-        [JsonProperty("Quantity")]
-        public decimal Quantity { get; set; }
-
-        [JsonProperty("LimitPrice")]
-        public decimal? LimitPrice { get; set; }
-
-        [JsonProperty("StopPrice")]
-        public decimal? StopPrice { get; set; }
-
-        [JsonProperty("Time")]
-        public string Time { get; set; }
-
-        [JsonProperty("Tag")]
-        public string Tag { get; set; }
-
-        [JsonProperty("TimeInForce")]
-        public string TimeInForce { get; set; }
-    }
-
-    /// <summary>
-    /// Helper class for Symbol serialization
-    /// </summary>
-    public class SymbolInfo
-    {
-        [JsonProperty("Value")]
-        public string Value { get; set; }
-
-        [JsonProperty("ID")]
-        public string ID { get; set; }
-    }
     /// <summary>
     /// Represents a brokerage to be used during backtesting. This is intended to be only be used with the BacktestingTransactionHandler
     /// </summary>
@@ -725,123 +651,6 @@ namespace QuantConnect.Brokerages.Backtesting
             {
                 order.BrokerId.Add(orderId);
             }
-        }
-
-        /// <summary>
-        /// Gets cash balance for a specific account from state file
-        /// Used for multi-account state recovery in backtest mode
-        /// </summary>
-        /// <param name="accountName">The name of the account</param>
-        /// <returns>List of cash amounts for the specified account</returns>
-        public virtual List<CashAmount> GetCashBalanceForAccount(string accountName)
-        {
-            // Try to read from config-specified state file
-            var statePath = Config.Get("multi-account-persistence");
-            if (!string.IsNullOrEmpty(statePath))
-            {
-                try
-                {
-                    if (File.Exists(statePath))
-                    {
-                        var json = File.ReadAllText(statePath);
-                        var stateFile = JsonConvert.DeserializeObject<StateFile>(json);
-
-                        if (stateFile?.Accounts != null && stateFile.Accounts.ContainsKey(accountName))
-                        {
-                            var accountState = stateFile.Accounts[accountName];
-                            if (accountState.Cash != null && accountState.Cash.Count > 0)
-                            {
-                                return accountState.Cash;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"BacktestingBrokerage.GetCashBalanceForAccount(): Failed to read state file '{statePath}': {ex.Message}");
-                }
-            }
-
-            // Return empty list (fresh start)
-            return new List<CashAmount>();
-        }
-
-        /// <summary>
-        /// Gets holdings for a specific account from state file
-        /// Used for multi-account state recovery in backtest mode
-        /// </summary>
-        /// <param name="accountName">The name of the account</param>
-        /// <returns>List of holdings for the specified account</returns>
-        public virtual List<Holding> GetAccountHoldingsForAccount(string accountName)
-        {
-            // Try to read from config-specified state file
-            var statePath = Config.Get("multi-account-persistence");
-            if (!string.IsNullOrEmpty(statePath))
-            {
-                try
-                {
-                    if (File.Exists(statePath))
-                    {
-                        var json = File.ReadAllText(statePath);
-                        var stateFile = JsonConvert.DeserializeObject<StateFile>(json);
-
-                        if (stateFile?.Accounts != null && stateFile.Accounts.ContainsKey(accountName))
-                        {
-                            var accountState = stateFile.Accounts[accountName];
-                            if (accountState.Holdings != null && accountState.Holdings.Count > 0)
-                            {
-                                return accountState.Holdings;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"BacktestingBrokerage.GetAccountHoldingsForAccount(): Failed to read state file '{statePath}': {ex.Message}");
-                }
-            }
-
-            // Return empty list (fresh start)
-            return new List<Holding>();
-        }
-
-        /// <summary>
-        /// Gets open orders for a specific account from state file
-        /// Used for multi-account order recovery in backtest mode
-        /// </summary>
-        /// <param name="accountName">The name of the account</param>
-        /// <returns>List of saved orders for the specified account</returns>
-        public virtual List<SavedOrder> GetOpenOrdersForAccount(string accountName)
-        {
-            // Try to read from config-specified state file
-            var statePath = Config.Get("multi-account-persistence");
-            if (!string.IsNullOrEmpty(statePath))
-            {
-                try
-                {
-                    if (File.Exists(statePath))
-                    {
-                        var json = File.ReadAllText(statePath);
-                        var stateFile = JsonConvert.DeserializeObject<StateFile>(json);
-
-                        if (stateFile?.Accounts != null && stateFile.Accounts.ContainsKey(accountName))
-                        {
-                            var accountState = stateFile.Accounts[accountName];
-                            if (accountState.Orders != null && accountState.Orders.Count > 0)
-                            {
-                                return accountState.Orders;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"BacktestingBrokerage.GetOpenOrdersForAccount(): Failed to read state file '{statePath}': {ex.Message}");
-                }
-            }
-
-            // Return empty list (fresh start)
-            return new List<SavedOrder>();
         }
     }
 }

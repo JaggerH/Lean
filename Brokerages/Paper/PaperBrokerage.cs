@@ -16,12 +16,8 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
-using Newtonsoft.Json;
 using QuantConnect.Brokerages.Backtesting;
-using QuantConnect.Configuration;
 using QuantConnect.Interfaces;
-using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
 
@@ -96,80 +92,6 @@ namespace QuantConnect.Brokerages.Paper
             }
 
             base.Scan();
-        }
-
-        /// <summary>
-        /// Gets cash balance for a specific account from state file or BrokerageData (fallback)
-        /// Used for multi-account state recovery
-        /// </summary>
-        /// <param name="accountName">The name of the account</param>
-        /// <returns>List of cash amounts for the specified account</returns>
-        public override List<CashAmount> GetCashBalanceForAccount(string accountName)
-        {
-            // Level 1: Try to read from state file (via base class)
-            var result = base.GetCashBalanceForAccount(accountName);
-            if (result != null && result.Count > 0)
-            {
-                return result;
-            }
-
-            // Level 2: Fallback to BrokerageData (backward compatibility for live trading)
-            var key = $"live-cash-balance:{accountName}";
-            if (_job.BrokerageData != null && _job.BrokerageData.Remove(key, out var value) && !string.IsNullOrEmpty(value))
-            {
-                try
-                {
-                    var brokerageDataResult = JsonConvert.DeserializeObject<List<CashAmount>>(value);
-                    if (brokerageDataResult != null)
-                    {
-                        return brokerageDataResult;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"PaperBrokerage.GetCashBalanceForAccount(): Failed to deserialize cash balance for account '{accountName}' from BrokerageData: {ex.Message}");
-                }
-            }
-
-            // Level 3: Return empty list (fresh start)
-            return new List<CashAmount>();
-        }
-
-        /// <summary>
-        /// Gets holdings for a specific account from state file or BrokerageData (fallback)
-        /// Used for multi-account state recovery
-        /// </summary>
-        /// <param name="accountName">The name of the account</param>
-        /// <returns>List of holdings for the specified account</returns>
-        public override List<Holding> GetAccountHoldingsForAccount(string accountName)
-        {
-            // Level 1: Try to read from state file (via base class)
-            var result = base.GetAccountHoldingsForAccount(accountName);
-            if (result != null && result.Count > 0)
-            {
-                return result;
-            }
-
-            // Level 2: Fallback to BrokerageData (backward compatibility for live trading)
-            var key = $"live-holdings:{accountName}";
-            if (_job.BrokerageData != null && _job.BrokerageData.Remove(key, out var value) && !string.IsNullOrEmpty(value))
-            {
-                try
-                {
-                    var brokerageDataResult = JsonConvert.DeserializeObject<List<Holding>>(value);
-                    if (brokerageDataResult != null)
-                    {
-                        return brokerageDataResult;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"PaperBrokerage.GetAccountHoldingsForAccount(): Failed to deserialize holdings for account '{accountName}' from BrokerageData: {ex.Message}");
-                }
-            }
-
-            // Level 3: Return empty list (fresh start)
-            return new List<Holding>();
         }
     }
 }
