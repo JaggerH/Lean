@@ -99,6 +99,7 @@ class OrderGroup:
     - 关联订单到具体的 grid_id
     - 追踪预期价差 vs 实际价差
     - 提供订单组的填充数量查询
+    - 实时维护 active_broker_ids（用于状态恢复）
 
     属于执行层概念，记录订单执行细节
     """
@@ -116,6 +117,9 @@ class OrderGroup:
     # 时间戳
     submit_time: Optional[datetime] = None  # 订单提交时间（必需参数）
     fill_time: Optional[datetime] = None    # 完全成交时间
+
+    # 状态持久化字段（实时维护）
+    active_broker_ids: set = field(default_factory=set)  # 活跃订单的 BrokerId 集合
 
     # 异步订单跟踪（用于解决竞态条件）
 
@@ -287,6 +291,99 @@ class OrderGroup:
 
         return any(t.status in [OrderStatus.Canceled, OrderStatus.Invalid] for t in self.order_tickets)
 
+    def update_order_status(self, order_ticket: OrderTicket, new_status: OrderStatus):
+        """
+        更新订单状态，维护 active_broker_ids
+
+        当订单状态变化时调用（在 on_order_event 中）
+
+        Args:
+            order_ticket: 状态变化的 OrderTicket
+            new_status: 新的订单状态
+        """
+        # 如果订单完成（Filled/Canceled/Invalid），从 active_broker_ids 中移除
+        if new_status in [OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid]:
+            if order_ticket.BrokerId and len(order_ticket.BrokerId) > 0:
+                broker_id = order_ticket.BrokerId[0]
+                self.active_broker_ids.discard(broker_id)  # discard 不会抛出 KeyError
+
+    def to_dict(self) -> Dict[str, any]:
+        """
+        序列化 OrderGroup 为字典（用于持久化）
+
+        策略：
+        - completed 订单：完整序列化（调用 OrderTicket.ToJson()）
+        - active 订单：已通过 active_broker_ids 实时维护
+
+        Returns:
+            字典格式的 OrderGroup 数据
+        """
+        completed_tickets_json = []
+
+        for ticket in self.order_tickets:
+            # 只序列化 completed 订单
+            if ticket.status in [OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Invalid]:
+                try:
+                    ticket_json = ticket.ToJson()
+                    completed_tickets_json.append(ticket_json)
+                except Exception as ex:
+                    # 如果序列化失败，记录错误但继续（不阻塞整个序列化）
+                    print(f"Warning: Failed to serialize completed order {ticket.order_id}: {ex}")
+
+        # 安全地获取 type 值（可能是 enum 或已经是 int）
+        type_value = self.type.value if hasattr(self.type, 'value') else int(self.type)
+
+        return {
+            'grid_id': self.grid_id,
+            'pair_symbol': (self.pair_symbol[0].value, self.pair_symbol[1].value),
+            'type': type_value,
+            'expected_ticket_count': self.expected_ticket_count,
+            'expected_spread_pct': self.expected_spread_pct,
+            'actual_spread_pct': self.actual_spread_pct,
+            'submit_time': self.submit_time.isoformat() if self.submit_time else None,
+            'fill_time': self.fill_time.isoformat() if self.fill_time else None,
+            'completed_tickets_json': completed_tickets_json,  # JSON 字符串列表
+            'active_broker_ids': list(self.active_broker_ids)  # 直接使用实时维护的集合
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, any], algorithm: 'QCAlgorithm') -> 'OrderGroup':
+        """
+        从字典反序列化 OrderGroup（基本信息）
+
+        注意：OrderTickets 不在这里恢复，而是在 ExecutionManager.restore_execution_targets() 中处理
+
+        Args:
+            data: 序列化的字典数据
+            algorithm: QCAlgorithm 实例
+
+        Returns:
+            OrderGroup 实例（order_tickets 为空，待后续填充，但 active_broker_ids 已恢复）
+        """
+        crypto_symbol = algorithm.symbol(data['pair_symbol'][0])
+        stock_symbol = algorithm.symbol(data['pair_symbol'][1])
+
+        # ⚠️ 使用字典映射恢复 OrderGroupType（避免 Python.NET 枚举实例化问题）
+        type_map = {
+            1: OrderGroupType.MarketOrder,
+            2: OrderGroupType.LimitOrderOneLeg,
+            3: OrderGroupType.LimitOrder
+        }
+        order_type = type_map.get(data['type'], OrderGroupType.MarketOrder)
+
+        return cls(
+            grid_id=data['grid_id'],
+            pair_symbol=(crypto_symbol, stock_symbol),
+            order_tickets=[],  # 空列表，待 restore_execution_targets 填充
+            type=order_type,
+            expected_ticket_count=data['expected_ticket_count'],
+            expected_spread_pct=data['expected_spread_pct'],
+            actual_spread_pct=data['actual_spread_pct'],
+            submit_time=datetime.fromisoformat(data['submit_time']) if data['submit_time'] else None,
+            fill_time=datetime.fromisoformat(data['fill_time']) if data['fill_time'] else None,
+            active_broker_ids=set(data.get('active_broker_ids', []))  # 恢复 active_broker_ids
+        )
+
 
 @dataclass
 class ExecutionTarget:
@@ -436,6 +533,13 @@ class ExecutionTarget:
         # 添加到 order_tickets
         if order_ticket not in latest_order_group.order_tickets:
             latest_order_group.order_tickets.append(order_ticket)
+
+            # 实时维护 active_broker_ids（当订单提交时）
+            if order_event.status == OrderStatus.Submitted:
+                # 获取 BrokerId 并添加到 active set
+                if order_ticket.BrokerId and len(order_ticket.BrokerId) > 0:
+                    broker_id = order_ticket.BrokerId[0]
+                    latest_order_group.active_broker_ids.add(broker_id)
 
         return True
 
@@ -694,3 +798,106 @@ class ExecutionTarget:
             conversion_rate = self.algorithm.portfolio.cash_book[fee_currency].conversion_rate
             fee_in_account_currency = fee_amount * conversion_rate
             self.total_fee_in_account_currency += fee_in_account_currency
+
+    def to_dict(self) -> Dict[str, any]:
+        """
+        序列化 ExecutionTarget 为字典（用于持久化）
+
+        策略：
+        - 基本字段完整序列化
+        - level 不序列化（通过 hash 恢复）
+        - algorithm 不序列化（依赖注入）
+        - order_groups 调用各 OrderGroup.to_dict()
+
+        Returns:
+            字典格式的 ExecutionTarget 数据
+        """
+        # 序列化 target_qty (Symbol → float 需要转换为 str → float)
+        target_qty_serialized = {
+            symbol.value: float(qty)
+            for symbol, qty in self.target_qty.items()
+        }
+
+        # 序列化 order_groups
+        order_groups_serialized = [
+            order_group.to_dict()
+            for order_group in self.order_groups
+        ]
+
+        # 安全地获取 status 值（可能是 enum 或已经是 int）
+        status_value = self.status.value if hasattr(self.status, 'value') else int(self.status)
+
+        return {
+            'pair_symbol': (self.pair_symbol[0].value, self.pair_symbol[1].value),
+            'grid_id': self.grid_id,
+            'target_qty': target_qty_serialized,
+            'expected_spread_pct': float(self.expected_spread_pct),
+            'spread_direction': self.spread_direction,
+            'status': status_value,  # Enum → int (安全处理)
+            'created_time': self.created_time.isoformat() if self.created_time else None,
+            'order_groups': order_groups_serialized,
+            'anchor_time': self.anchor_time.isoformat() if self.anchor_time else None,
+            'timeout_minutes': self.timeout_minutes,
+            'total_fee_in_account_currency': float(self.total_fee_in_account_currency)
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, any], algorithm: 'QCAlgorithm', grid_level: 'GridLevel') -> 'ExecutionTarget':
+        """
+        从字典反序列化 ExecutionTarget（基本信息）
+
+        注意：
+        - order_groups 在这里只恢复基本结构（order_tickets 为空）
+        - OrderTickets 由 ExecutionManager.restore_execution_targets() 填充
+
+        Args:
+            data: 序列化的字典数据
+            algorithm: QCAlgorithm 实例（依赖注入）
+            grid_level: GridLevel 对象（通过 hash 匹配）
+
+        Returns:
+            ExecutionTarget 实例（order_tickets 为空，待后续填充）
+        """
+        # 反序列化 pair_symbol
+        crypto_symbol = algorithm.symbol(data['pair_symbol'][0])
+        stock_symbol = algorithm.symbol(data['pair_symbol'][1])
+
+        # 反序列化 target_qty
+        target_qty = {
+            algorithm.symbol(symbol_str): float(qty)
+            for symbol_str, qty in data['target_qty'].items()
+        }
+
+        # 反序列化 order_groups（基本结构）
+        order_groups = [
+            OrderGroup.from_dict(og_data, algorithm)
+            for og_data in data.get('order_groups', [])
+        ]
+
+        # ⚠️ 使用字典映射恢复 ExecutionStatus（避免 Python.NET 枚举实例化问题）
+        status_map = {
+            1: ExecutionStatus.New,
+            2: ExecutionStatus.Submitted,
+            3: ExecutionStatus.PartiallyFilled,
+            4: ExecutionStatus.Filled,
+            5: ExecutionStatus.Canceled,
+            6: ExecutionStatus.Invalid,
+            7: ExecutionStatus.Failed
+        }
+        execution_status = status_map.get(data['status'], ExecutionStatus.New)
+
+        return cls(
+            pair_symbol=(crypto_symbol, stock_symbol),
+            grid_id=data['grid_id'],
+            level=grid_level,
+            target_qty=target_qty,
+            expected_spread_pct=float(data['expected_spread_pct']),
+            spread_direction=data['spread_direction'],
+            algorithm=algorithm,
+            status=execution_status,
+            created_time=datetime.fromisoformat(data['created_time']) if data['created_time'] else None,
+            order_groups=order_groups,  # 基本结构已恢复，tickets 待填充
+            anchor_time=datetime.fromisoformat(data['anchor_time']) if data['anchor_time'] else None,
+            timeout_minutes=data['timeout_minutes'],
+            total_fee_in_account_currency=float(data['total_fee_in_account_currency'])
+        )

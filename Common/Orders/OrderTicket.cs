@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using Newtonsoft.Json;
 using QuantConnect.Securities;
 using static QuantConnect.StringExtensions;
 
@@ -150,6 +151,14 @@ namespace QuantConnect.Orders
         public string Tag
         {
             get { return _order == null ? _submitRequest.Tag : _order.Tag; }
+        }
+
+        /// <summary>
+        /// Gets the broker-assigned order ID(s). Returns empty list if order hasn't been submitted.
+        /// </summary>
+        public IReadOnlyList<string> BrokerId
+        {
+            get { return _order == null ? new List<string>() : _order.BrokerId; }
         }
 
         /// <summary>
@@ -707,6 +716,151 @@ namespace QuantConnect.Orders
                 return orderSelector(typedOrder);
             }
             throw new ArgumentException(Invariant($"Unable to access property {field} on order of type {order.Type}"));
+        }
+
+        /// <summary>
+        /// Serializes this OrderTicket to JSON string (for completed orders only)
+        /// </summary>
+        /// <returns>JSON string representation of this ticket</returns>
+        /// <remarks>
+        /// This method is designed for state persistence of completed orders.
+        /// Active orders should not be serialized as they will be recovered via GetOpenOrders().
+        /// </remarks>
+        public string ToJson()
+        {
+            if (_order == null)
+            {
+                throw new InvalidOperationException("Cannot serialize OrderTicket without an order. " +
+                    "This ticket may not have been submitted yet.");
+            }
+
+            // Calculate total fee from order events
+            decimal totalFee = 0m;
+            lock (_lock)
+            {
+                if (_orderEventsImpl != null)
+                {
+                    foreach (var evt in _orderEventsImpl)
+                    {
+                        if (evt.OrderFee != null && evt.OrderFee.Value.Amount > 0)
+                        {
+                            totalFee += evt.OrderFee.Value.Amount;
+                        }
+                    }
+                }
+            }
+
+            // Create snapshot object
+            var snapshot = new OrderTicketSnapshot
+            {
+                OrderId = OrderId,
+                BrokerId = _order.BrokerId.Count > 0 ? _order.BrokerId[0] : string.Empty,
+                Symbol = Symbol.Value,
+                SecurityType = SecurityType.ToString(),
+                Market = Symbol.ID.Market,
+                Quantity = _order.Quantity,
+                QuantityFilled = QuantityFilled,
+                AverageFillPrice = AverageFillPrice,
+                Status = Status.ToString(),
+                OrderType = OrderType.ToString(),
+                SubmitTime = _submitRequest.Time,
+                LastFillTime = _order.LastFillTime,
+                LastUpdateTime = _order.LastUpdateTime,
+                Tag = Tag ?? string.Empty,
+                TotalFee = totalFee
+            };
+
+            return JsonConvert.SerializeObject(snapshot, Formatting.None);
+        }
+
+        /// <summary>
+        /// Deserializes a JSON string to create a read-only OrderTicket (for completed orders)
+        /// </summary>
+        /// <param name="json">JSON string from ToJson()</param>
+        /// <param name="transactionManager">Transaction manager for the ticket</param>
+        /// <returns>A read-only OrderTicket representing the completed order</returns>
+        /// <remarks>
+        /// The returned OrderTicket is designed for data access only (quantity_filled, status, etc).
+        /// It should not be used for operations (update, cancel) as it lacks the full runtime context.
+        /// </remarks>
+        public static OrderTicket FromJson(string json, SecurityTransactionManager transactionManager)
+        {
+            var snapshot = JsonConvert.DeserializeObject<OrderTicketSnapshot>(json);
+            return FromSnapshot(snapshot, transactionManager);
+        }
+
+        /// <summary>
+        /// Creates a read-only OrderTicket from a snapshot (internal helper)
+        /// </summary>
+        private static OrderTicket FromSnapshot(OrderTicketSnapshot snapshot, SecurityTransactionManager transactionManager)
+        {
+            // Parse security type and order type
+            var securityType = (SecurityType)Enum.Parse(typeof(SecurityType), snapshot.SecurityType);
+            var orderType = (OrderType)Enum.Parse(typeof(OrderType), snapshot.OrderType);
+            var status = (OrderStatus)Enum.Parse(typeof(OrderStatus), snapshot.Status);
+
+            // Create symbol
+            var symbol = Symbol.Create(snapshot.Symbol, securityType, snapshot.Market);
+
+            // Create submit request (readonly fields must be set in constructor)
+            var submitRequest = new SubmitOrderRequest(
+                orderType,
+                securityType,
+                symbol,
+                snapshot.Quantity,
+                0, 0, 0,  // limit/stop prices (not critical for completed orders)
+                snapshot.SubmitTime,
+                snapshot.Tag
+            );
+            submitRequest.SetOrderId(snapshot.OrderId);
+
+            // Create ticket with readonly fields initialized
+            var ticket = new OrderTicket(transactionManager, submitRequest);
+
+            // Create and set the Order object
+            var order = Order.CreateOrder(submitRequest);
+            order.Status = status;
+            if (!string.IsNullOrEmpty(snapshot.BrokerId))
+            {
+                order.BrokerId.Add(snapshot.BrokerId);
+            }
+            order.LastFillTime = snapshot.LastFillTime;
+            order.LastUpdateTime = snapshot.LastUpdateTime;
+
+            // Set fill state
+            ticket._fillState = new FillState(snapshot.AverageFillPrice, snapshot.QuantityFilled);
+            ticket.SetOrder(order);
+
+            // If order is closed, set the event
+            if (status.IsClosed())
+            {
+                ticket._orderStatusClosedEvent.Set();
+                ticket._orderSetEvent.Set();
+            }
+
+            return ticket;
+        }
+
+        /// <summary>
+        /// Data structure for OrderTicket JSON serialization
+        /// </summary>
+        private class OrderTicketSnapshot
+        {
+            public int OrderId { get; set; }
+            public string BrokerId { get; set; }
+            public string Symbol { get; set; }
+            public string SecurityType { get; set; }
+            public string Market { get; set; }
+            public decimal Quantity { get; set; }
+            public decimal QuantityFilled { get; set; }
+            public decimal AverageFillPrice { get; set; }
+            public string Status { get; set; }
+            public string OrderType { get; set; }
+            public DateTime SubmitTime { get; set; }
+            public DateTime? LastFillTime { get; set; }
+            public DateTime? LastUpdateTime { get; set; }
+            public string Tag { get; set; }
+            public decimal TotalFee { get; set; }
         }
 
         /// <summary>

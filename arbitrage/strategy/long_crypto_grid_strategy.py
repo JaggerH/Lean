@@ -28,8 +28,7 @@ class LongCryptoGridStrategy(GridStrategy):
     def __init__(self, algorithm: QCAlgorithm,
                  entry_threshold: float = -0.01,
                  exit_threshold: float = 0.02,
-                 position_size_pct: float = 0.25,
-                 state_persistence=None):
+                 position_size_pct: float = 0.25):
         """
         初始化策略
 
@@ -38,10 +37,13 @@ class LongCryptoGridStrategy(GridStrategy):
             entry_threshold: 开仓阈值 (负数, spread <= entry_threshold 时开仓, 默认-1%)
             exit_threshold: 平仓阈值 (正数, spread >= exit_threshold 时平仓, 默认2%)
             position_size_pct: 仓位大小百分比 (默认25%)
-            state_persistence: 状态持久化适配器 (可选)
+
+        Note:
+            状态持久化现在由 MonitoringContext 通过事件机制处理，
+            不再需要通过构造函数注入
         """
         # 调用父类GridStrategy初始化
-        super().__init__(algorithm, debug=False, state_persistence=state_persistence)
+        super().__init__(algorithm, debug=False)
 
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold

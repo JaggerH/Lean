@@ -34,7 +34,7 @@ class BothSideGridStrategy(GridStrategy):
                  short_crypto_entry: float = 0.03,
                  short_crypto_exit: float = -0.009,
                  position_size_pct: float = 0.25,
-                 state_persistence=None):
+                 enable_monitoring: bool = True):
         """
         初始化策略
 
@@ -45,10 +45,14 @@ class BothSideGridStrategy(GridStrategy):
             short_crypto_entry: Short crypto开仓阈值 (正数, spread >= threshold 时开仓, 默认3%)
             short_crypto_exit: Short crypto平仓阈值 (负数, spread <= threshold 时平仓, 默认-0.9%)
             position_size_pct: 仓位大小百分比 (默认25%)
-            state_persistence: 状态持久化适配器 (可选)
+            enable_monitoring: 是否启用监控（Live模式自动检测）
+
+        Note:
+            MonitoringContext 在 GridStrategy 内部创建，
+            不再需要从外部注入
         """
-        # 调用父类GridStrategy初始化
-        super().__init__(algorithm, debug=False, state_persistence=state_persistence)
+        # ✅ 调用父类GridStrategy初始化（传入 enable_monitoring）
+        super().__init__(algorithm, enable_monitoring=enable_monitoring, debug=False)
 
         self.long_crypto_entry = long_crypto_entry
         self.long_crypto_exit = long_crypto_exit
@@ -59,9 +63,6 @@ class BothSideGridStrategy(GridStrategy):
         # 持仓时间追踪 (与原始策略保持一致)
         self.open_times = {}  # {(pair_symbol, direction): open_time}
         self.holding_times = []  # 每次回转交易的持仓时间 (timedelta)
-
-        # GridOrderTracker (可选，从外部注入)
-        self.order_tracker = None
 
         self.algorithm.debug(
             f"BothSideGridStrategy initialized | "

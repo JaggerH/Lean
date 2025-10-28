@@ -4,7 +4,6 @@ Base Strategy - 套利策略基类
 提供基础工具方法和抽象接口，供具体策略继承和扩展
 """
 from AlgorithmImports import *
-from typing import Tuple
 
 
 class BaseStrategy:
@@ -39,47 +38,6 @@ class BaseStrategy:
         """
         if self.debug:
             self.algorithm.debug(message)
-
-    def _validate_order_preconditions(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                                       action: str = "order") -> Tuple[bool, str]:
-        """
-        验证下单前置条件
-
-        检查项:
-        1. Crypto security 是否有数据 (HasData)
-        2. Stock security 是否有数据 (HasData)
-        3. 价格是否有效 (> 0)
-
-        Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
-            action: 操作描述 (用于日志，如 "open" / "close")
-
-        Returns:
-            (is_valid, error_message): 验证通过返回 (True, "")，失败返回 (False, "原因")
-        """
-        # 1. 检查 crypto 是否有数据
-        crypto_security = self.algorithm.securities[crypto_symbol]
-        if not crypto_security.has_data:
-            msg = f"⚠️ Cannot {action} - crypto {crypto_symbol.value} has no data yet"
-            self._debug(msg)
-            return (False, msg)
-
-        # 2. 检查 stock 是否有数据
-        stock_security = self.algorithm.securities[stock_symbol]
-        if not stock_security.has_data:
-            msg = f"⚠️ Cannot {action} - stock {stock_symbol.value} has no data yet"
-            self._debug(msg)
-            return (False, msg)
-
-        # 3. 检查价格是否有效
-        if crypto_security.price <= 0 or stock_security.price <= 0:
-            msg = f"⚠️ Cannot {action} - invalid prices (crypto: {crypto_security.price}, stock: {stock_security.price})"
-            self._debug(msg)
-            return (False, msg)
-
-        # 所有检查通过
-        return (True, "")
 
     def on_spread_update(self, signal):
         """
@@ -116,6 +74,7 @@ class BaseStrategy:
 #    - register_orders(), get_pair_by_order_id()
 #    - _open_position(), _close_position()
 #    - _should_open_position(), _should_close_position()
+#    - _validate_order_preconditions() - 验证逻辑已移至 ExecutionManager._validate_preconditions()
 #    - restore_state(), _sync_open_orders(), _get_symbol_from_string()
 #
 # ✅ 替代方案:

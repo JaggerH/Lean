@@ -63,27 +63,31 @@ class StatePersistence:
         """
         return f"trade_data/state/{self.strategy_name}/latest"
 
-    def persist(self, positions: Dict[Tuple[Symbol, Symbol], Tuple[float, float]],
-                order_to_pair: Dict[int, Dict]):
+    def persist(self, grid_positions: Dict = None, execution_targets: Dict = None):
         """
-        持久化状态到 Redis（主） + ObjectStore（备份）
+        持久化网格状态到 Redis（主） + ObjectStore（备份）
 
         保存内容:
         - timestamp: 保存时间
-        - positions: 交易对持仓
-        - order_to_pair: 活跃订单映射（包含 filled_qty_snapshot）
+        - grid_positions: 网格持仓（GridPositionManager.grid_positions）
+        - execution_targets: 活跃执行目标（ExecutionManager.active_targets）
 
         原子性: Redis 使用单个 SET 命令，天然原子性
 
         Args:
-            positions: {(crypto_symbol, stock_symbol): (crypto_qty, stock_qty)}
-            order_to_pair: {order_id: {"pair": (Symbol, Symbol), "filled_qty_snapshot": float}}
+            grid_positions: GridPositionManager.grid_positions
+            execution_targets: ExecutionManager.active_targets
+
+        Note:
+            不再保存 positions 和 order_to_pair，因为：
+            1. 券商账户可以恢复 positions（通过 BrokerageRecoverySetupHandler）
+            2. ExecutionManager 已经追踪了活跃订单（通过 execution_targets）
         """
         # 构建状态数据
         state_data = {
             "timestamp": str(self.algorithm.Time),
-            "positions": self._serialize_positions(positions),
-            "order_to_pair": self._serialize_order_to_pair(order_to_pair)
+            "grid_positions": self._serialize_grid_positions(grid_positions) if grid_positions else {},
+            "execution_targets": self._serialize_execution_targets(execution_targets) if execution_targets else {}
         }
 
         state_json = json.dumps(state_data, indent=2)
@@ -95,9 +99,11 @@ class StatePersistence:
                 redis_key = self._get_redis_key()
                 self.redis_client.set(redis_key, state_json)
                 redis_success = True
+                grid_pos_count = len(grid_positions) if grid_positions else 0
+                exec_target_count = len(execution_targets) if execution_targets else 0
                 self.algorithm.Debug(
-                    f"💾 Persisted to Redis: {len(positions)} positions, "
-                    f"{len(order_to_pair)} orders"
+                    f"💾 Persisted to Redis: {grid_pos_count} grid positions, "
+                    f"{exec_target_count} execution targets"
                 )
             except Exception as e:
                 self.algorithm.Error(f"⚠️ Redis write failed: {e}")
@@ -168,112 +174,211 @@ class StatePersistence:
         else:
             return None
 
-    def deserialize_positions(self, data: dict,
-                             symbol_resolver) -> Dict[Tuple[Symbol, Symbol], Tuple[float, float]]:
-        """
-        反序列化 positions
-
-        从: {"crypto_str|stock_str": [float, float]}
-        到: {(Symbol, Symbol): (float, float)}
-
-        Args:
-            data: 序列化的持仓数据
-            symbol_resolver: 函数，用于从字符串查找 Symbol 对象
-
-        Returns:
-            反序列化的持仓字典
-        """
-        positions = {}
-
-        for key, (crypto_qty, stock_qty) in data.items():
-            crypto_str, stock_str = key.split('|')
-
-            crypto_symbol = symbol_resolver(crypto_str)
-            stock_symbol = symbol_resolver(stock_str)
-
-            if crypto_symbol and stock_symbol:
-                positions[(crypto_symbol, stock_symbol)] = (float(crypto_qty), float(stock_qty))
-            else:
-                self.algorithm.Debug(
-                    f"⚠️ Cannot restore position: {crypto_str} or {stock_str} not found"
-                )
-
-        return positions
-
-    def deserialize_order_to_pair(self, data: dict,
-                                  symbol_resolver) -> Dict[int, Dict]:
-        """
-        反序列化 order_to_pair
-
-        从: {str: {"pair": [str, str], "filled_qty_snapshot": float}}
-        到: {int: {"pair": (Symbol, Symbol), "filled_qty_snapshot": float}}
-
-        Args:
-            data: 序列化的订单映射数据
-            symbol_resolver: 函数，用于从字符串查找 Symbol 对象
-
-        Returns:
-            反序列化的订单映射字典
-        """
-        order_to_pair = {}
-
-        for order_id_str, info in data.items():
-            order_id = int(order_id_str)
-            crypto_str, stock_str = info["pair"]
-
-            crypto_symbol = symbol_resolver(crypto_str)
-            stock_symbol = symbol_resolver(stock_str)
-
-            if crypto_symbol and stock_symbol:
-                order_to_pair[order_id] = {
-                    "pair": (crypto_symbol, stock_symbol),
-                    "filled_qty_snapshot": float(info["filled_qty_snapshot"])
-                }
-            else:
-                self.algorithm.Debug(f"⚠️ Cannot restore order {order_id}")
-
-        return order_to_pair
+    # ============================================================================
+    #                      Grid State Serialization (GridStrategy)
+    # ============================================================================
+    #
+    # 注意：
+    # - _serialize_positions() 和 _serialize_order_to_pair() 已移除
+    # - deserialize_positions() 和 deserialize_order_to_pair() 已移除
+    # - 只保留 grid_positions 和 execution_targets 的序列化/反序列化
+    #
+    # 原因：
+    # 1. 券商账户可以恢复 positions（通过 BrokerageRecoverySetupHandler）
+    # 2. ExecutionManager 追踪活跃订单（通过 execution_targets）
+    # 3. 只需要保存券商无法恢复的状态（网格配置相关）
+    # ============================================================================
 
     @staticmethod
-    def _serialize_positions(positions: Dict[Tuple[Symbol, Symbol], Tuple[float, float]]) -> dict:
+    def _serialize_grid_positions(grid_positions: Dict) -> dict:
         """
-        序列化 positions
+        序列化 GridPositionManager.grid_positions
 
-        从: {(Symbol, Symbol): (float, float)}
-        到: {"crypto_str|stock_str": [float, float]}
+        从: {GridLevel: GridPosition}
+        到: {str(hash): {"level_data": {...}, "leg1_qty": float, "leg2_qty": float}}
 
         Args:
-            positions: 持仓字典
+            grid_positions: GridPositionManager.grid_positions 字典
 
         Returns:
-            序列化的持仓数据
+            序列化的网格持仓数据
         """
-        return {
-            f"{crypto.Value}|{stock.Value}": [float(crypto_qty), float(stock_qty)]
-            for (crypto, stock), (crypto_qty, stock_qty) in positions.items()
-        }
+        result = {}
 
-    @staticmethod
-    def _serialize_order_to_pair(order_to_pair: Dict[int, Dict]) -> dict:
-        """
-        序列化 order_to_pair
+        for grid_level, grid_position in grid_positions.items():
+            hash_key = str(hash(grid_level))
 
-        从: {int: {"pair": (Symbol, Symbol), "filled_qty_snapshot": float}}
-        到: {str: {"pair": [str, str], "filled_qty_snapshot": float}}
-
-        Args:
-            order_to_pair: 订单映射字典
-
-        Returns:
-            序列化的订单映射数据
-        """
-        return {
-            str(order_id): {
-                "pair": [info["pair"][0].Value, info["pair"][1].Value],
-                "filled_qty_snapshot": float(info["filled_qty_snapshot"])
+            # 序列化 GridLevel 数据（用于日志和验证）
+            level_data = {
+                "level_id": grid_level.level_id,
+                "type": grid_level.type,
+                "spread_pct": float(grid_level.spread_pct),
+                "direction": grid_level.direction,
+                "pair_symbol": [
+                    grid_level.pair_symbol[0].value,
+                    grid_level.pair_symbol[1].value
+                ],
+                "position_size_pct": float(grid_level.position_size_pct)
             }
-            for order_id, info in order_to_pair.items()
-        }
+
+            # 序列化 GridPosition 数据
+            leg1_qty, leg2_qty = grid_position.quantity
+
+            result[hash_key] = {
+                "level_data": level_data,
+                "leg1_qty": float(leg1_qty),
+                "leg2_qty": float(leg2_qty)
+            }
+
+        return result
+
+    def deserialize_grid_positions(self, data: dict, grid_level_manager) -> Dict:
+        """
+        反序列化 grid_positions
+
+        从: {str(hash): {"level_data": {...}, "leg1_qty": float, "leg2_qty": float}}
+        到: {GridLevel: GridPosition}
+
+        使用严格 hash 匹配：只恢复 hash 完全匹配的 GridPosition
+
+        Args:
+            data: 序列化的网格持仓数据
+            grid_level_manager: GridLevelManager 实例（用于通过 hash 查找 GridLevel）
+
+        Returns:
+            反序列化的网格持仓字典
+        """
+        grid_positions = {}
+        restored_count = 0
+        skipped_count = 0
+
+        for hash_str, position_data in data.items():
+            hash_value = int(hash_str)
+            level_data = position_data["level_data"]
+
+            # 严格 hash 匹配：通过 hash 查找当前配置的 GridLevel
+            grid_level = grid_level_manager.find_level_by_hash(hash_value)
+
+            if not grid_level:
+                # Hash 不匹配，跳过恢复
+                self.algorithm.debug(
+                    f"⚠️ Skipped GridPosition: hash={hash_value} | "
+                    f"level_id={level_data['level_id']} (no matching GridLevel in current config)"
+                )
+                skipped_count += 1
+                continue
+
+            # 验证 GridLevel 本质属性是否一致（额外检查，防止 hash 冲突）
+            if (grid_level.type != level_data["type"] or
+                abs(grid_level.spread_pct - level_data["spread_pct"]) > 1e-6 or
+                grid_level.direction != level_data["direction"]):
+                self.algorithm.debug(
+                    f"⚠️ Skipped GridPosition: hash={hash_value} | "
+                    f"level_id={level_data['level_id']} (GridLevel attributes mismatch)"
+                )
+                skipped_count += 1
+                continue
+
+            # 重建 GridPosition
+            # 注意：GridPosition 需要通过 GridPositionManager.get_or_create_grid_position() 创建
+            # 这里只返回数据，由 GridPositionManager 负责创建对象
+            grid_positions[grid_level] = {
+                "leg1_qty": float(position_data["leg1_qty"]),
+                "leg2_qty": float(position_data["leg2_qty"])
+            }
+
+            restored_count += 1
+            self.algorithm.debug(
+                f"✅ Restored GridPosition: {grid_level.level_id} | "
+                f"Qty: {position_data['leg1_qty']:.2f} / {position_data['leg2_qty']:.2f}"
+            )
+
+        if skipped_count > 0:
+            self.algorithm.debug(
+                f"⚠️ Skipped {skipped_count} GridPositions (config changed or hash mismatch)"
+            )
+
+        return grid_positions
+
+    @staticmethod
+    def _serialize_execution_targets(execution_targets: Dict) -> dict:
+        """
+        序列化 ExecutionManager.active_targets
+
+        从: {hash(GridLevel): ExecutionTarget}
+        到: {str(hash): ExecutionTarget.to_dict()}
+
+        使用 ExecutionTarget.to_dict() 完整序列化，包含：
+        - 基本字段（grid_id, target_qty, status, etc.）
+        - order_groups 列表（包含 completed_tickets_json 和 active_broker_ids）
+
+        Args:
+            execution_targets: ExecutionManager.active_targets 字典
+
+        Returns:
+            序列化的执行目标数据
+        """
+        result = {}
+
+        for hash_key, exec_target in execution_targets.items():
+            # ✅ 使用 ExecutionTarget.to_dict() 完整序列化
+            result[str(hash_key)] = exec_target.to_dict()
+
+        return result
+
+    def deserialize_execution_targets(self, data: dict, grid_level_manager) -> Dict:
+        """
+        反序列化 execution_targets
+
+        从: {str(hash): {"grid_id": str, "target_qty": {...}, "status": str, ...}}
+        到: {hash(GridLevel): ExecutionTarget_data}
+
+        使用严格 hash 匹配：只恢复 hash 完全匹配的 ExecutionTarget
+
+        Args:
+            data: 序列化的执行目标数据
+            grid_level_manager: GridLevelManager 实例（用于通过 hash 查找 GridLevel）
+
+        Returns:
+            反序列化的执行目标数据字典（返回原始数据，由 ExecutionManager 负责重建对象）
+        """
+        execution_targets_data = {}
+        restored_count = 0
+        skipped_count = 0
+
+        for hash_str, target_data in data.items():
+            hash_value = int(hash_str)
+
+            # 严格 hash 匹配：通过 hash 查找当前配置的 GridLevel
+            grid_level = grid_level_manager.find_level_by_hash(hash_value)
+
+            if not grid_level:
+                # Hash 不匹配，跳过恢复
+                self.algorithm.debug(
+                    f"⚠️ Skipped ExecutionTarget: hash={hash_value} | "
+                    f"grid_id={target_data['grid_id']} (no matching GridLevel in current config)"
+                )
+                skipped_count += 1
+                continue
+
+            # 保存原始数据和匹配的 GridLevel
+            execution_targets_data[hash_value] = {
+                "grid_level": grid_level,
+                "target_data": target_data
+            }
+
+            restored_count += 1
+            self.algorithm.debug(
+                f"✅ Restored ExecutionTarget: {target_data['grid_id']} | "
+                f"Status: {target_data['status']}"
+            )
+
+        if skipped_count > 0:
+            self.algorithm.debug(
+                f"⚠️ Skipped {skipped_count} ExecutionTargets (config changed or hash mismatch)"
+            )
+
+        return execution_targets_data
 
     @staticmethod
     def init_redis_connection(algorithm: QCAlgorithm):

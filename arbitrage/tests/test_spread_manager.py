@@ -763,7 +763,17 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
         # Should be LIMIT_OPPORTUNITY because prices form the correct interval
         self.assertEqual(result["market_state"], MarketState.LIMIT_OPPORTUNITY)
         self.assertEqual(result["direction"], "SHORT_SPREAD")
-        self.assertIsNone(result["executable_spread"])  # No executable spread for LIMIT_OPPORTUNITY
+
+        # New feature: LIMIT_OPPORTUNITY now calculates executable_spread
+        # For SHORT_SPREAD: max of two spreads
+        # spread_1 = (token_ask - stock_ask) / token_ask
+        # spread_2 = (token_bid - stock_bid) / token_bid
+        spread_1 = (token_ask - stock_ask) / token_ask
+        spread_2 = (token_bid - stock_bid) / token_bid
+        expected_spread = max(spread_1, spread_2)
+
+        self.assertIsNotNone(result["executable_spread"])
+        self.assertAlmostEqual(result["executable_spread"], expected_spread, places=6)
 
         print("Limit opportunity SHORT_SPREAD test passed")
 

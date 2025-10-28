@@ -37,20 +37,36 @@ class GridStrategy(BaseStrategy):
     """
 
     def __init__(self, algorithm: QCAlgorithm, spread_manager: Optional['SpreadManager'] = None,
-                 debug: bool = False, state_persistence=None):
+                 enable_monitoring: bool = True, debug: bool = False):
         """
         初始化网格策略
 
         Args:
             algorithm: QCAlgorithm 实例
             spread_manager: SpreadManager 实例（可选）
+            enable_monitoring: 是否启用监控（Live模式自动检测）
             debug: 是否启用调试日志
-            state_persistence: 状态持久化适配器（可选）
+
+        Note:
+            MonitoringContext 在 GridStrategy 内部创建，
+            不再需要从外部注入
         """
         # 调用父类初始化
-        super().__init__(algorithm, debug=debug, state_persistence=state_persistence)
+        super().__init__(algorithm, debug=debug)
 
         self.spread_manager = spread_manager
+
+        # ✅ 1. 内部创建 MonitoringContext
+        if enable_monitoring:
+            from monitoring.monitoring_context import MonitoringContext
+            self.monitoring_context = MonitoringContext(
+                algorithm=algorithm,
+                strategy_name=self.__class__.__name__,  # 传入策略类名
+                mode='auto',  # 自动检测 Live/Backtest
+                fail_on_error=True
+            )
+        else:
+            self.monitoring_context = None
 
         # 初始化网格管理器
         self.grid_level_manager = GridLevelManager(algorithm, debug=False)
@@ -60,12 +76,12 @@ class GridStrategy(BaseStrategy):
             debug=debug
         )
 
-        # 初始化执行管理器
-        self.execution_manager = ExecutionManager(algorithm, debug=debug)
-        # self.execution_manager = ExecutionManager(algorithm, debug=True)
-
-        # order_tracker 初始化为 None，稍后通过 setter 设置
-        self._order_tracker = None
+        # ✅ 2. 初始化执行管理器（回调到自己的 on_execution_event）
+        self.execution_manager = ExecutionManager(
+            algorithm,
+            execution_event_callback=self.on_execution_event,  # 回调到自己
+            debug=debug
+        )
 
         self.algorithm.debug("📊 GridStrategy initialized")
 
@@ -133,7 +149,7 @@ class GridStrategy(BaseStrategy):
 
         # === 2. 持仓检查（GridPositionManager）===
         if self.grid_position_manager.has_reached_target(level):
-            self.algorithm.debug(f"⚠️ Level {level_id} position reached target, skipping open")
+            # self.algorithm.debug(f"⚠️ Level {level_id} position reached target, skipping open")
             return False
 
         return True
@@ -323,45 +339,139 @@ class GridStrategy(BaseStrategy):
         for target in list(self.execution_manager.active_targets.values()):
             if target.is_active():
                 self.execution_manager.execute(target)
-                
+
+    def on_execution_event(self, target: ExecutionTarget):
+        """
+        ✅ 事件协调器：处理 ExecutionTarget 状态变化
+
+        由 ExecutionManager 通过回调触发，协调：
+        1. 业务逻辑（如需要）
+        2. 监控系统通知（主动推送数据）
+
+        Args:
+            target: ExecutionTarget 对象
+        """
+        # 1. [可选] 更新 GridPosition 或其他业务逻辑
+        # 根据 target.status 决定是否需要额外处理
+        # if target.status == ExecutionStatus.Filled:
+        #     self.grid_position_manager.update_from_target(target)
+
+        # 2. 通知监控系统（主动推送数据）
+        if self.monitoring_context:
+            self.monitoring_context.on_execution_event(
+                target=target,
+                grid_positions=self.grid_position_manager.grid_positions,
+                execution_targets=self.execution_manager.active_targets
+            )
+
     def on_order_event(self, order_event):
         """
-        处理订单事件 - 扩展版本
+        处理订单事件 - 纯状态管理版本
 
         事件驱动更新链：
         Order → ExecutionManager (更新 ExecutionTarget)
              → GridPositionManager (更新 GridPosition)
-             → BaseStrategy (更新 positions)
+
+        持久化由 MonitoringContext.on_order_event() 处理（事件驱动架构）
 
         Args:
             order_event: OrderEvent 对象
         """
-        # 调用父类的订单事件处理（更新 positions）
-        super().on_order_event(order_event)
-
         # 调用 GridPositionManager 的订单事件处理（更新网格持仓）
         self.grid_position_manager.on_order_event(order_event)
-        
+
         # 调用 ExecutionManager 的订单事件处理（更新 ExecutionTarget）
         self.execution_manager.on_order_event(order_event)
 
+        # 注意：
+        # - BaseStrategy.on_order_event() 是空实现，不需要调用
+        # - 持久化由 MonitoringContext 通过事件机制自动处理
 
+    # ============================================================================
+    #                      状态恢复 (State Recovery)
+    # ============================================================================
+
+    def restore_state(self):
+        """
+        恢复策略状态（必须在所有 pairs 初始化完成后调用）
+
+        从 MonitoringContext.state_persistence 恢复：
+        1. GridPositions（网格持仓）
+        2. ExecutionTargets（活跃执行目标）
+
+        Note:
+            必须在调用 initialize_pair() 配置完所有 grid levels 之后调用，
+            因为恢复需要通过 hash 匹配 GridLevel。
+
+        Example:
+            >>> strategy = BothSideGridStrategy(...)
+            >>> strategy.initialize_pair((crypto_sym, stock_sym))
+            >>> strategy.restore_state()  # 恢复状态
+        """
+        if not self.monitoring_context:
+            self.algorithm.debug("ℹ️ MonitoringContext not available, skip state restore")
+            return
+
+        # ⚠️ 改为直接检查 state_persistence 是否存在（支持 Backtest 模式测试）
+        if not self.monitoring_context.state_persistence:
+            self.algorithm.debug("ℹ️ StatePersistence not available, skip state restore")
+            return
+
+        self.algorithm.debug("="*60)
+        self.algorithm.debug("🔄 Restoring strategy state...")
+        self.algorithm.debug("="*60)
+
+        try:
+            state_data = self.monitoring_context.state_persistence.restore()
+
+            if not state_data:
+                self.algorithm.debug("ℹ️ No saved state found")
+                return
+
+            # 恢复 GridPositions
+            if "grid_positions" in state_data:
+                self.algorithm.debug("📦 Restoring GridPositionManager...")
+
+                restored_positions = self.monitoring_context.state_persistence.deserialize_grid_positions(
+                    state_data["grid_positions"],
+                    self.grid_level_manager
+                )
+
+                restored_count = self.grid_position_manager.restore_grid_positions(
+                    restored_positions
+                )
+
+                self.algorithm.debug(f"✅ Restored {restored_count} GridPositions")
+            else:
+                self.algorithm.debug("ℹ️ No grid_positions data found in saved state")
+
+            # 恢复 ExecutionTargets
+            if "execution_targets" in state_data:
+                self.algorithm.debug("🎯 Restoring ExecutionManager...")
+
+                restored_targets = self.monitoring_context.state_persistence.deserialize_execution_targets(
+                    state_data["execution_targets"],
+                    self.grid_level_manager
+                )
+
+                restored_count = self.execution_manager.restore_execution_targets(
+                    restored_targets
+                )
+
+                self.algorithm.debug(f"✅ Restored {restored_count} ExecutionTargets")
+            else:
+                self.algorithm.debug("ℹ️ No execution_targets data found in saved state")
+
+        except Exception as ex:
+            self.algorithm.error(f"❌ Failed to restore strategy state: {ex}")
+            import traceback
+            self.algorithm.error(traceback.format_exc())
+
+        self.algorithm.debug("="*60)
 
     # ============================================================================
     #                      统计和报告
     # ============================================================================
-    
-    @property
-    def order_tracker(self):
-        """获取 order_tracker"""
-        return self._order_tracker
-
-    @order_tracker.setter
-    def order_tracker(self, value):
-        """设置 order_tracker 并同步到 ExecutionManager"""
-        self._order_tracker = value
-        self.execution_manager.order_tracker = value
-
 
     def get_grid_summary(self, pair_symbol: Tuple[Symbol, Symbol]) -> str:
         """

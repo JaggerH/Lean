@@ -9,7 +9,7 @@ Executor - 执行管理器
 
 计算可执行数量的职责已移到 ExecutionTarget
 """
-from AlgorithmImports import QCAlgorithm, Symbol, OrderEvent, OrderStatus
+from AlgorithmImports import *
 from typing import Tuple, Dict, List, Optional
 from .execution_models import ExecutionTarget, ExecutionStatus, OrderGroup, OrderGroupType
 
@@ -30,26 +30,44 @@ class ExecutionManager:
     - 下一个tick会用更新的orderbook重新计算
     """
 
-    def __init__(self, algorithm: QCAlgorithm, order_tracker=None, debug: bool = False):
+    def __init__(self, algorithm: QCAlgorithm, execution_event_callback=None, debug: bool = False):
         """
         初始化ExecutionManager
 
         Args:
             algorithm: QCAlgorithm实例
+            execution_event_callback: ExecutionTarget 状态变化回调（通知 GridStrategy）
             debug: 是否启用调试日志
-            order_tracker: GridOrderTracker实例（可选）
         """
         self.algorithm = algorithm
         self.debug_enabled = debug
         # self.debug_enabled = True
-        self.order_tracker = order_tracker
         # Track active ExecutionTargets: key = hash(GridLevel)
         self.active_targets: Dict[int, ExecutionTarget] = {}
+
+        # ✅ 事件回调：通知 GridStrategy ExecutionTarget 状态变化
+        self.execution_event_callback = execution_event_callback  # Callable[[ExecutionTarget], None]
         
     # ============================================================================
     #                      注册和查找
     # ============================================================================
-    
+
+    def _notify_execution_change(self, target: ExecutionTarget):
+        """
+        ✅ 统一的事件通知方法
+
+        通知 GridStrategy ExecutionTarget 状态变化
+        GridStrategy 会进一步分发给 MonitoringContext
+
+        Args:
+            target: ExecutionTarget 对象
+        """
+        if self.execution_event_callback:
+            try:
+                self.execution_event_callback(target)
+            except Exception as ex:
+                self.algorithm.error(f"❌ execution_event_callback failed: {ex}")
+
     def register_execution_target(self, target: ExecutionTarget):
         """
         注册 ExecutionTarget 到活跃列表
@@ -68,9 +86,8 @@ class ExecutionManager:
             f"📝 Total Target: {target.pair_symbol[0]}: {target.target_qty[target.pair_symbol[0]]:.4f}, {target.pair_symbol[1].value}: {target.target_qty[target.pair_symbol[1]]:.4f}"
         )
 
-        # 通知 OrderTracker（如果可用）
-        if self.order_tracker:
-            self.order_tracker.on_execution_target_registered(target)
+        # ✅ 统一通知：状态变化（New）
+        self._notify_execution_change(target)
 
     def get_active_target_by_order_event(self, order_event: OrderEvent) -> Optional[ExecutionTarget]:
         """
@@ -150,14 +167,14 @@ class ExecutionManager:
         if target.is_quantity_filled():
             # self._debug(f"✅ Level {level_id} reached target with acceptable error, marking as completed")
             target.status = ExecutionStatus.Filled
-            self.on_execution_event(target)
+            self._notify_execution_change(target)  # ✅ 统一通知
             del self.active_targets[hash_key]
             return
 
         # === 步骤 4: 超时检查（只对未完成的 target）===
         if target.is_expired():
             target.status = ExecutionStatus.Canceled
-            self.on_execution_event(target)
+            self._notify_execution_change(target)  # ✅ 统一通知
             del self.active_targets[hash_key]
             return
         
@@ -299,19 +316,6 @@ class ExecutionManager:
         hash_key = hash(level)
         return hash_key in self.active_targets
 
-    def on_execution_event(self, target: ExecutionTarget):
-        """
-        统一处理 ExecutionTarget 状态变化事件
-
-        通知 order_tracker 记录状态变化
-        order_tracker 会根据 target.status 自行判断事件类型
-
-        Args:
-            target: ExecutionTarget 对象
-        """
-        if self.order_tracker:
-            self.order_tracker.on_execution_target_update(target)
-
     def on_order_event(self, order_event: OrderEvent):
         """
         处理订单事件，更新ExecutionTarget状态
@@ -341,21 +345,15 @@ class ExecutionManager:
             # 委托给 ExecutionTarget 检查状态
             if target.is_completely_filled():
                 target.status = ExecutionStatus.Filled
-                self.on_execution_event(target)
+                self._notify_execution_change(target)  # ✅ 统一通知
                 del self.active_targets[hash_key]
                 self._debug(f"✅ ExecutionTarget for level {target.grid_id} completed (Filled)")
             else:
                 # 至少有一个 OrderGroup 部分成交
                 target.status = ExecutionStatus.PartiallyFilled
-
-                # 根据 OrderTracker 模式决定是否触发事件
-                # Live 模式：需要实时更新 UI，触发所有事件包括 PartiallyFilled
-                # Backtest 模式：只记录终态，跳过 PartiallyFilled 以避免重复记录
-                if self.order_tracker and self.order_tracker.realtime_mode:
-                    self.on_execution_event(target)
-                    self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled (Live mode - UI updated)")
-                else:
-                    self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled (Backtest mode - skipped)")
+                # ✅ 统一通知（MonitoringContext 会根据模式决定是否需要实时更新）
+                self._notify_execution_change(target)
+                self._debug(f"📊 ExecutionTarget for level {target.grid_id} partially filled")
 
         elif order_event.status in [OrderStatus.Canceled, OrderStatus.Invalid]:
             # 订单失败 - 检查对冲敞口
@@ -402,3 +400,128 @@ class ExecutionManager:
         if self.debug_enabled:
             # self.algorithm.debug(f"[{self.algorithm.time:%Y-%m-%d %H:%M:%S}]" + message)
             self.algorithm.debug(message)
+
+    # ============================================================================
+    #                      状态恢复 (State Recovery)
+    # ============================================================================
+
+    def restore_execution_targets(self, restored_data: Dict) -> int:
+        """
+        批量恢复执行目标（完整版本，包含 OrderGroups 和 OrderTickets）
+
+        从 StatePersistence 反序列化的数据中恢复 ExecutionTarget 对象，包括：
+        - ExecutionTarget 基本信息
+        - OrderGroups 结构
+        - Completed OrderTickets（通过 OrderTicket.FromJson 反序列化）
+        - Active OrderTickets（通过 LEAN GetOpenOrders 匹配 BrokerId）
+
+        Args:
+            restored_data: {hash_value: {"grid_level": GridLevel, "target_data": {...}}}
+
+        Returns:
+            成功恢复的 ExecutionTarget 数量
+        """
+        from .execution_models import ExecutionTarget
+
+        # Step 1: 构建 BrokerId → OrderTicket 映射（从 LEAN 已恢复的订单）
+        lean_recovered_tickets = self._build_broker_id_map()
+
+        restored_count = 0
+
+        for hash_value, data in restored_data.items():
+            grid_level = data["grid_level"]
+            target_data = data["target_data"]
+
+            try:
+                # Step 2: 使用 ExecutionTarget.from_dict() 反序列化
+                exec_target = ExecutionTarget.from_dict(
+                    target_data,
+                    self.algorithm,
+                    grid_level
+                )
+
+                # Step 3: 恢复每个 OrderGroup 的 OrderTickets
+                order_groups_data = target_data.get('order_groups', [])
+                for idx, order_group in enumerate(exec_target.order_groups):
+                    if idx >= len(order_groups_data):
+                        break  # 数据不匹配，跳过
+
+                    og_data = order_groups_data[idx]
+
+                    # Step 3.1: 恢复 completed OrderTickets
+                    for ticket_json in og_data.get('completed_tickets_json', []):
+                        try:
+                            ticket = OrderTicket.FromJson(ticket_json, self.algorithm.transactions)
+                            order_group.order_tickets.append(ticket)
+                        except Exception as ex:
+                            self.algorithm.error(
+                                f"❌ Failed to deserialize completed OrderTicket: {ex}"
+                            )
+
+                    # Step 3.2: 恢复 active OrderTickets（从 LEAN 恢复的订单中匹配）
+                    for broker_id in order_group.active_broker_ids.copy():  # 使用 copy 避免修改时迭代
+                        if broker_id in lean_recovered_tickets:
+                            # Case A: LEAN 已恢复（订单还是 active）
+                            ticket = lean_recovered_tickets[broker_id]
+                            order_group.order_tickets.append(ticket)
+                            self.algorithm.debug(
+                                f"  ✅ Matched active order: BrokerId={broker_id}, OrderId={ticket.order_id}"
+                            )
+                        else:
+                            # Case B: LEAN 没恢复（订单已完成）→ 需要从券商 API 查询或从快照恢复
+                            self.algorithm.debug(
+                                f"  ⚠️ Active order not found in LEAN recovery: BrokerId={broker_id}. "
+                                f"Order may have completed during downtime."
+                            )
+                            # TODO: 实现从券商 API 查询已完成订单
+                            # ticket = self._recover_completed_order_from_broker(broker_id)
+                            # if ticket:
+                            #     order_group.order_tickets.append(ticket)
+                            #     order_group.active_broker_ids.discard(broker_id)
+
+                # Step 4: 注册到 active_targets
+                self.active_targets[hash_value] = exec_target
+
+                restored_count += 1
+                self.algorithm.debug(
+                    f"  ✅ Restored ExecutionTarget: {target_data['grid_id']} | "
+                    f"Status: {target_data.get('status')} | "
+                    f"OrderGroups: {len(exec_target.order_groups)} | "
+                    f"Total Orders: {sum(len(og.order_tickets) for og in exec_target.order_groups)}"
+                )
+
+            except Exception as ex:
+                self.algorithm.error(
+                    f"❌ Failed to restore ExecutionTarget {target_data.get('grid_id', 'unknown')}: {ex}"
+                )
+                import traceback
+                self.algorithm.debug(traceback.format_exc())
+
+        return restored_count
+
+    def _build_broker_id_map(self) -> Dict[str, any]:
+        """
+        构建 BrokerId → OrderTicket 映射
+
+        从 LEAN 已恢复的订单中提取 BrokerId，用于匹配 active 订单
+
+        Returns:
+            {broker_id: OrderTicket} 映射
+        """
+        broker_id_map = {}
+
+        try:
+            # ⚠️ 使用 GetOrderTickets() 获取所有订单票据（包括已成交的）
+            order_tickets = self.algorithm.transactions.get_order_tickets()
+            for ticket in order_tickets:
+                if ticket and ticket.brokerage_id and len(ticket.brokerage_id) > 0:
+                    # BrokerId 是一个列表，取第一个
+                    broker_id = ticket.brokerage_id[0]
+                    broker_id_map[broker_id] = ticket
+        except Exception as ex:
+            self.algorithm.error(f"❌ Failed to build BrokerId map: {ex}")
+            import traceback
+            self.algorithm.debug(traceback.format_exc())
+
+        self.algorithm.debug(f"  📋 Built BrokerId map: {len(broker_id_map)} orders recovered by LEAN")
+        return broker_id_map

@@ -101,24 +101,20 @@ class SpreadManager:
         manager.add_pair(crypto, stock)
     """
 
-    def __init__(self, algorithm: QCAlgorithm,
-                 monitor_adapter: Optional['RedisSpreadMonitor'] = None):
+    def __init__(self, algorithm: QCAlgorithm):
         """
         Initialize SpreadManager
 
         Args:
             algorithm: QCAlgorithm instance for accessing trading APIs
-            monitor_adapter: 监控适配器实例 (可选，如 RedisSpreadMonitor)
+
+        Note:
+            监控功能通过观察者模式实现，使用 register_pair_observer() 和
+            register_observer() 注册监控回调。
         """
         self.algorithm = algorithm
-        self.monitor = monitor_adapter  # 监控适配器（依赖注入）
-        self._spread_observers = []  # 价差观察者列表（策略回调）
-
-        # 日志输出
-        if self.monitor:
-            self.algorithm.Debug("📊 SpreadManager: 监控适配器已启用")
-        else:
-            self.algorithm.Debug("📊 SpreadManager: 监控适配器未启用")
+        self._pair_observers = []    # pair 事件观察者列表（监控回调）
+        self._spread_observers = []  # spread 事件观察者列表（策略回调）
 
         # Crypto Symbol -> Stock Symbol mapping
         self.pairs: Dict[Symbol, Symbol] = {}
@@ -143,7 +139,7 @@ class SpreadManager:
         注册价差观察者（策略回调）
 
         Args:
-            callback: 回调函数，签名为 callback(pair_symbol, spread_pct)
+            callback: 回调函数，签名为 callback(signal: SpreadSignal)
 
         Example:
             >>> manager.register_observer(strategy.on_spread_update)
@@ -167,6 +163,56 @@ class SpreadManager:
             self._spread_observers.remove(callback)
             callback_name = getattr(callback, '__name__', repr(callback))
             self.algorithm.Debug(f"🗑️ Unregistered spread observer: {callback_name}")
+
+    def register_pair_observer(self, callback):
+        """
+        注册 pair 添加事件观察者（监控回调）
+
+        当通过 add_pair() 或 subscribe_trading_pair() 添加新交易对时触发。
+
+        Args:
+            callback: 回调函数，签名为 callback(crypto: Security, stock: Security)
+
+        Example:
+            >>> manager.register_pair_observer(monitor.write_pair_mapping)
+        """
+        if callback not in self._pair_observers:
+            self._pair_observers.append(callback)
+            callback_name = getattr(callback, '__name__', repr(callback))
+            self.algorithm.Debug(f"✅ Registered pair observer: {callback_name}")
+
+    def unregister_pair_observer(self, callback):
+        """
+        注销 pair 观察者
+
+        Args:
+            callback: 要移除的回调函数
+
+        Example:
+            >>> manager.unregister_pair_observer(monitor.write_pair_mapping)
+        """
+        if callback in self._pair_observers:
+            self._pair_observers.remove(callback)
+            callback_name = getattr(callback, '__name__', repr(callback))
+            self.algorithm.Debug(f"🗑️ Unregistered pair observer: {callback_name}")
+
+    def _notify_pair_observers(self, crypto: Security, stock: Security):
+        """
+        通知所有注册的 pair 观察者
+
+        Args:
+            crypto: Crypto Security 对象
+            stock: Stock Security 对象
+        """
+        for observer in self._pair_observers:
+            try:
+                observer(crypto, stock)
+            except:
+                import traceback
+                error_msg = traceback.format_exc()
+                self.algorithm.Debug(
+                    f"❌ Pair observer error for {crypto.Symbol.Value}<->{stock.Symbol.Value}: {error_msg}"
+                )
 
     def _notify_observers(self, signal: SpreadSignal):
         """
@@ -198,6 +244,7 @@ class SpreadManager:
             - Adds pair to self.pairs
             - Updates self.stock_to_cryptos for many-to-one tracking
             - Adds securities to self.cryptos and self.stocks
+            - Notifies all registered pair observers
 
         Example:
             >>> manager.add_pair(crypto, stock)
@@ -219,9 +266,8 @@ class SpreadManager:
         self.cryptos.add(crypto)
         self.stocks.add(stock)
 
-        # 写入配对映射到监控后端（通过适配器）
-        if self.monitor:
-            self.monitor.write_pair_mapping(crypto, stock)
+        # 通知 pair 观察者（如监控系统）
+        self._notify_pair_observers(crypto, stock)
 
     def subscribe_trading_pair(
         self,
@@ -404,8 +450,8 @@ class SpreadManager:
             >>> result["executable_spread"]  # 0.00265 (0.265%)
             >>> result["direction"]  # "SHORT_SPREAD"
         """
-        # 1. 数据验证
-        if token_bid <= 0 or token_ask <= 0:
+        # 1. 数据验证（检查双侧价格有效性）
+        if token_bid <= 0 or token_ask <= 0 or stock_bid <= 0 or stock_ask <= 0:
             return {
                 "market_state": MarketState.NO_OPPORTUNITY,
                 "theoretical_spread": 0.0,
@@ -440,19 +486,23 @@ class SpreadManager:
         # 4. LIMIT_OPPORTUNITY（需要挂单）
         # 场景 1: token 偏贵 (token_ask > stock_ask > token_bid > stock_bid)
         if token_ask > stock_ask > token_bid > stock_bid:
+            spread_1 = (token_ask - stock_ask) / token_ask
+            spread_2 = (token_bid - stock_bid) / token_bid
             return {
                 "market_state": MarketState.LIMIT_OPPORTUNITY,
                 "theoretical_spread": theoretical_spread,
-                "executable_spread": None,  # 由执行层计算
+                "executable_spread": max(spread_1, spread_2),  # 由执行层计算
                 "direction": "SHORT_SPREAD"
             }
 
         # 场景 2: token 偏便宜 (stock_ask > token_ask > stock_bid > token_bid)
         if stock_ask > token_ask > stock_bid > token_bid:
+            spread_1 = (token_ask - stock_bid) / token_ask
+            spread_2 = (token_bid - stock_ask) / token_bid
             return {
                 "market_state": MarketState.LIMIT_OPPORTUNITY,
                 "theoretical_spread": theoretical_spread,
-                "executable_spread": None,  # 由执行层计算
+                "executable_spread": min(spread_1, spread_2),  # 由执行层计算
                 "direction": "LONG_SPREAD"
             }
 
@@ -550,18 +600,5 @@ class SpreadManager:
                     f"{stock_symbol.Value}: bid={stock_security.Cache.BidPrice:.2f} ask={stock_security.Cache.AskPrice:.2f}"
                 )
 
-            # 4. 写入理论价差到监控后端（用于连续可视化）
-            if self.monitor:
-                self.monitor.write_spread(signal)
-
-            # 5. 通知策略（只传 signal，包含完整上下文）
+            # 4. 通知策略（只传 signal，包含完整上下文）
             self._notify_observers(signal)
-
-            # 5. 额外记录可执行机会到监控后端（仅在有可执行机会时）
-            if signal.executable_spread is not None and self.monitor:
-                self.algorithm.Debug(
-                    f"📊 {signal.market_state.value.upper()} | "
-                    f"{crypto_symbol.Value}<->{stock_symbol.Value} | "
-                    f"Executable: {signal.executable_spread*100:.2f}% | "
-                    f"Direction: {signal.direction}"
-                )

@@ -440,3 +440,38 @@ class GridPositionManager:
         # 如果对冲比例 < 90%，认为有敞口
         return hedge_ratio < 0.9
 
+    # ============================================================================
+    #                      状态恢复 (State Recovery)
+    # ============================================================================
+
+    def restore_grid_positions(self, restored_data: Dict) -> int:
+        """
+        批量恢复网格持仓
+
+        从 StatePersistence 反序列化的数据中恢复 GridPosition 对象
+
+        Args:
+            restored_data: {GridLevel: {"leg1_qty": float, "leg2_qty": float}}
+
+        Returns:
+            成功恢复的 GridPosition 数量
+        """
+        restored_count = 0
+
+        for grid_level, position_data in restored_data.items():
+            # 创建或获取 GridPosition
+            position = self.get_or_create_grid_position(grid_level)
+
+            # 直接设置持仓数量（恢复状态，而非累加）
+            position._leg1_qty = float(position_data["leg1_qty"])
+            position._leg2_qty = float(position_data["leg2_qty"])
+
+            self.algorithm.debug(
+                f"  ✅ Restored {grid_level.level_id}: "
+                f"{position._leg1_qty:.2f} / {position._leg2_qty:.2f}"
+            )
+
+            restored_count += 1
+
+        return restored_count
+
