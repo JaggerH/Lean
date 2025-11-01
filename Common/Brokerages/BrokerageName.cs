@@ -192,6 +192,16 @@ namespace QuantConnect.Brokerages
         /// <summary>
         /// Transaction and submit/execution rules will use interactive brokers Fix models
         /// </summary>
-        InteractiveBrokersFix
+        InteractiveBrokersFix,
+
+        /// <summary>
+        /// Transaction and submit/execution rules will use Gate.io Spot trading models
+        /// </summary>
+        Gate,
+
+        /// <summary>
+        /// Transaction and submit/execution rules will use Gate.io USDT-margined perpetual futures models
+        /// </summary>
+        GateFutures
     }
 }

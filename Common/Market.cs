@@ -70,7 +70,8 @@ namespace QuantConnect
             Tuple.Create(Coinbase, 38),
             Tuple.Create(InteractiveBrokers, 39),
             Tuple.Create(EUREX, 40),
-            Tuple.Create(OSE, 41)
+            Tuple.Create(OSE, 41),
+            Tuple.Create(Gate, 42)
         };
 
         static Market()
@@ -260,6 +261,11 @@ namespace QuantConnect
         /// InteractiveBrokers market
         /// </summary>
         public const string InteractiveBrokers = "interactivebrokers";
+
+        /// <summary>
+        /// Gate market
+        /// </summary>
+        public const string Gate = "gate";
 
         /// <summary>
         /// Adds the specified market to the map of available markets with the specified identifier.
