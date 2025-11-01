@@ -114,9 +114,18 @@ namespace QuantConnect.Brokerages
                 return true;
             }
 
-            // Check if the requested quantity is valid
+            // Check if the requested quantity is a multiple of lot size
             var requestedQuantity = (decimal)request.Quantity;
-            return IsValidOrderSize(security, requestedQuantity, out message);
+            var lotSize = security.SymbolProperties.LotSize;
+            if (requestedQuantity % lotSize != 0)
+            {
+                message = new BrokerageMessageEvent(BrokerageMessageType.Warning, "NotSupported",
+                    $"Order quantity {requestedQuantity} must be a multiple of lot size {lotSize}");
+                return false;
+            }
+
+            message = null;
+            return true;
         }
 
         /// <summary>
@@ -132,12 +141,17 @@ namespace QuantConnect.Brokerages
         /// <returns>True if the brokerage could process the order, false otherwise</returns>
         public override bool CanSubmitOrder(Security security, Order order, out BrokerageMessageEvent message)
         {
-            if (!IsValidOrderSize(security, order.Quantity, out message))
+            message = null;
+
+            // Validate order quantity is a multiple of lot size
+            var lotSize = security.SymbolProperties.LotSize;
+            if (order.Quantity % lotSize != 0)
             {
+                message = new BrokerageMessageEvent(BrokerageMessageType.Warning, "NotSupported",
+                    $"Order quantity {order.Quantity} must be a multiple of lot size {lotSize}");
                 return false;
             }
 
-            message = null;
             if (security.Type != SecurityType.Crypto)
             {
                 message = new BrokerageMessageEvent(BrokerageMessageType.Warning, "NotSupported",
@@ -158,7 +172,7 @@ namespace QuantConnect.Brokerages
         private static IReadOnlyDictionary<SecurityType, string> GetDefaultMarkets()
         {
             var map = DefaultMarketMap.ToDictionary();
-            map[SecurityType.Crypto] = Market.Gate;
+            map[SecurityType.Crypto] = Market.Gate;  // Spot trading only
             return map.ToReadOnlyDictionary();
         }
     }
