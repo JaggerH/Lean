@@ -130,6 +130,95 @@ namespace QuantConnect.Lean.Engine.Setup
 
             Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): creating brokerage '{liveJob.Brokerage}'");
 
+            // Check for multi-brokerage configuration first (live mode with multiple brokerages)
+            var (multiBrokerageAccounts, multiBrokerageRouter) = ParseMultiBrokerageConfig();
+
+            if (multiBrokerageAccounts != null && multiBrokerageRouter != null)
+            {
+                Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-brokerage live mode with {multiBrokerageAccounts.Count} accounts");
+
+                // Get the underlying QCAlgorithm instance
+                QCAlgorithm algorithm = uninitializedAlgorithm as QCAlgorithm;
+                if (algorithm == null)
+                {
+                    var wrapperType = uninitializedAlgorithm.GetType();
+                    var baseAlgorithmProperty = wrapperType.GetProperty("BaseAlgorithm");
+                    if (baseAlgorithmProperty != null)
+                    {
+                        algorithm = baseAlgorithmProperty.GetValue(uninitializedAlgorithm) as QCAlgorithm;
+                    }
+                }
+
+                if (algorithm == null)
+                {
+                    throw new InvalidOperationException("Could not access QCAlgorithm for multi-brokerage setup");
+                }
+
+                // Create account cash configs for MultiSecurityPortfolioManager
+                var accountCash = multiBrokerageAccounts.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.InitialCash);
+
+                // Replace Portfolio with MultiSecurityPortfolioManager
+                algorithm.Portfolio = new MultiSecurityPortfolioManager(
+                    accountCash,
+                    multiBrokerageRouter,
+                    algorithm.Securities,
+                    algorithm.Transactions,
+                    algorithm.Settings,
+                    algorithm.DefaultOrderProperties,
+                    algorithm.TimeKeeper
+                );
+
+                Log.Trace("BrokerageSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
+
+                // Create MultiBrokerageManager
+                var multiBrokerageManager = new MultiBrokerageManager();
+
+                // Create and register each brokerage
+                IBrokerageFactory firstFactory = null;
+                foreach (var kvp in multiBrokerageAccounts)
+                {
+                    var accountName = kvp.Key;
+                    var accountConfig = kvp.Value;
+
+                    Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Creating '{accountConfig.Brokerage}' for '{accountName}'");
+
+                    // Find the brokerage factory
+                    var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
+                        bf => bf.BrokerageType.MatchesTypeName(accountConfig.Brokerage)
+                    );
+
+                    // Save first factory for Engine compatibility
+                    if (firstFactory == null)
+                    {
+                        firstFactory = brokerageFactory;
+                    }
+
+                    // Create temporary LiveNodePacket for this brokerage
+                    var brokerageJob = new LiveNodePacket
+                    {
+                        Brokerage = accountConfig.Brokerage,
+                        DataQueueHandler = liveJob.DataQueueHandler,
+                        BrokerageData = new Dictionary<string, string>(liveJob.BrokerageData),
+                        Controls = liveJob.Controls,
+                        UserId = liveJob.UserId,
+                        ProjectId = liveJob.ProjectId
+                    };
+
+                    // Create the brokerage instance
+                    var accountBrokerage = brokerageFactory.CreateBrokerage(brokerageJob, uninitializedAlgorithm);
+
+                    // Register with MultiBrokerageManager
+                    multiBrokerageManager.RegisterBrokerage(accountName, accountBrokerage);
+
+                    Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Registered '{accountConfig.Brokerage}' for '{accountName}'");
+                }
+
+                // Return first factory for Engine compatibility (used for BrokerageMessageHandler)
+                _factory = firstFactory;
+                factory = firstFactory;
+                return (IBrokerage)multiBrokerageManager;
+            }
+
             // Check for multi-account configuration
             var (accountConfigs, router) = ParseMultiAccountConfig();
 
@@ -566,10 +655,25 @@ namespace QuantConnect.Lean.Engine.Setup
         private class MultiAccountConfig
         {
             [JsonProperty("accounts")]
-            public Dictionary<string, decimal> Accounts { get; set; }
+            public Dictionary<string, object> Accounts { get; set; }
 
             [JsonProperty("router")]
             public RouterConfig Router { get; set; }
+        }
+
+        /// <summary>
+        /// Account configuration for multi-brokerage live mode
+        /// </summary>
+        private class AccountBrokerageConfig
+        {
+            [JsonProperty("initial-cash")]
+            public decimal InitialCash { get; set; }
+
+            [JsonProperty("brokerage")]
+            public string Brokerage { get; set; }
+
+            [JsonProperty("market")]
+            public string Market { get; set; }
         }
 
         private class RouterConfig
@@ -609,16 +713,19 @@ namespace QuantConnect.Lean.Engine.Setup
                     throw new ArgumentException("No accounts defined in multi-account-config");
                 }
 
-                // Log account configurations
+                // Convert object to decimal (handles both old and new format for backtesting)
+                var accountCash = new Dictionary<string, decimal>();
                 foreach (var account in config.Accounts)
                 {
-                    Log.Trace($"BrokerageSetupHandler: Account '{account.Key}' with initial cash ${account.Value:N2}");
+                    var cash = Convert.ToDecimal(account.Value);
+                    accountCash[account.Key] = cash;
+                    Log.Trace($"BrokerageSetupHandler: Account '{account.Key}' with initial cash ${cash:N2}");
                 }
 
                 // Create router based on config
                 var router = CreateRouterFromConfig(config);
 
-                return (config.Accounts, router);
+                return (accountCash, router);
             }
             catch (JsonException ex)
             {
@@ -627,6 +734,80 @@ namespace QuantConnect.Lean.Engine.Setup
             catch (Exception ex)
             {
                 throw new ArgumentException($"Failed to parse multi-account-config: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Parses multi-brokerage configuration from JSON
+        /// Returns account-to-brokerage mappings and router
+        /// </summary>
+        private (Dictionary<string, AccountBrokerageConfig> accounts, IOrderRouter router) ParseMultiBrokerageConfig()
+        {
+            var configString = Configuration.Config.Get("multi-account-config");
+
+            if (string.IsNullOrEmpty(configString))
+            {
+                return (null, null);
+            }
+
+            try
+            {
+                Log.Trace("BrokerageSetupHandler: Parsing multi-brokerage configuration");
+
+                // Parse JSON configuration
+                var config = JsonConvert.DeserializeObject<MultiAccountConfig>(configString);
+
+                if (config?.Accounts == null || config.Accounts.Count == 0)
+                {
+                    return (null, null);
+                }
+
+                // Check if this is multi-brokerage format
+                var firstAccount = config.Accounts.First().Value;
+                if (firstAccount is not Newtonsoft.Json.Linq.JObject)
+                {
+                    // Simple format, not multi-brokerage
+                    return (null, null);
+                }
+
+                // Parse accounts as AccountBrokerageConfig objects
+                var accountBrokerages = new Dictionary<string, AccountBrokerageConfig>();
+
+                foreach (var kvp in config.Accounts)
+                {
+                    var accountName = kvp.Key;
+                    var accountValue = kvp.Value;
+
+                    // Deserialize the account config
+                    var accountConfig = JsonConvert.DeserializeObject<AccountBrokerageConfig>(accountValue.ToString());
+
+                    if (accountConfig == null)
+                    {
+                        throw new ArgumentException($"Invalid configuration for account '{accountName}'");
+                    }
+
+                    if (string.IsNullOrEmpty(accountConfig.Brokerage))
+                    {
+                        throw new ArgumentException($"Account '{accountName}' must specify a 'brokerage'");
+                    }
+
+                    accountBrokerages[accountName] = accountConfig;
+
+                    Log.Trace($"BrokerageSetupHandler: Account '{accountName}' → Brokerage '{accountConfig.Brokerage}', Market '{accountConfig.Market}', Cash ${accountConfig.InitialCash:N2}");
+                }
+
+                // Create router based on config
+                var router = CreateRouterFromConfig(config);
+
+                return (accountBrokerages, router);
+            }
+            catch (JsonException ex)
+            {
+                throw new ArgumentException($"Invalid JSON format in multi-account-config: {ex.Message}", ex);
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException($"Failed to parse multi-brokerage-config: {ex.Message}", ex);
             }
         }
 

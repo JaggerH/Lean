@@ -27,6 +27,7 @@ using QuantConnect.Brokerages;
 using QuantConnect.Brokerages.Backtesting;
 using QuantConnect.Configuration;
 using QuantConnect.Interfaces;
+using QuantConnect.Lean.Engine;
 using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Logging;
 using QuantConnect.Orders;
@@ -949,7 +950,33 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
             var error = string.Empty;
             try
             {
-                orderPlaced = orders.All(o => _brokerage.PlaceOrder(o));
+                // Check if we're in multi-brokerage mode
+                var multiBrokerageManager = _brokerage as MultiBrokerageManager;
+                if (multiBrokerageManager != null)
+                {
+                    // Multi-brokerage mode: route orders to correct brokerage
+                    var multiPortfolio = _algorithm.Portfolio as MultiSecurityPortfolioManager;
+                    if (multiPortfolio == null)
+                    {
+                        throw new InvalidOperationException(
+                            "MultiBrokerageManager requires MultiSecurityPortfolioManager");
+                    }
+
+                    orderPlaced = orders.All(o =>
+                    {
+                        // Use the router to determine which account this order belongs to
+                        var accountName = multiPortfolio.Router.Route(o);
+                        Log.Trace($"BrokerageTransactionHandler: Routing order {o.Id} ({o.Symbol}) to account '{accountName}'");
+
+                        // Place order through the specific account's brokerage
+                        return multiBrokerageManager.PlaceOrder(o, accountName);
+                    });
+                }
+                else
+                {
+                    // Standard single-brokerage mode
+                    orderPlaced = orders.All(o => _brokerage.PlaceOrder(o));
+                }
             }
             catch (Exception err)
             {

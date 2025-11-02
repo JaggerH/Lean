@@ -34,6 +34,11 @@ namespace QuantConnect.Securities
         private readonly RoutingCashBook _routingCashBook;
 
         /// <summary>
+        /// Gets the order router for this portfolio manager
+        /// </summary>
+        public IOrderRouter Router => _router;
+
+        /// <summary>
         /// Creates a new multi-account portfolio manager
         /// </summary>
         /// <param name="accountConfigs">Dictionary of account name to initial cash</param>

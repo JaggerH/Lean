@@ -24,6 +24,8 @@ using QuantConnect.Securities;
 using QuantConnect.Data.Market;
 using System.Collections.Generic;
 using QuantConnect.Lean.Engine.DataFeeds.Enumerators;
+using Newtonsoft.Json;
+using QuantConnect.Configuration;
 
 namespace QuantConnect.Lean.Engine.DataFeeds
 {
@@ -34,6 +36,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
     {
         private readonly IAlgorithmSettings _algorithmSettings;
         private readonly Dictionary<SubscriptionDataConfig, Queue<IDataQueueHandler>> _dataConfigAndDataHandler = new();
+        private readonly Dictionary<string, IDataQueueHandler> _marketToHandlerMap = new();
 
         /// <summary>
         /// Creates a new instance
@@ -74,7 +77,11 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         public IEnumerator<BaseData> Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
         {
             Exception failureException = null;
-            foreach (var dataHandler in DataHandlers)
+
+            // Get the list of handlers to try - either from market mapping or all handlers
+            var handlersToTry = GetHandlersForMarket(dataConfig.Symbol.ID.Market);
+
+            foreach (var dataHandler in handlersToTry)
             {
                 // Emit ticks & custom data as soon as we get them, they don't need any kind of batching behavior applied to them
                 // only use the frontier time provider if we need to
@@ -176,11 +183,22 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         {
             var dataHandlersConfig = job.DataQueueHandler;
             Log.Trace($"CompositeDataQueueHandler.SetJob(): will use {dataHandlersConfig}");
+
+            // Try to parse multi-account configuration for market mappings
+            var marketMappings = ParseMarketMappings(job);
+
             foreach (var dataHandlerName in dataHandlersConfig.DeserializeList())
             {
                 var dataHandler = Composer.Instance.GetExportedValueByTypeName<IDataQueueHandler>(dataHandlerName);
                 dataHandler.SetJob(job);
                 DataHandlers.Add(dataHandler);
+
+                // Register market-to-handler mapping if available
+                if (marketMappings != null && marketMappings.TryGetValue(dataHandlerName, out var market))
+                {
+                    _marketToHandlerMap[market.ToLowerInvariant()] = dataHandler;
+                    Log.Trace($"DataQueueHandlerManager.SetJob(): Registered {dataHandlerName} for market '{market}'");
+                }
             }
 
             FrontierTimeProvider = InitializeFrontierTimeProvider();
@@ -269,6 +287,79 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             {
                 throw new NotSupportedException("The DataQueueHandler does not support Options and Futures.");
             }
+        }
+
+        /// <summary>
+        /// Gets the list of data handlers to try for the given market
+        /// </summary>
+        private IEnumerable<IDataQueueHandler> GetHandlersForMarket(string market)
+        {
+            // If we have a market-to-handler mapping and the market is mapped, use only that handler
+            if (_marketToHandlerMap.Count > 0 && _marketToHandlerMap.TryGetValue(market.ToLowerInvariant(), out var handler))
+            {
+                yield return handler;
+            }
+            else
+            {
+                // No mapping available or market not found - try all handlers (backward compatibility)
+                foreach (var dataHandler in DataHandlers)
+                {
+                    yield return dataHandler;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Parses multi-account configuration to extract market mappings
+        /// Returns a dictionary of brokerage name -> market name
+        /// </summary>
+        private Dictionary<string, string> ParseMarketMappings(LiveNodePacket job)
+        {
+            try
+            {
+                var config = Configuration.Config.Get("multi-account-config");
+                if (string.IsNullOrEmpty(config))
+                {
+                    return null;
+                }
+
+                var multiAccountConfig = JsonConvert.DeserializeObject<Dictionary<string, object>>(config);
+                if (multiAccountConfig == null || !multiAccountConfig.ContainsKey("accounts"))
+                {
+                    return null;
+                }
+
+                var accountsJson = JsonConvert.SerializeObject(multiAccountConfig["accounts"]);
+                var accounts = JsonConvert.DeserializeObject<Dictionary<string, AccountBrokerageConfig>>(accountsJson);
+
+                var mappings = new Dictionary<string, string>();
+                foreach (var kvp in accounts)
+                {
+                    if (!string.IsNullOrEmpty(kvp.Value.Brokerage) && !string.IsNullOrEmpty(kvp.Value.Market))
+                    {
+                        mappings[kvp.Value.Brokerage] = kvp.Value.Market;
+                    }
+                }
+
+                return mappings.Count > 0 ? mappings : null;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "DataQueueHandlerManager.ParseMarketMappings(): Failed to parse multi-account config");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Helper class for parsing multi-account configuration
+        /// </summary>
+        private class AccountBrokerageConfig
+        {
+            [JsonProperty("brokerage")]
+            public string Brokerage { get; set; }
+
+            [JsonProperty("market")]
+            public string Market { get; set; }
         }
     }
 }
