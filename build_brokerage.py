@@ -10,6 +10,7 @@ Usage:
     python build_brokerage.py --rebuild Kraken             # Rebuild specific brokerage
     python build_brokerage.py --rebuild InteractiveBrokers # Rebuild IB (includes IBAutomater)
     python build_brokerage.py --rebuild Gate               # Rebuild Gate
+    python build_brokerage.py --rebuild Binance            # Rebuild Binance
     python build_brokerage.py --rebuild all                # Rebuild all brokerages
 """
 
@@ -83,6 +84,18 @@ BROKERAGES = [
             {
                 "src": "QuantConnect.GateBrokerage/bin/Debug/QuantConnect.Brokerages.Gate.dll",
                 "dst": "Launcher/bin/Debug/QuantConnect.Brokerages.Gate.dll"
+            }
+        ]
+    },
+    {
+        "name": "Binance",
+        "repo_url": "https://github.com/QuantConnect/Lean.Brokerages.Binance.git",
+        "target_dir": "../Lean.Brokerages.Binance",
+        "solution_file": "QuantConnect.BinanceBrokerage.sln",
+        "dlls": [
+            {
+                "src": "QuantConnect.BinanceBrokerage/bin/Debug/QuantConnect.Brokerages.Binance.dll",
+                "dst": "Launcher/bin/Debug/QuantConnect.Brokerages.Binance.dll"
             }
         ]
     }
@@ -538,6 +551,7 @@ Available Brokerages:
   - InteractiveBrokers (automatically downloads IBAutomater from NuGet)
   - Bitfinex
   - Gate
+  - Binance
         """
     )
 

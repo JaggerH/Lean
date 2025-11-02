@@ -1,0 +1,46 @@
+{
+  "environment": "live-binance-futures-test",
+  "live-mode": true,
+  "data-queue-handler": ["BinanceFuturesBrokerage"],
+  "live-mode-brokerage": "BinanceFuturesBrokerage",
+  "setup-handler": "QuantConnect.Lean.Engine.Setup.BrokerageSetupHandler",
+  "result-handler": "QuantConnect.Lean.Engine.Results.LiveTradingResultHandler",
+  "data-feed-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+  "real-time-handler": "QuantConnect.Lean.Engine.RealTime.LiveTradingRealTimeHandler",
+  "transaction-handler": "QuantConnect.Lean.Engine.TransactionHandlers.BrokerageTransactionHandler",
+  "history-provider": ["BrokerageHistoryProvider", "SubscriptionDataReaderHistoryProvider"],
+
+  "algorithm-type-name": "BinanceIntegrationTest",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/integration/test_binance_integration/main.py",
+
+  "data-folder": "../../../Data/",
+  "cache-location": "../../../Data",
+  "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+
+  "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+  "messaging-handler": "QuantConnect.Messaging.Messaging",
+  "job-queue-handler": "QuantConnect.Queues.JobQueue",
+  "api-handler": "QuantConnect.Api.Api",
+  "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+  "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+
+  "close-automatically": true,
+
+  "maximum-warmup-history-days": 0,
+  "maximum-chart-series": 10,
+
+  "comment-binance": "=== Binance Futures Configuration ===",
+  "binance-fapi-url": "https://demo-fapi.binance.com",
+  "binance-fwebsocket-url": "wss://stream.binancefuture.com/ws",
+  "binance-api-key": "YOUR_BINANCE_API_KEY_HERE",
+  "binance-api-secret": "YOUR_BINANCE_API_SECRET_HERE",
+  "binance-use-testnet": true,
+
+  "comment-data": "=== Data Configuration ===",
+  "data-channel-limit": 20000,
+
+  "comment-limits": "=== Trading Limits ===",
+  "max-trading-pairs": 1,
+  "max-position-per-pair": 100000
+}
