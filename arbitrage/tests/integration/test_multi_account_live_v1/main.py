@@ -22,7 +22,7 @@ class MultiAccountLiveTest(QCAlgorithm):
         self.Schedule.On(
             self.DateRules.EveryDay(),
             self.TimeRules.Every(timedelta(seconds=10)),
-            self.TmpTradingCycle
+            self.TradingCycle
         )
 
         # Note: Per-account holdings will be logged automatically by the system after setup completes
@@ -30,29 +30,6 @@ class MultiAccountLiveTest(QCAlgorithm):
 
     def OnData(self, data):
         pass
-
-    def TmpTradingCycle(self):
-        """Temporary single-account trading cycle for IBKR AAPL testing during pre-market hours"""
-        try:
-            self.cycle_count += 1
-            self.Log(f"\n[TMP CYCLE {self.cycle_count}] Testing IBKR AAPL only")
-
-            aapl_qty = self.Portfolio[self.aapl_ibkr].Quantity
-            self.Log(f"IBKR AAPL Quantity: {aapl_qty}")
-
-            # Simple buy/sell cycle for AAPL on IBKR
-            if aapl_qty == 0:
-                # Buy 1 share
-                self.MarketOrder(self.aapl_ibkr, 100)
-                self.ibkr_orders += 1
-                self.Log(f"[TMP] Placed BUY order for 1 share AAPL")
-            else:
-                # Liquidate position
-                self.Liquidate(self.aapl_ibkr, True)
-                self.Log(f"[TMP] Liquidating AAPL position")
-
-        except Exception as e:
-            self.Error(f"TmpTradingCycle error: {str(e)}")
 
     def TradingCycle(self):
         """Original dual-account trading cycle (currently disabled)"""
