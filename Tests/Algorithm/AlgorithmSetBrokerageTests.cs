@@ -292,6 +292,8 @@ def getBrokerageName(algorithm):
 
             public IReadOnlyDictionary<SecurityType, string> DefaultMarkets => throw new System.NotImplementedException();
 
+            public string DefaultAccountCurrency => throw new System.NotImplementedException();
+
             public void ApplySplit(List<OrderTicket> tickets, Split split)
             {
                 throw new System.NotImplementedException();
