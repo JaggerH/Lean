@@ -133,10 +133,13 @@ namespace QuantConnect.Securities
             var cash = args.Cash;
             var currencySymbol = cash.Symbol;
 
+            // Log.Trace($"MultiSecurityPortfolioManager.OnMainCashBookUpdated: Currency '{currencySymbol}' {args.UpdateType}, ConversionRate={cash.ConversionRate}, CurrencyConversion={(cash.CurrencyConversion != null ? "SET" : "NULL")}");
+
             // Only sync if CurrencyConversion has been properly initialized
             // This happens after EnsureCurrencyDataFeed completes
             if (cash.CurrencyConversion == null)
             {
+                Log.Trace($"MultiSecurityPortfolioManager.OnMainCashBookUpdated: ⚠️ Skipping '{currencySymbol}' sync - CurrencyConversion is NULL (will retry when Updated event fires)");
                 return;
             }
 
@@ -164,7 +167,12 @@ namespace QuantConnect.Securities
                             independentCash.CurrencyConversion = cash.CurrencyConversion;
 
                             subCashBook.Add(currencySymbol, independentCash);
+                            Log.Trace($"MultiSecurityPortfolioManager.OnMainCashBookUpdated: ✅ Synced '{currencySymbol}' to account '{accountName}' (ConversionRate={cash.ConversionRate})");
                         }
+                        // else
+                        // {
+                            // Log.Trace($"MultiSecurityPortfolioManager.OnMainCashBookUpdated: '{currencySymbol}' already exists in account '{accountName}'");
+                        // }
 
                         // No need to check other securities once we've processed this currency
                         break;
@@ -257,6 +265,25 @@ namespace QuantConnect.Securities
                                             }
 
                                             subAccountCashBook.Add(quoteCurrencySymbolStr, independentQuoteCash);
+                                        }
+                                    }
+
+                                    // 🔧 DEFENSIVE FIX: Force-initialize BaseCurrency for CryptoFuture securities
+                                    // Problem: OnMainCashBookUpdated event may not fire if CurrencyConversion is null
+                                    // Solution: Pre-initialize USDT with rate of 1.0 (will be updated later by event if it fires)
+                                    // This ensures USDT exists in CashBook even if event-based sync fails
+                                    if (symbol.SecurityType == SecurityType.CryptoFuture)
+                                    {
+                                        var baseCurrencySymbolStr = baseCurrencySymbol.BaseCurrency.Symbol;
+                                        if (!subAccountCashBook.ContainsKey(baseCurrencySymbolStr))
+                                        {
+                                            // USDT is pegged to USD, so initial rate is 1.0
+                                            // This will be updated later when EnsureCurrencyDataFeed runs
+                                            var initialRate = baseCurrencySymbolStr == "USDT" ? 1.0m : 1.0m;
+                                            var defensiveCash = new Cash(baseCurrencySymbolStr, 0m, initialRate);
+
+                                            subAccountCashBook.Add(baseCurrencySymbolStr, defensiveCash);
+                                            Log.Trace($"MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: 🛡️ Force-initialized '{baseCurrencySymbolStr}' in account '{targetAccount}' for {symbol} (Rate={initialRate})");
                                         }
                                     }
                                 }
@@ -576,6 +603,64 @@ namespace QuantConnect.Securities
         }
 
         /// <summary>
+        /// Gets detailed holdings information for each sub-account including CashBook breakdown
+        /// </summary>
+        /// <returns>Formatted string showing per-account holdings with currency breakdown</returns>
+        public string GetSubAccountHoldingsDetails()
+        {
+            var summary = new System.Text.StringBuilder();
+            summary.AppendLine("=== Per-Account Holdings Details ===");
+
+            foreach (var kvp in _subAccounts)
+            {
+                var accountName = kvp.Key;
+                var account = kvp.Value;
+
+                summary.AppendLine($"\n【{accountName}】");
+                summary.AppendLine();
+
+                // Use CashBook's ToString() method to get formatted currency breakdown
+                summary.AppendLine(account.CashBook.ToString());
+
+                // Show security holdings
+                var securityManager = _subAccountSecurityManagers[accountName];
+                if (securityManager.Count > 0)
+                {
+                    var hasHoldings = false;
+                    foreach (var secKvp in securityManager)
+                    {
+                        var security = secKvp.Value;
+                        var holding = security.Holdings;
+                        if (holding.Quantity != 0)
+                        {
+                            if (!hasHoldings)
+                            {
+                                summary.AppendLine("\nSecurity Holdings:");
+                                hasHoldings = true;
+                            }
+                            summary.AppendLine($"  {security.Symbol}: {holding.Quantity} @ ${holding.AveragePrice:F2} = ${holding.HoldingsValue:N2}");
+                        }
+                    }
+
+                    if (!hasHoldings)
+                    {
+                        summary.AppendLine("(No security holdings)");
+                    }
+                }
+                else
+                {
+                    summary.AppendLine("(No securities in this account)");
+                }
+
+                summary.AppendLine($"\nTotal Portfolio Value: ${account.TotalPortfolioValue:N2}");
+                summary.AppendLine($"Total Margin Used: ${account.TotalMarginUsed:N2}");
+            }
+
+            summary.AppendLine("\n======================================");
+            return summary.ToString();
+        }
+
+        /// <summary>
         /// Checks if a symbol exists in any sub-account SecurityManager
         /// </summary>
         /// <param name="symbol">The symbol to check</param>
@@ -590,6 +675,57 @@ namespace QuantConnect.Securities
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// Synchronizes currency conversions from the main CashBook to all sub-account CashBooks.
+        /// This method should be called after SetupCurrencyConversions has initialized the main CashBook.
+        /// </summary>
+        /// <remarks>
+        /// This is the critical fix for "conversion rate not available" errors in multi-account mode.
+        /// Problem: When LoadCashBalance adds currencies to sub-accounts, they have ConversionRate=0.
+        ///          SetupCurrencyConversions only updates the main CashBook, not sub-accounts.
+        /// Solution: Explicitly sync initialized CurrencyConversion objects to all sub-account CashBooks.
+        /// </remarks>
+        public void SyncCurrencyConversionsFromMain()
+        {
+            // Access the base CashBook (the actual main CashBook, not the RoutingCashBook)
+            var mainCashBook = ((SecurityPortfolioManager)this).CashBook;
+
+            // Log.Trace("MultiSecurityPortfolioManager.SyncCurrencyConversionsFromMain: Starting sync...");
+
+            foreach (var mainCashKvp in mainCashBook)
+            {
+                var currency = mainCashKvp.Key;
+                var mainCash = mainCashKvp.Value;
+                var currencyConversion = mainCash.CurrencyConversion;
+
+                // Skip currencies that haven't been properly initialized yet
+                if (currencyConversion == null || mainCash.ConversionRate == 0)
+                {
+                    // Log.Trace($"MultiSecurityPortfolioManager.SyncCurrencyConversionsFromMain: ⏭️ Skipping '{currency}' - CurrencyConversion not initialized (Rate={mainCash.ConversionRate})");
+                    continue;
+                }
+
+                // Sync to all sub-accounts that have this currency
+                foreach (var subAccountKvp in _subAccounts)
+                {
+                    var accountName = subAccountKvp.Key;
+                    var subCashBook = subAccountKvp.Value.CashBook;
+
+                    if (subCashBook.ContainsKey(currency))
+                    {
+                        var subCash = subCashBook[currency];
+
+                        // Update the CurrencyConversion object
+                        subCash.CurrencyConversion = currencyConversion;
+
+                        // Log.Trace($"MultiSecurityPortfolioManager.SyncCurrencyConversionsFromMain: ✅ Synced '{currency}' to account '{accountName}' (Rate={currencyConversion.ConversionRate})");
+                    }
+                }
+            }
+
+            // Log.Trace("MultiSecurityPortfolioManager.SyncCurrencyConversionsFromMain: Sync completed");
         }
     }
 }

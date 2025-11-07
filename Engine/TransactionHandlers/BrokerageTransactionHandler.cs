@@ -966,7 +966,7 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                     {
                         // Use the router to determine which account this order belongs to
                         var accountName = multiPortfolio.Router.Route(o);
-                        Log.Trace($"BrokerageTransactionHandler: Routing order {o.Id} ({o.Symbol}) to account '{accountName}'");
+                        // Log.Trace($"BrokerageTransactionHandler: Routing order {o.Id} ({o.Symbol}) to account '{accountName}'");
 
                         // Place order through the specific account's brokerage
                         return multiBrokerageManager.PlaceOrder(o, accountName);

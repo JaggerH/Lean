@@ -465,6 +465,12 @@ namespace QuantConnect.Lean.Engine.Setup
 
                 BaseSetupHandler.SetupCurrencyConversions(algorithm, parameters.UniverseSelection);
 
+                // Sync currency conversions to sub-accounts in multi-account mode
+                if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+                {
+                    multiPortfolio.SyncCurrencyConversionsFromMain();
+                }
+
                 if (algorithm.Portfolio.TotalPortfolioValue == 0)
                 {
                     algorithm.Debug("Warning: No cash balances or holdings were found in the brokerage account.");
@@ -508,13 +514,57 @@ namespace QuantConnect.Lean.Engine.Setup
             Log.Trace("BrokerageSetupHandler.Setup(): Fetching cash balance from brokerage...");
             try
             {
-                // set the algorithm's cash balance for each currency
-                var cashBalance = brokerage.GetCashBalance();
-                foreach (var cash in cashBalance)
+                // Multi-brokerage mode: route cash to sub-accounts
+                if (brokerage is MultiBrokerageManager multiBrokerage &&
+                    algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
                 {
-                    Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount}");
+                    // Clear sub-account CashBooks before loading real balances (like single-account does at line 419-426)
+                    foreach (var accountName in multiBrokerage.GetAccountNames())
+                    {
+                        var subAccount = multiPortfolio.GetAccount(accountName);
 
-                    algorithm.Portfolio.SetCash(cash.Currency, cash.Amount, 0);
+                        // Zero all currencies in this sub-account
+                        foreach (var kvp in subAccount.CashBook)
+                        {
+                            kvp.Value.SetAmount(0);
+                        }
+
+                        Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Cleared initial cash for account '{accountName}'");
+                    }
+
+                    // Load real balances from each brokerage to its corresponding sub-account
+                    foreach (var accountName in multiBrokerage.GetAccountNames())
+                    {
+                        var accountBrokerage = multiBrokerage.GetBrokerage(accountName);
+                        var cashBalance = accountBrokerage.GetCashBalance();
+                        var subAccount = multiPortfolio.GetAccount(accountName);
+
+                        foreach (var cash in cashBalance)
+                        {
+                            // Initialize stablecoins with conversion rate 1.0 (pegged to USD)
+                            // Other currencies will be initialized to 0 and updated later by SetupCurrencyConversions
+                            var isStableCoin = cash.Currency == "USDT" || cash.Currency == "USDC" ||
+                                               cash.Currency == "BUSD" || cash.Currency == "DAI" ||
+                                               cash.Currency == "TUSD" || cash.Currency == "USDP";
+                            var conversionRate = isStableCoin ? 1.0m : 0m;
+
+                            // Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount} for account '{accountName}' (ConversionRate={conversionRate})");
+                            subAccount.SetCash(cash.Currency, cash.Amount, conversionRate);
+                        }
+                    }
+
+                    // Aggregate sub-account balances to main CashBook
+                    SyncSubAccountCashToMain(multiPortfolio);
+                }
+                else
+                {
+                    // Single-brokerage mode (existing logic unchanged)
+                    var cashBalance = brokerage.GetCashBalance();
+                    foreach (var cash in cashBalance)
+                    {
+                        Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount}");
+                        algorithm.Portfolio.SetCash(cash.Currency, cash.Amount, 0);
+                    }
                 }
             }
             catch (Exception err)
@@ -524,6 +574,67 @@ namespace QuantConnect.Lean.Engine.Setup
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// Synchronizes sub-account cash balances to the main CashBook for accurate reporting
+        /// </summary>
+        /// <param name="multiPortfolio">The multi-account portfolio manager</param>
+        private void SyncSubAccountCashToMain(MultiSecurityPortfolioManager multiPortfolio)
+        {
+            // Log.Trace("BrokerageSetupHandler.SyncSubAccountCashToMain(): Aggregating sub-account cash to main CashBook");
+
+            // Collect all currencies across all sub-accounts
+            var currencyTotals = new Dictionary<string, decimal>();
+
+            foreach (var subAccountKvp in multiPortfolio.SubAccounts)
+            {
+                var accountName = subAccountKvp.Key;
+                var subAccount = subAccountKvp.Value;
+
+                foreach (var cashKvp in subAccount.CashBook)
+                {
+                    var currency = cashKvp.Key;
+                    var amount = cashKvp.Value.Amount;
+
+                    if (!currencyTotals.ContainsKey(currency))
+                    {
+                        currencyTotals[currency] = 0;
+                    }
+
+                    currencyTotals[currency] += amount;
+
+                    // Log.Trace($"BrokerageSetupHandler.SyncSubAccountCashToMain(): Account '{accountName}' has {amount} {currency}");
+                }
+            }
+
+            // Update main CashBook with aggregated totals
+            // Access base.CashBook to bypass RoutingCashBook and directly update the main CashBook
+            var baseCashBook = ((SecurityPortfolioManager)multiPortfolio).CashBook;
+
+            foreach (var currencyTotal in currencyTotals)
+            {
+                var currency = currencyTotal.Key;
+                var totalAmount = currencyTotal.Value;
+
+                if (baseCashBook.ContainsKey(currency))
+                {
+                    // Update existing currency
+                    baseCashBook[currency].SetAmount(totalAmount);
+                }
+                else
+                {
+                    // Initialize stablecoins with conversion rate 1.0 (pegged to USD)
+                    // Other currencies will be set to 0 and updated later by SetupCurrencyConversions
+                    var isStableCoin = currency == "USDT" || currency == "USDC" ||
+                                       currency == "BUSD" || currency == "DAI" ||
+                                       currency == "TUSD" || currency == "USDP";
+                    var conversionRate = isStableCoin ? 1.0m : 0m;
+                    baseCashBook.Add(currency, totalAmount, conversionRate);
+                }
+
+                // Log.Trace($"BrokerageSetupHandler.SyncSubAccountCashToMain(): Main CashBook {currency} = {totalAmount}");
+            }
         }
 
         /// <summary>

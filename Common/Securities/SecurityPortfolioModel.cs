@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Linq;
 using QuantConnect.Orders;
 using QuantConnect.Logging;
 using QuantConnect.Orders.Fees;
@@ -164,6 +165,25 @@ namespace QuantConnect.Securities
             }
             catch (Exception err)
             {
+                Log.Error($"SecurityPortfolioModel.ProcessFill(): Error processing fill for {security.Symbol}");
+                Log.Error($"SecurityPortfolioModel.ProcessFill(): Fill details - Quantity: {fill.FillQuantity}, Price: {fill.FillPrice}, OrderId: {fill.OrderId}");
+                Log.Error($"SecurityPortfolioModel.ProcessFill(): QuoteCurrency: {quoteCash.Symbol}, QuoteCurrency ConversionRate: {quoteCash.ConversionRate}");
+
+                // Log CashBook state to diagnose currency conversion issues
+                if (security is IBaseCurrencySymbol baseCurrencySymbol)
+                {
+                    var baseCurrencySymbolStr = baseCurrencySymbol.BaseCurrency.Symbol;
+                    var hasBaseCurrency = portfolio.CashBook.ContainsKey(baseCurrencySymbolStr);
+                    Log.Error($"SecurityPortfolioModel.ProcessFill(): BaseCurrency: {baseCurrencySymbolStr}, Exists in CashBook: {hasBaseCurrency}");
+
+                    if (hasBaseCurrency)
+                    {
+                        var baseCash = portfolio.CashBook[baseCurrencySymbolStr];
+                        Log.Error($"SecurityPortfolioModel.ProcessFill(): BaseCurrency ConversionRate: {baseCash.ConversionRate}, CurrencyConversion: {(baseCash.CurrencyConversion != null ? "SET" : "NULL")}");
+                    }
+                }
+
+                Log.Error($"SecurityPortfolioModel.ProcessFill(): CashBook currencies: [{string.Join(", ", portfolio.CashBook.Select(c => $"{c.Key}(Rate:{c.Value.ConversionRate})"))}]");
                 Log.Error(err);
             }
 

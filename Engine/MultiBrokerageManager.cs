@@ -131,7 +131,7 @@ namespace QuantConnect.Lean.Engine
                 brokerage.OrderIdChanged += (sender, e) => OrderIdChanged?.Invoke(this, e);
                 brokerage.OrdersStatusChanged += (sender, orderEvents) =>
                 {
-                    Log.Trace($"MultiBrokerageManager: OrdersStatusChanged from {accountName}: {orderEvents.Count} events");
+                    // Log.Trace($"MultiBrokerageManager: OrdersStatusChanged from {accountName}: {orderEvents.Count} events");
                     OrdersStatusChanged?.Invoke(this, orderEvents);
                 };
                 brokerage.OrderUpdated += (sender, e) => OrderUpdated?.Invoke(this, e);
@@ -193,7 +193,7 @@ namespace QuantConnect.Lean.Engine
             try
             {
                 var brokerage = GetBrokerage(accountName);
-                Log.Trace($"MultiBrokerageManager: Routing order {order.Id} to {accountName} brokerage");
+                // Log.Trace($"MultiBrokerageManager: Routing order {order.Id} to {accountName} brokerage");
                 return brokerage.PlaceOrder(order);
             }
             catch (Exception ex)
