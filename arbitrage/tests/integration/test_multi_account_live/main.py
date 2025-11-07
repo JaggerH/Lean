@@ -25,9 +25,8 @@ class MultiAccountLiveTest(QCAlgorithm):
             self.TradingCycle
         )
 
-        # Log initial per-account holdings
-        if hasattr(self.Portfolio, 'GetSubAccountHoldingsDetails'):
-            self.Log(self.Portfolio.GetSubAccountHoldingsDetails())
+        # Note: Per-account holdings will be logged automatically by the system after setup completes
+        # with correct conversion rates. Do not log here to avoid showing uninitialized conversion rates.
 
     def OnData(self, data):
         pass
@@ -65,8 +64,8 @@ class MultiAccountLiveTest(QCAlgorithm):
             self.Log(f"[ORDER] {market} | {orderEvent.OrderId} | FILLED")
 
             # Log per-account holdings after each fill
-            if hasattr(self.Portfolio, 'GetSubAccountHoldingsDetails'):
-                self.Log(self.Portfolio.GetSubAccountHoldingsDetails())
+            # if hasattr(self.Portfolio, 'GetSubAccountHoldingsDetails'):
+                # self.Log(self.Portfolio.GetSubAccountHoldingsDetails())
 
     def OnEndOfAlgorithm(self):
         self.Log(f"\n[END] Cycles: {self.cycle_count}")
