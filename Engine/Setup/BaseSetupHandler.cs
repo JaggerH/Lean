@@ -81,13 +81,38 @@ namespace QuantConnect.Lean.Engine.Setup
         {
             // this is needed to have non-zero currency conversion rates during warmup
             // will also set the Cash.ConversionRateSecurity
-            universeSelection.EnsureCurrencyDataFeeds(SecurityChanges.None);
+            //
+            // IMPORTANT: In multi-account mode, skip main account EnsureCurrencyDataFeeds
+            // because main CashBook will receive conversions from sub-accounts via sync.
+            // Main account may have different AccountCurrency (USD) than sub-accounts (USDT),
+            // causing conversion path failures (e.g., BTC→USD when sub-account uses BTC→USDT).
+            if (algorithm.Portfolio is not MultiSecurityPortfolioManager)
+            {
+                // Single-account mode: create currency conversions for main account
+                universeSelection.EnsureCurrencyDataFeeds(SecurityChanges.None);
+            }
 
             // now set conversion rates
             Func<Cash, bool> cashToUpdateFilter = currenciesToUpdateWhiteList == null
                 ? (x) => x.CurrencyConversion != null && x.ConversionRate == 0
                 : (x) => currenciesToUpdateWhiteList.Contains(x.Symbol);
+
+            // Collect cash from main cashbook
             var cashToUpdate = algorithm.Portfolio.CashBook.Values.Where(cashToUpdateFilter).ToList();
+
+            // Also collect cash from sub-accounts in multi-account mode
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio2)
+            {
+                foreach (var kvp in multiPortfolio2.SubAccounts)
+                {
+                    var subPortfolio = kvp.Value;
+                    var subCashToUpdate = subPortfolio.CashBook.Values.Where(cashToUpdateFilter).ToList();
+                    if (subCashToUpdate.Count > 0)
+                    {
+                        cashToUpdate.AddRange(subCashToUpdate);
+                    }
+                }
+            }
 
             var securitiesToUpdate = cashToUpdate
                 .SelectMany(x => x.CurrencyConversion.ConversionRateSecurities)

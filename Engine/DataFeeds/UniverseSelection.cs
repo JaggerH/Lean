@@ -61,11 +61,15 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             _algorithm = algorithm;
             _securityService = securityService;
             _pendingRemovalsManager = new PendingRemovalsManager(algorithm.Transactions);
+
+            // Pass isMultiAccountMode flag to CurrencySubscriptionDataConfigManager
+            bool isMultiAccountMode = algorithm.Portfolio is MultiSecurityPortfolioManager;
             _currencySubscriptionDataConfigManager = new CurrencySubscriptionDataConfigManager(algorithm.Portfolio.CashBook,
                 algorithm.Securities,
                 algorithm.SubscriptionManager,
                 _securityService,
-                Resolution.Minute);
+                Resolution.Minute,
+                isMultiAccountMode);
             // TODO: next step is to merge currency internal subscriptions under the same 'internal manager' instance and we could move this directly into the DataManager class
             _internalSubscriptionManager = new InternalSubscriptionManager(_algorithm, internalConfigResolution);
             _securityChangesConstructor = new SecurityChangesConstructor();
@@ -418,6 +422,16 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         /// </summary>
         public void EnsureCurrencyDataFeeds(SecurityChanges securityChanges)
         {
+            // IMPORTANT: In multi-account mode, skip main account EnsureCurrencySubscriptionDataConfigs
+            // because main CashBook will receive conversions from sub-accounts via sync.
+            // Main account may have different AccountCurrency (USD) than sub-accounts (USDT),
+            // causing conversion path failures (e.g., BTC→USD when sub-account uses BTC→USDT).
+            if (_algorithm.Portfolio is MultiSecurityPortfolioManager)
+            {
+                // Log.Trace("UniverseSelection.EnsureCurrencyDataFeeds(): Multi-account mode detected - skipping main account currency data feed setup");
+                return;
+            }
+
             _currencySubscriptionDataConfigManager.EnsureCurrencySubscriptionDataConfigs(securityChanges, _algorithm.BrokerageModel);
         }
 

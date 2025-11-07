@@ -80,6 +80,11 @@ namespace QuantConnect.Brokerages
         }
 
         /// <summary>
+        /// Gets the default account currency for this brokerage
+        /// </summary>
+        public virtual string DefaultAccountCurrency => Currencies.USD;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="DefaultBrokerageModel"/> class
         /// </summary>
         /// <param name="accountType">The type of account to be modelled, defaults to

@@ -48,6 +48,11 @@ namespace QuantConnect.Brokerages
         public override IReadOnlyDictionary<SecurityType, string> DefaultMarkets { get; } = GetDefaultMarkets();
 
         /// <summary>
+        /// Gets the default account currency for Gate.io Futures (USDT-margined)
+        /// </summary>
+        public override string DefaultAccountCurrency => "USDT";
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="GateFuturesBrokerageModel"/> class
         /// Gate.io Futures requires Margin account type
         /// </summary>

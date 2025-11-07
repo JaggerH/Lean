@@ -48,6 +48,7 @@ namespace QuantConnect.Securities
         /// <param name="algorithmSettings">The algorithm's settings</param>
         /// <param name="defaultOrderProperties">Default order properties</param>
         /// <param name="timeKeeper">The time keeper for synchronizing time across sub-accounts</param>
+        /// <param name="accountCurrencies">Optional dictionary mapping account names to their base currencies</param>
         public MultiSecurityPortfolioManager(
             Dictionary<string, decimal> accountConfigs,
             IOrderRouter router,
@@ -55,7 +56,8 @@ namespace QuantConnect.Securities
             SecurityTransactionManager transactionManager,
             IAlgorithmSettings algorithmSettings,
             IOrderProperties defaultOrderProperties,
-            ITimeKeeper timeKeeper)
+            ITimeKeeper timeKeeper,
+            Dictionary<string, string> accountCurrencies = null)
             : base(securityManager, transactionManager, algorithmSettings, defaultOrderProperties)
         {
             if (accountConfigs == null || accountConfigs.Count == 0)
@@ -88,10 +90,17 @@ namespace QuantConnect.Securities
                     algorithmSettings,
                     defaultOrderProperties);
 
+                // Set account currency BEFORE SetCash if provided
+                if (accountCurrencies != null && accountCurrencies.TryGetValue(config.Key, out var currency))
+                {
+                    subPortfolio.SetAccountCurrency(currency);
+                    // Log.Trace($"MultiSecurityPortfolioManager: Set account '{config.Key}' currency to {currency}");
+                }
+
                 subPortfolio.SetCash(config.Value);
                 _subAccounts[config.Key] = subPortfolio;
 
-                Log.Trace($"MultiSecurityPortfolioManager: Initialized account '{config.Key}' with ${config.Value:N2}");
+                // Log.Trace($"MultiSecurityPortfolioManager: Initialized account '{config.Key}' with ${config.Value:N2}");
             }
 
             // Set aggregated cash in main portfolio

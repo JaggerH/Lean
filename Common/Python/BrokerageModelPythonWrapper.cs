@@ -67,6 +67,17 @@ namespace QuantConnect.Python
         }
 
         /// <summary>
+        /// Gets the default account currency for this brokerage
+        /// </summary>
+        public string DefaultAccountCurrency
+        {
+            get
+            {
+                return GetProperty<string>(nameof(DefaultAccountCurrency));
+            }
+        }
+
+        /// <summary>
         /// Gets a map of the default markets to be used for each security type
         /// </summary>
         public IReadOnlyDictionary<SecurityType, string> DefaultMarkets

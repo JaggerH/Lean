@@ -27,6 +27,11 @@ namespace QuantConnect.Brokerages
     public class BinanceFuturesBrokerageModel : BinanceBrokerageModel
     {
         /// <summary>
+        /// Gets the default account currency for Binance Futures (USDT-margined)
+        /// </summary>
+        public override string DefaultAccountCurrency => "USDT";
+
+        /// <summary>
         /// Creates a new instance
         /// </summary>
         public BinanceFuturesBrokerageModel(AccountType accountType) : base(accountType)

@@ -38,6 +38,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         private readonly SecurityManager _securityManager;
         private readonly SubscriptionManager _subscriptionManager;
         private readonly ISecurityService _securityService;
+        private readonly bool _isMultiAccountMode;
 
         /// <summary>
         /// Creates a new instance
@@ -47,11 +48,13 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         /// <param name="subscriptionManager">The SubscriptionManager, required by the cash book for creating new subscription data configs</param>
         /// <param name="securityService">The SecurityService, required by the cash book for creating new securities</param>
         /// <param name="defaultResolution">The default resolution to use for the internal subscriptions</param>
+        /// <param name="isMultiAccountMode">Whether this manager is for a multi-account portfolio</param>
         public CurrencySubscriptionDataConfigManager(CashBook cashBook,
             SecurityManager securityManager,
             SubscriptionManager subscriptionManager,
             ISecurityService securityService,
-            Resolution defaultResolution)
+            Resolution defaultResolution,
+            bool isMultiAccountMode = false)
         {
             cashBook.Updated += (sender, args) =>
             {
@@ -67,6 +70,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             _subscriptionManager = subscriptionManager;
             _securityService = securityService;
             _cashBook = cashBook;
+            _isMultiAccountMode = isMultiAccountMode;
             _addedCurrencySubscriptionDataConfigs = new HashSet<SubscriptionDataConfig>();
             _toBeAddedCurrencySubscriptionDataConfigs = new HashSet<SubscriptionDataConfig>();
         }
@@ -137,6 +141,16 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             // remove any 'to be added' if the security has already been added
             _toBeAddedCurrencySubscriptionDataConfigs.RemoveWhere(
                 config => securityChanges.AddedSecurities.Any(x => x.Symbol == config.Symbol));
+
+            // IMPORTANT: In multi-account mode, skip currency data feed setup for main CashBook
+            // because main CashBook currencies will use conversions synced from sub-accounts.
+            // Main CashBook may have different AccountCurrency (USD) than sub-accounts (USDT),
+            // causing conversion path failures (e.g., BTC→USD when sub-account uses BTC→USDT).
+            if (_isMultiAccountMode)
+            {
+                // Logging.Log.Trace("CurrencySubscriptionDataConfigManager.EnsureCurrencySubscriptionDataConfigs(): Multi-account mode - skipping main CashBook currency setup");
+                return;
+            }
 
             var newConfigs = _cashBook.EnsureCurrencyDataFeeds(
                 _securityManager,
