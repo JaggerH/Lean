@@ -34,6 +34,16 @@ class GateSymbolManager(BaseDataSource):
         Args:
             auto_sync: 是否自动同步symbol到数据库(默认True)
         """
+        # Ensure Gate market is registered
+        # In Python.NET, static constructors may not auto-execute,
+        # so we explicitly add the market if it's not already registered
+        try:
+            if Market.Encode("gate") is None:
+                Market.Add("gate", 42)  # Gate market ID from Market.cs
+        except:
+            # Market already registered or other error
+            pass
+
         self.source = None  # 存储从Gate.io API获取的现货原始数据
         self.futures_source = None  # 存储从Gate.io API获取的合约原始数据
         super().__init__(auto_sync=auto_sync)
