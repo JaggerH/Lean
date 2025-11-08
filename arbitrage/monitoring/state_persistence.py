@@ -8,6 +8,10 @@ from AlgorithmImports import *
 from typing import Dict, Tuple, Optional
 import json
 import redis
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
+from config_utils import get_redis_port_from_compose
 
 
 class StatePersistence:
@@ -392,9 +396,12 @@ class StatePersistence:
             Redis 客户端实例，失败返回 None
         """
         try:
+            # 从 docker-compose.yml 读取端口配置
+            redis_port = get_redis_port_from_compose()
+
             client = redis.StrictRedis(
-                host='localhost',  # Docker 容器地址
-                port=6379,
+                host='localhost',
+                port=redis_port,  # 使用动态读取的端口
                 db=0,
                 decode_responses=False,  # 保留 bytes 格式
                 socket_connect_timeout=5,
@@ -402,7 +409,7 @@ class StatePersistence:
             )
             # 测试连接
             client.ping()
-            algorithm.Debug("✅ Redis connected successfully")
+            algorithm.Debug(f"✅ Redis connected successfully (port={redis_port})")
             return client
         except Exception as e:
             algorithm.Error(f"❌ Redis connection failed: {e}")
