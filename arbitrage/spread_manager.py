@@ -1,7 +1,7 @@
 """
 SpreadManager - Core position and subscription management for crypto-stock arbitrage
 
-Manages many-to-one relationships between crypto tokens (e.g., TSLAx on Kraken)
+Manages many-to-one relationships between crypto tokens (e.g., TESLAx on Gate)
 and underlying stocks (e.g., TSLA on IBKR).
 
 Major Refactoring (2025-10-23):
@@ -18,7 +18,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 from limit_order_optimizer import LimitOrderOptimizer
-from QuantConnect.Orders.Fees import KrakenFeeModel, InteractiveBrokersFeeModel
+from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel
 from QuantConnect.Securities import SecurityMarginModel
 from QuantConnect.Data.Market import OrderbookDepth
 
@@ -273,7 +273,7 @@ class SpreadManager:
         self,
         pair_symbol: Tuple[Symbol, Symbol],
         resolution: Tuple[Resolution, Resolution] = (Resolution.ORDERBOOK, Resolution.TICK),
-        fee_model: Tuple = (KrakenFeeModel(), InteractiveBrokersFeeModel()),
+        fee_model: Tuple = None,  # None = 让 Brokerage 自动选择（GateFuturesFeeModel + IBKR）
         leverage_config: Tuple[float, float] = (5.0, 2.0),
         extended_market_hours: bool = False
     ) -> Tuple[Security, Security]:
@@ -300,7 +300,7 @@ class SpreadManager:
             (crypto_security, stock_security) 元组
 
         Example:
-            >>> crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
+            >>> crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.CryptoFuture, Market.Gate)
             >>> stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
             >>> # 订阅 Orderbook 深度数据
             >>> crypto_sec, stock_sec = manager.subscribe_trading_pair(
@@ -311,8 +311,14 @@ class SpreadManager:
         # 解构参数
         crypto_symbol, stock_symbol = pair_symbol
         crypto_res, stock_res = resolution
-        crypto_fee, stock_fee = fee_model
         crypto_leverage, stock_leverage = leverage_config
+
+        # 处理 fee_model（None = 使用 Brokerage 默认）
+        if fee_model is None:
+            crypto_fee = None
+            stock_fee = InteractiveBrokersFeeModel()
+        else:
+            crypto_fee, stock_fee = fee_model
 
         # === 添加加密货币数据 ===
         # 使用 add_crypto，支持 Resolution.ORDERBOOK 和其他 Resolution
@@ -329,7 +335,9 @@ class SpreadManager:
         # 设置加密货币配置
         crypto_security.data_normalization_mode = DataNormalizationMode.RAW
         crypto_security.set_buying_power_model(SecurityMarginModel(crypto_leverage))
-        crypto_security.fee_model = crypto_fee
+        if crypto_fee is not None:
+            crypto_security.fee_model = crypto_fee
+        # 否则使用 Brokerage 提供的默认费用模型（GateFuturesFeeModel）
 
         # === 添加股票数据（检查是否已订阅） ===
         if stock_symbol in self.algorithm.securities:

@@ -10,14 +10,6 @@ from data_source import GateSymbolManager
 from spread_manager import SpreadManager
 from strategy.both_side_grid_strategy import BothSideGridStrategy
 
-# 监控模块 (Live模式需要)
-try:
-    from monitoring.monitoring_context import MonitoringContext
-    MONITORING_AVAILABLE = True
-except ImportError as e:
-    MONITORING_AVAILABLE = False
-    MONITORING_IMPORT_ERROR = str(e)
-# endregion
 
 class Arbitrage(QCAlgorithm):
     """
@@ -103,10 +95,10 @@ class Arbitrage(QCAlgorithm):
         """动态订阅交易对 - 使用 SpreadManager.subscribe_trading_pair"""
         for exchange, manager in self.sources.items():
             try:
-                # ✅ 新 API: 直接获取期货交易对（数据已在初始化时自动同步到数据库）
-                self.debug(f"Getting futures trading pairs from {exchange}...")
-                trade_pairs = manager.get_pairs(type='future')
-                self.debug(f"Found {len(trade_pairs)} futures trading pairs from {exchange}")
+                # ✅ 获取tokenized stock交易对（Gate ↔ USA）
+                self.debug(f"Getting tokenized stock futures pairs from {exchange}...")
+                trade_pairs = manager.get_tokenized_stock_pairs(asset_type='future')
+                self.debug(f"Found {len(trade_pairs)} tokenized stock futures pairs from {exchange}")
 
                 # Subscribe to each pair using SpreadManager
                 for crypto_symbol, equity_symbol in trade_pairs:
