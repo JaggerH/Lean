@@ -76,27 +76,34 @@ class BaseDataSource(ABC):
 
     # ==================== 公共 API ====================
 
-    def get_pairs(self, type: AssetType = 'all') -> List[Tuple[Symbol, Symbol]]:
+    def get_tokenized_stock_pairs(self, asset_type: AssetType = 'all') -> List[Tuple[Symbol, Symbol]]:
         """
-        获取交易对列表（懒加载：如果数据未获取，自动触发 fetch）
+        获取tokenized stock交易对（跨市场套利：Gate ↔ USA）
+
+        Purpose:
+            用于股币套利策略，获取Gate.io的tokenized stocks（xStock/Ondo）
+            与对应的美股配对
 
         Args:
-            type: 'spot'（仅现货）| 'future'（仅期货）| 'all'（全部，默认）
+            asset_type: 'spot', 'future', 或 'all'
+                - 'spot': 只返回现货tokenized stocks配对
+                - 'future': 只返回期货tokenized stocks配对
+                - 'all': 返回所有tokenized stocks配对
 
         Returns:
-            List[Tuple[Symbol, Symbol]]: [(crypto_symbol, equity_symbol), ...]
+            List[Tuple[Symbol, Symbol]]: 交易对列表
+                - 第一个Symbol: Gate.io crypto symbol (Crypto or CryptoFuture)
+                - 第二个Symbol: USA equity symbol (Equity)
 
-        示例:
-            spot_pairs = manager.get_pairs(type='spot')
-            # [(Symbol('AAPLXUSDT', Crypto, gate), Symbol('AAPL', Equity, usa)), ...]
-
-            future_pairs = manager.get_pairs(type='future')
-            # [(Symbol('AAPLXUSDT', CryptoFuture, gate), Symbol('AAPL', Equity, usa)), ...]
+        Example:
+            >>> manager = GateSymbolManager()
+            >>> pairs = manager.get_tokenized_stock_pairs(asset_type='future')
+            >>> # [(Symbol('TSLAXUSDT', CryptoFuture, gate), Symbol('TSLA', Equity, usa)), ...]
         """
         pairs = []
 
         # 懒加载：数据不存在时自动获取
-        if type in ('spot', 'all'):
+        if asset_type in ('spot', 'all'):
             if self.spot_data is None:
                 print(f"[INFO] Fetching spot data...")
                 self.fetch_spot_data()
@@ -106,7 +113,7 @@ class BaseDataSource(ABC):
                     if self.is_tokenized_stock(info, 'spot'):
                         pairs.append(self.parse_symbol(info, 'spot'))
 
-        if type in ('future', 'all'):
+        if asset_type in ('future', 'all'):
             if self.future_data is None:
                 print(f"[INFO] Fetching future data...")
                 self.fetch_future_data()
@@ -117,6 +124,7 @@ class BaseDataSource(ABC):
                         pairs.append(self.parse_symbol(info, 'future'))
 
         return pairs
+
 
     def refresh(self) -> Dict[str, Dict[str, int]]:
         """

@@ -39,15 +39,15 @@ class KrakenSymbolManager(BaseDataSource):
     使用方式：
         # 自动同步模式（最常用）
         manager = KrakenSymbolManager()
-        pairs = manager.get_pairs(type='spot')
+        pairs = manager.get_tokenized_stock_pairs(asset_type='spot')
 
         # 只查询不写库
         manager = KrakenSymbolManager(auto_sync=False)
-        pairs = manager.get_pairs(type='spot')
+        pairs = manager.get_tokenized_stock_pairs(asset_type='spot')
 
     注意：
         Kraken 只支持现货 xStocks，不支持期货
-        调用 get_pairs(type='future') 将返回空列表
+        调用 get_tokenized_stock_pairs(asset_type='future') 将返回空列表
     """
 
     def fetch_spot_data(self) -> Dict[str, Any]:
