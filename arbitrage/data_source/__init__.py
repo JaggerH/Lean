@@ -8,11 +8,11 @@ Data source module for crypto exchange integrations
     from arbitrage.data_source import GateSymbolManager
 
     manager = GateSymbolManager()  # 自动同步现货+期货到数据库
-    future_pairs = manager.get_pairs(type='future')
+    future_pairs = manager.get_tokenized_stock_pairs(asset_type='future')
 
     # 手动控制模式
     manager = GateSymbolManager(auto_sync=False)
-    pairs = manager.get_pairs(type='spot')
+    pairs = manager.get_tokenized_stock_pairs(asset_type='spot')
 """
 from .base_data_source import BaseDataSource, AssetType
 from .kraken import KrakenSymbolManager
