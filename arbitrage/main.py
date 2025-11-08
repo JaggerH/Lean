@@ -1,13 +1,12 @@
 # region imports
 from AlgorithmImports import *
-from QuantConnect.Orders.Fees import KrakenFeeModel
 from QuantConnect.Orders.Fees import InteractiveBrokersFeeModel
 from QuantConnect.Configuration import Config
 
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
-from data_source import KrakenSymbolManager
+from data_source import GateSymbolManager
 from spread_manager import SpreadManager
 from strategy.both_side_grid_strategy import BothSideGridStrategy
 
@@ -25,10 +24,10 @@ class Arbitrage(QCAlgorithm):
     Arbitrage algorithm for trading crypto stock tokens vs underlying stocks
 
     多账户Margin模式生产环境版本:
-    - 数据源: 动态获取 Kraken tokenized stocks + 对应的 USA stocks
+    - 数据源: 动态获取 Gate tokenized stocks 期货 + 对应的 USA stocks
     - 账户配置:
       * IBKR账户: 交易股票 (USA market) - Margin模式 2x杠杆
-      * Kraken账户: 交易加密货币 (Kraken market) - Margin模式 5x杠杆
+      * Gate账户: 交易加密货币期货 (Gate market) - Margin模式 10x杠杆（实际使用5x）
     - 路由策略: Market-based routing (基于Symbol.ID.Market)
     - 策略: BothSideGridStrategy (双边网格: long crypto + short crypto)
     """
@@ -47,19 +46,13 @@ class Arbitrage(QCAlgorithm):
         # 设置时区为UTC
         self.set_time_zone("UTC")
 
-        # === 1. 杠杆配置 ===
-        self.leverage_config = {
-            'stock': 2.0,   # 股票2x杠杆
-            'crypto': 5.0   # 加密货币5x杠杆
-        }
-
-        # === 2. 初始化数据源 ===
+        # === 1. 初始化数据源 ===
         self.debug("📊 Initializing data sources...")
         self.sources = {
-            "kraken": KrakenSymbolManager()
+            "gate": GateSymbolManager()
         }
 
-        # === 3. 创建双边网格策略（自包含所有组件）===
+        # === 2. 创建双边网格策略（自包含所有组件）===
         self.debug("📋 Initializing BothSideGridStrategy...")
         self.strategy = BothSideGridStrategy(
             algorithm=self,
@@ -67,15 +60,15 @@ class Arbitrage(QCAlgorithm):
             long_crypto_exit=0.02,     # 2% (long crypto exit threshold)
             short_crypto_entry=0.03,   # 3% (short crypto entry threshold)
             short_crypto_exit=-0.009,  # -0.9% (short crypto exit threshold)
-            position_size_pct=0.80,    # 80% (考虑杠杆和费用)
+            position_size_pct=0.50,    # 50% (10x brokerage leverage * 0.50 = 5x effective leverage)
             enable_monitoring=True     # ✅ 策略内部会创建 MonitoringContext
         )
 
-        # === 4. 初始化 SpreadManager（不再直接注入 monitor）===
+        # === 3. 初始化 SpreadManager（不再直接注入 monitor）===
         self.debug("📊 Initializing SpreadManager...")
         self.spread_manager = SpreadManager(algorithm=self)
 
-        # === 5. 注册监控系统为观察者（观察者模式）===
+        # === 4. 注册监控系统为观察者（观察者模式）===
         if self.strategy.monitoring_context:
             spread_monitor = self.strategy.monitoring_context.get_spread_monitor()
             if spread_monitor:
@@ -83,22 +76,22 @@ class Arbitrage(QCAlgorithm):
                 self.spread_manager.register_pair_observer(spread_monitor.write_pair_mapping)
                 self.spread_manager.register_observer(spread_monitor.write_spread)
 
-        # === 6. 注册策略到 SpreadManager（观察者模式）===
+        # === 5. 注册策略到 SpreadManager（观察者模式）===
         self.debug("🔗 Registering strategy as spread observer...")
         self.spread_manager.register_observer(self.strategy.on_spread_update)
 
-        # === 7. 动态订阅交易对（配置 grid levels）===
+        # === 6. 动态订阅交易对（配置 grid levels）===
         self._subscribe_trading_pairs()
 
-        # === 8. 恢复策略状态（✅ 在所有 pairs 初始化完成后）===
+        # === 7. 恢复策略状态（✅ 在所有 pairs 初始化完成后）===
         self.strategy.restore_state()
 
-        # === 9. 捕获初始快照 ===
+        # === 8. 捕获初始快照 ===
         if self.strategy.monitoring_context and self.strategy.monitoring_context.order_tracker:
             self.strategy.monitoring_context.order_tracker.capture_initial_snapshot()
             self.debug("📸 Initial portfolio snapshot captured")
 
-        # === 10. 调试追踪器 ===
+        # === 9. 调试追踪器 ===
         self.last_cashbook_debug_time = self.time  # 上次打印 CashBook 的时间
 
         self.debug("="*60)
@@ -110,13 +103,10 @@ class Arbitrage(QCAlgorithm):
         """动态订阅交易对 - 使用 SpreadManager.subscribe_trading_pair"""
         for exchange, manager in self.sources.items():
             try:
-                # Fetch tokenized stocks from exchange
-                self.debug(f"Fetching tokenized stocks from {exchange}...")
-                manager.get_tokenize_stocks()
-
-                # Get trading pairs
-                trade_pairs = manager.get_trade_pairs()
-                self.debug(f"Found {len(trade_pairs)} trading pairs from {exchange}")
+                # ✅ 新 API: 直接获取期货交易对（数据已在初始化时自动同步到数据库）
+                self.debug(f"Getting futures trading pairs from {exchange}...")
+                trade_pairs = manager.get_pairs(type='future')
+                self.debug(f"Found {len(trade_pairs)} futures trading pairs from {exchange}")
 
                 # Subscribe to each pair using SpreadManager
                 for crypto_symbol, equity_symbol in trade_pairs:
@@ -187,17 +177,17 @@ class Arbitrage(QCAlgorithm):
 
             try:
                 ibkr_account = self.portfolio.GetAccount("IBKR")
-                kraken_account = self.portfolio.GetAccount("Kraken")
+                gate_account = self.portfolio.GetAccount("Gate")
 
                 self.debug(f"IBKR账户 (2x Leverage):")
                 self.debug(f"  现金: ${ibkr_account.Cash:,.2f}")
                 self.debug(f"  Margin Used: ${ibkr_account.TotalMarginUsed:,.2f}")
                 self.debug(f"  总价值: ${ibkr_account.TotalPortfolioValue:,.2f}")
 
-                self.debug(f"Kraken账户 (5x Leverage):")
-                self.debug(f"  现金: ${kraken_account.Cash:,.2f}")
-                self.debug(f"  Margin Used: ${kraken_account.TotalMarginUsed:,.2f}")
-                self.debug(f"  总价值: ${kraken_account.TotalPortfolioValue:,.2f}")
+                self.debug(f"Gate账户 (10x Brokerage Leverage, 5x Effective):")
+                self.debug(f"  现金 (USDT): {gate_account.CashBook['USDT'].Amount:,.2f}")
+                self.debug(f"  Margin Used: ${gate_account.TotalMarginUsed:,.2f}")
+                self.debug(f"  总价值: ${gate_account.TotalPortfolioValue:,.2f}")
 
                 self.debug(f"聚合Portfolio:")
                 self.debug(f"  总现金: ${self.portfolio.Cash:,.2f}")
