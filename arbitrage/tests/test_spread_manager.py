@@ -135,7 +135,7 @@ class TestSpreadManagerInit(unittest.TestCase):
     """Test SpreadManager initialization"""
 
     def test_init(self):
-        """Test SpreadManager initialization"""
+        """Test SpreadManager initialization (updated 2025-11-11)"""
         # Create test algorithm instance
         algo = TestAlgorithm()
 
@@ -147,27 +147,18 @@ class TestSpreadManagerInit(unittest.TestCase):
         self.assertEqual(manager.algorithm, algo)
         self.assertEqual(len(manager._spread_observers), 0)
 
-        # Verify empty data structures
+        # Verify empty data structures (new structure)
+        self.assertEqual(len(manager.pair_mappings), 0)
+        self.assertEqual(len(manager.leg2_to_leg1s), 0)
+        self.assertEqual(len(manager.securities), 0)
+
+        # Verify backward compatibility properties
         self.assertEqual(len(manager.pairs), 0)
         self.assertEqual(len(manager.stock_to_cryptos), 0)
         self.assertEqual(len(manager.stocks), 0)
         self.assertEqual(len(manager.cryptos), 0)
 
         print("SpreadManager initialization test passed")
-
-    def test_init_with_monitor_adapter(self):
-        """Test initialization with monitor adapter"""
-        algo = TestAlgorithm()
-
-        # Create a mock monitor adapter
-        class MockMonitor:
-            pass
-
-        monitor = MockMonitor()
-        manager = SpreadManager(algo, monitor_adapter=monitor)
-
-        self.assertEqual(manager.monitor, monitor)
-        print("Monitor adapter initialization test passed")
 
     def test_add_pair(self):
         """Test adding trading pair"""
@@ -1066,6 +1057,255 @@ class TestSpreadManagerOnData(unittest.TestCase):
         self.assertIsNone(result2["executable_spread"])  # Would NOT notify observers
 
         print("on_data logic via calculate_spread_pct test passed")
+
+
+class TestSpreadManagerPairTypeDetection(unittest.TestCase):
+    """Test automatic pair type detection (2025-11-11 refactoring)"""
+
+    def test_detect_crypto_stock_pair(self):
+        """Test detecting crypto-stock pair"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        pair_type = manager._detect_pair_type(crypto_symbol, stock_symbol)
+
+        self.assertEqual(pair_type, 'crypto_stock')
+        print("Detect crypto-stock pair test passed")
+
+    def test_detect_cryptofuture_stock_pair(self):
+        """Test detecting cryptofuture-stock pair"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        cryptofuture_symbol = Symbol.Create("AAPLXUSDT", SecurityType.CryptoFuture, Market.Binance)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        pair_type = manager._detect_pair_type(cryptofuture_symbol, stock_symbol)
+
+        self.assertEqual(pair_type, 'cryptofuture_stock')
+        print("Detect cryptofuture-stock pair test passed")
+
+    def test_detect_spot_future_pair(self):
+        """Test detecting spot-future pair"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        spot_symbol = Symbol.Create("BTCUSDT", SecurityType.Crypto, Market.Binance)
+        future_symbol = Symbol.Create("BTCUSDT_PERP", SecurityType.CryptoFuture, Market.Binance)
+
+        pair_type = manager._detect_pair_type(spot_symbol, future_symbol)
+
+        self.assertEqual(pair_type, 'spot_future')
+        print("Detect spot-future pair test passed")
+
+    def test_detect_spot_future_pair_reversed(self):
+        """Test detecting spot-future pair (reversed order)"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        spot_symbol = Symbol.Create("BTCUSDT", SecurityType.Crypto, Market.Binance)
+        future_symbol = Symbol.Create("BTCUSDT_PERP", SecurityType.CryptoFuture, Market.Binance)
+
+        # Pass in reversed order (future, spot)
+        pair_type = manager._detect_pair_type(future_symbol, spot_symbol)
+
+        # Should still detect as spot_future
+        self.assertEqual(pair_type, 'spot_future')
+        print("Detect spot-future pair (reversed) test passed")
+
+    def test_detect_unsupported_pair_type(self):
+        """Test detecting unsupported pair type raises ValueError"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        stock1_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+        stock2_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
+        # Stock-Stock pair is not supported
+        with self.assertRaises(ValueError) as context:
+            manager._detect_pair_type(stock1_symbol, stock2_symbol)
+
+        self.assertIn("Unsupported pair combination", str(context.exception))
+        print("Detect unsupported pair type test passed")
+
+
+class TestSpreadManagerPairMapping(unittest.TestCase):
+    """Test PairMapping data structure (2025-11-11 refactoring)"""
+
+    def test_add_pair_creates_pair_mapping(self):
+        """Test that add_pair creates PairMapping"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        crypto = MockSecurity(crypto_symbol)
+        stock = MockSecurity(stock_symbol)
+
+        manager.add_pair(crypto, stock)
+
+        # Verify PairMapping was created
+        self.assertIn(crypto_symbol, manager.pair_mappings)
+        mapping = manager.pair_mappings[crypto_symbol]
+        self.assertEqual(mapping.leg1, crypto_symbol)
+        self.assertEqual(mapping.leg2, stock_symbol)
+        self.assertEqual(mapping.pair_type, 'crypto_stock')
+        self.assertEqual(mapping.leg1_security, crypto)
+        self.assertEqual(mapping.leg2_security, stock)
+
+        print("Add pair creates PairMapping test passed")
+
+    def test_leg2_to_leg1s_mapping(self):
+        """Test leg2 -> [leg1s] many-to-one mapping"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+        crypto1_symbol = Symbol.Create("AAPLXUSDT1", SecurityType.Crypto, Market.Kraken)
+        crypto2_symbol = Symbol.Create("AAPLXUSDT2", SecurityType.Crypto, Market.Kraken)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        stock = MockSecurity(stock_symbol)
+
+        # Add two cryptos paired with same stock
+        manager.add_pair(MockSecurity(crypto1_symbol), stock)
+        manager.add_pair(MockSecurity(crypto2_symbol), stock)
+
+        # Verify leg2_to_leg1s mapping
+        leg1s = manager.leg2_to_leg1s.get(stock_symbol)
+        self.assertIsNotNone(leg1s)
+        self.assertEqual(len(leg1s), 2)
+        self.assertIn(crypto1_symbol, leg1s)
+        self.assertIn(crypto2_symbol, leg1s)
+
+        print("leg2_to_leg1s mapping test passed")
+
+    def test_backward_compatibility_pairs_property(self):
+        """Test backward compatible pairs property"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
+
+        # Verify pairs property works
+        pairs = manager.pairs
+        self.assertIn(crypto_symbol, pairs)
+        self.assertEqual(pairs[crypto_symbol], stock_symbol)
+
+        print("Backward compatible pairs property test passed")
+
+    def test_backward_compatibility_stock_to_cryptos_property(self):
+        """Test backward compatible stock_to_cryptos property"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+        crypto1_symbol = Symbol.Create("AAPLXUSDT1", SecurityType.Crypto, Market.Kraken)
+        crypto2_symbol = Symbol.Create("AAPLXUSDT2", SecurityType.Crypto, Market.Kraken)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        stock = MockSecurity(stock_symbol)
+        manager.add_pair(MockSecurity(crypto1_symbol), stock)
+        manager.add_pair(MockSecurity(crypto2_symbol), stock)
+
+        # Verify stock_to_cryptos property works
+        stock_to_cryptos = manager.stock_to_cryptos
+        self.assertIn(stock_symbol, stock_to_cryptos)
+        self.assertEqual(len(stock_to_cryptos[stock_symbol]), 2)
+        self.assertIn(crypto1_symbol, stock_to_cryptos[stock_symbol])
+        self.assertIn(crypto2_symbol, stock_to_cryptos[stock_symbol])
+
+        print("Backward compatible stock_to_cryptos property test passed")
+
+    def test_get_leg1s_for_leg2(self):
+        """Test get_leg1s_for_leg2 method"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+        crypto1_symbol = Symbol.Create("AAPLXUSDT1", SecurityType.Crypto, Market.Kraken)
+        crypto2_symbol = Symbol.Create("AAPLXUSDT2", SecurityType.Crypto, Market.Kraken)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        stock = MockSecurity(stock_symbol)
+        manager.add_pair(MockSecurity(crypto1_symbol), stock)
+        manager.add_pair(MockSecurity(crypto2_symbol), stock)
+
+        # Test get_leg1s_for_leg2
+        leg1s = manager.get_leg1s_for_leg2(stock_symbol)
+        self.assertEqual(len(leg1s), 2)
+        self.assertIn(crypto1_symbol, leg1s)
+        self.assertIn(crypto2_symbol, leg1s)
+
+        print("get_leg1s_for_leg2 test passed")
+
+    def test_get_pair_symbol_from_leg1(self):
+        """Test get_pair_symbol_from_leg1 method"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
+
+        # Test get_pair_symbol_from_leg1
+        pair = manager.get_pair_symbol_from_leg1(crypto_symbol)
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair[0], crypto_symbol)
+        self.assertEqual(pair[1], stock_symbol)
+
+        print("get_pair_symbol_from_leg1 test passed")
+
+    def test_get_all_pairs_includes_all_types(self):
+        """Test get_all_pairs includes all pair types"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        # Add crypto-stock pair
+        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
+
+        # Get all pairs
+        pairs = manager.get_all_pairs()
+        self.assertEqual(len(pairs), 1)
+        self.assertIn((crypto_symbol, stock_symbol), pairs)
+
+        print("get_all_pairs includes all types test passed")
 
 
 if __name__ == '__main__':

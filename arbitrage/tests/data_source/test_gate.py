@@ -582,5 +582,94 @@ class TestNewAPIDesign(unittest.TestCase):
         print(f"✓ Pairs (1M threshold): {len(pairs_1m)}")
         print(f"✓ Verified intra-market structure (Gate futures ↔ Gate spot)")
 
+    def test_volume_filtering_consistency(self):
+        """Test volume filtering consistency across asset types (tokenized stocks)"""
+        print("\n[3/3] Testing volume filtering consistency for tokenized stocks...")
+
+        # Test with multiple thresholds
+        thresholds = [300000, 500000, 1000000]
+
+        print(f"\n{'Threshold':<15} {'Futures':<10} {'Spots':<10} {'All':<10} {'Match':<10}")
+        print("-" * 55)
+
+        for threshold in thresholds:
+            # 1. Get futures with volume filtering
+            future_pairs_filtered = self.manager.get_tokenized_stock_pairs(
+                asset_type='future',
+                min_volume_usdt=threshold
+            )
+
+            # 2. Get spots with volume filtering
+            spot_pairs_filtered = self.manager.get_tokenized_stock_pairs(
+                asset_type='spot',
+                min_volume_usdt=threshold
+            )
+
+            # 3. Get all with volume filtering
+            all_pairs_filtered = self.manager.get_tokenized_stock_pairs(
+                asset_type='all',
+                min_volume_usdt=threshold
+            )
+
+            # 4. Verify consistency: all = futures + spots
+            expected_count = len(future_pairs_filtered) + len(spot_pairs_filtered)
+            actual_count = len(all_pairs_filtered)
+
+            match_status = "✓" if actual_count == expected_count else "✗"
+
+            print(f"{threshold:>13,}  {len(future_pairs_filtered):<10} {len(spot_pairs_filtered):<10} {actual_count:<10} {match_status}")
+
+            # Assert consistency
+            self.assertEqual(
+                actual_count,
+                expected_count,
+                f"For threshold {threshold}: all ({actual_count}) != futures ({len(future_pairs_filtered)}) + spots ({len(spot_pairs_filtered)})"
+            )
+
+        # Detailed test for 300k threshold
+        print("\n" + "-" * 55)
+        print("Detailed analysis for 300k USDT threshold:")
+        print("-" * 55)
+
+        # Get unfiltered counts for comparison
+        future_pairs_all = self.manager.get_tokenized_stock_pairs(asset_type='future')
+        spot_pairs_all = self.manager.get_tokenized_stock_pairs(asset_type='spot')
+        all_pairs_all = self.manager.get_tokenized_stock_pairs(asset_type='all')
+
+        # Get filtered counts
+        future_pairs_300k = self.manager.get_tokenized_stock_pairs(asset_type='future', min_volume_usdt=300000)
+        spot_pairs_300k = self.manager.get_tokenized_stock_pairs(asset_type='spot', min_volume_usdt=300000)
+        all_pairs_300k = self.manager.get_tokenized_stock_pairs(asset_type='all', min_volume_usdt=300000)
+
+        print(f"\nBefore filtering:")
+        print(f"  Futures: {len(future_pairs_all)}")
+        print(f"  Spots:   {len(spot_pairs_all)}")
+        print(f"  All:     {len(all_pairs_all)}")
+
+        print(f"\nAfter filtering (>= 300k USDT):")
+        print(f"  Futures: {len(future_pairs_300k)} ({len(future_pairs_300k)/len(future_pairs_all)*100:.1f}% qualified)")
+        print(f"  Spots:   {len(spot_pairs_300k)} ({len(spot_pairs_300k)/len(spot_pairs_all)*100:.1f}% qualified)")
+        print(f"  All:     {len(all_pairs_300k)} ({len(all_pairs_300k)/len(all_pairs_all)*100:.1f}% qualified)")
+
+        print(f"\nFiltered out:")
+        print(f"  Futures: {len(future_pairs_all) - len(future_pairs_300k)} (low volume)")
+        print(f"  Spots:   {len(spot_pairs_all) - len(spot_pairs_300k)} (low volume)")
+        print(f"  All:     {len(all_pairs_all) - len(all_pairs_300k)} (low volume)")
+
+        # Show sample filtered futures
+        if len(future_pairs_300k) > 0:
+            print(f"\nSample liquid futures (first 5):")
+            for i, (crypto_sym, equity_sym) in enumerate(future_pairs_300k[:5], 1):
+                print(f"  {i}. {crypto_sym.Value:15s} <-> {equity_sym.Value}")
+
+        # Show sample filtered spots
+        if len(spot_pairs_300k) > 0:
+            print(f"\nSample liquid spots (first 5):")
+            for i, (crypto_sym, equity_sym) in enumerate(spot_pairs_300k[:5], 1):
+                print(f"  {i}. {crypto_sym.Value:15s} <-> {equity_sym.Value}")
+
+        print("\n✓ Volume filtering consistency verified across all asset types")
+        print("✓ All = Futures + Spots for all thresholds")
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -358,6 +358,115 @@ class GateSymbolManager(BaseDataSource):
             market_ticker, minimum_order_size, price_magnifier, strike_multiplier
         ])
 
+    def _filter_pairs_by_volume(
+        self,
+        pairs: List[Tuple[Symbol, Symbol]],
+        asset_type: str,
+        min_volume_usdt: float
+    ) -> List[Tuple[Symbol, Symbol]]:
+        """
+        根据24h成交量筛选tokenized stock交易对
+
+        Args:
+            pairs: 待筛选的交易对列表
+            asset_type: 'spot', 'future', 或 'all'
+            min_volume_usdt: 最小24h成交量(USDT)
+
+        Returns:
+            List[Tuple[Symbol, Symbol]]: 符合流动性要求的交易对列表
+
+        流程:
+            1. 获取ticker数据（spot和/或future）
+            2. 使用 filter_by_volume() 获取合格的合约名称集合
+            3. 筛选出符合流动性要求的交易对
+        """
+        if not pairs:
+            return []
+
+        print(f"[INFO] Filtering {len(pairs)} tokenized stock pairs by volume (>= {min_volume_usdt:,.0f} USDT)...")
+
+        # 1. 获取ticker数据
+        spot_tickers = None
+        futures_tickers = None
+
+        if asset_type in ('spot', 'all'):
+            print(f"[INFO] Fetching spot tickers...")
+            spot_tickers = self.fetch_spot_tickers()
+
+        if asset_type in ('future', 'all'):
+            print(f"[INFO] Fetching futures tickers...")
+            futures_tickers = self.fetch_futures_tickers()
+
+        # 2. 获取合格的合约名称集合
+        qualified_futures, qualified_spots = self.filter_by_volume(
+            min_volume_usdt=min_volume_usdt,
+            spot_tickers=spot_tickers,
+            futures_tickers=futures_tickers
+        )
+
+        # 3. 筛选交易对
+        filtered_pairs = []
+        skipped_pairs = []
+
+        for crypto_symbol, equity_symbol in pairs:
+            # 提取Gate API中的交易对名称（需要加下划线）
+            # 例如：TSLAXUSDT -> TSLAX_USDT
+            symbol_str = crypto_symbol.Value  # "TSLAXUSDT"
+            gate_pair_name = self._symbol_to_gate_pair_name(symbol_str)
+
+            if gate_pair_name is None:
+                print(f"     [Warning] Failed to convert symbol to Gate pair name: {symbol_str}")
+                continue
+
+            # 根据SecurityType检查是否在合格集合中
+            security_type = crypto_symbol.SecurityType
+            is_qualified = False
+
+            if security_type == SecurityType.Crypto and gate_pair_name in qualified_spots:
+                is_qualified = True
+            elif security_type == SecurityType.CryptoFuture and gate_pair_name in qualified_futures:
+                is_qualified = True
+
+            if is_qualified:
+                filtered_pairs.append((crypto_symbol, equity_symbol))
+            else:
+                skipped_pairs.append((crypto_symbol, equity_symbol))
+
+        # 4. 输出结果
+        print(f"[OK] Volume filtering complete:")
+        print(f"     Qualified: {len(filtered_pairs)} / {len(pairs)}")
+        print(f"     Filtered out: {len(skipped_pairs)} (low volume)")
+
+        if skipped_pairs and len(skipped_pairs) <= 10:
+            print(f"     Low volume pairs: {[s.Value for s, _ in skipped_pairs]}")
+
+        return filtered_pairs
+
+    def _symbol_to_gate_pair_name(self, lean_symbol: str) -> str:
+        """
+        将LEAN Symbol字符串转换为Gate API中的交易对名称
+
+        Args:
+            lean_symbol: LEAN格式的symbol，如 "TSLAXUSDT", "BTCUSDT"
+
+        Returns:
+            Gate API格式的交易对名称，如 "TSLAX_USDT", "BTC_USDT"
+            如果无法转换则返回None
+
+        逻辑:
+            假设所有交易对都是 {BASE}USDT 格式
+            转换为 {BASE}_USDT
+        """
+        if not lean_symbol:
+            return None
+
+        # 检查是否以USDT结尾
+        if lean_symbol.endswith('USDT'):
+            base = lean_symbol[:-4]  # 去掉 "USDT"
+            return f"{base}_USDT"
+
+        return None
+
     def _extract_stock_ticker(self, base: str, base_name: str) -> str:
         """
         从 base currency 中提取股票代码
@@ -669,13 +778,9 @@ class GateSymbolManager(BaseDataSource):
         for futures_symbol, spot_symbol in pairs:
             # 提取交易对名称（例如：BTCUSDT -> BTC_USDT）
             symbol_str = futures_symbol.Value  # "BTCUSDT"
+            gate_pair_name = self._symbol_to_gate_pair_name(symbol_str)
 
-            # 推测Gate API中的名称格式（需要加下划线）
-            # 假设都是 {BASE}USDT 格式
-            if symbol_str.endswith('USDT'):
-                base = symbol_str[:-4]  # 去掉 "USDT"
-                gate_pair_name = f"{base}_USDT"
-            else:
+            if gate_pair_name is None:
                 print(f"     [Warning] Skipping unsupported symbol format: {symbol_str}")
                 continue
 

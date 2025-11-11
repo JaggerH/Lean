@@ -42,6 +42,30 @@ class MarketState(Enum):
 
 
 @dataclass
+class PairMapping:
+    """
+    交易对映射关系（重构 2025-11-11）
+
+    统一抽象化所有类型的交易对配对关系，支持：
+    1. (Crypto, Stock) - tokenized stock 现货套利
+    2. (CryptoFuture, Stock) - tokenized stock 期货套利
+    3. (Crypto, CryptoFuture) - spot-future basis 套利
+
+    Attributes:
+        leg1: 第一条腿的 Symbol（crypto/spot）
+        leg2: 第二条腿的 Symbol（stock/future）
+        pair_type: 配对类型 ('crypto_stock' | 'cryptofuture_stock' | 'spot_future')
+        leg1_security: 第一条腿的 Security 对象
+        leg2_security: 第二条腿的 Security 对象
+    """
+    leg1: Symbol
+    leg2: Symbol
+    pair_type: str
+    leg1_security: Security
+    leg2_security: Security
+
+
+@dataclass
 class SpreadSignal:
     """
     价差信号（简化版 - 包含市场状态和可执行价差）
@@ -111,28 +135,96 @@ class SpreadManager:
         Note:
             监控功能通过观察者模式实现，使用 register_pair_observer() 和
             register_observer() 注册监控回调。
+
+        Refactored (2025-11-11):
+            使用 PairMapping 统一管理所有配对类型，支持：
+            - (Crypto, Stock) - tokenized stock 现货套利
+            - (CryptoFuture, Stock) - tokenized stock 期货套利
+            - (Crypto, CryptoFuture) - spot-future basis 套利
         """
         self.algorithm = algorithm
         self._pair_observers = []    # pair 事件观察者列表（监控回调）
         self._spread_observers = []  # spread 事件观察者列表（策略回调）
 
-        # Crypto Symbol -> Stock Symbol mapping
-        self.pairs: Dict[Symbol, Symbol] = {}
+        # === 新数据结构（2025-11-11 重构）===
+        # leg1_symbol -> PairMapping（统一管理所有配对类型）
+        self.pair_mappings: Dict[Symbol, PairMapping] = {}
 
-        # Stock Symbol -> List of Crypto Symbols (for many-to-one tracking)
-        self.stock_to_cryptos: Dict[Symbol, List[Symbol]] = {}
+        # leg2 -> [leg1s]（多对一关系，用于 stock 去重和查找）
+        self.leg2_to_leg1s: Dict[Symbol, List[Symbol]] = {}
 
-        # Already subscribed stocks (Security objects)
-        self.stocks: Set[Security] = set()
-
-        # Already subscribed cryptos (Security objects)
-        self.cryptos: Set[Security] = set()
+        # Symbol -> Security（统一管理所有证券对象）
+        self.securities: Dict[Symbol, Security] = {}
 
         # Data type registry (Symbol -> Type mapping for dynamic data access)
         self.data_types: Dict[Symbol, Type] = {}
 
         # Note: Position and order management has been moved to BaseStrategy
         # for better separation of concerns and to support multiple strategy instances
+
+    # === 向后兼容属性（2025-11-11）===
+    @property
+    def pairs(self) -> Dict[Symbol, Symbol]:
+        """
+        向后兼容属性：crypto/cryptofuture -> stock 映射
+
+        仅包含 crypto_stock 和 cryptofuture_stock 类型的配对，
+        不包含 spot_future 类型（因为原有语义是 crypto-stock）。
+
+        Returns:
+            Dict[Symbol, Symbol]: leg1 -> leg2 映射（仅 crypto-stock 配对）
+        """
+        return {
+            m.leg1: m.leg2
+            for m in self.pair_mappings.values()
+            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
+        }
+
+    @property
+    def stock_to_cryptos(self) -> Dict[Symbol, List[Symbol]]:
+        """
+        向后兼容属性：stock -> [cryptos] 映射
+
+        仅包含 crypto_stock 和 cryptofuture_stock 类型的配对。
+
+        Returns:
+            Dict[Symbol, List[Symbol]]: stock -> [cryptos] 映射
+        """
+        result = {}
+        for mapping in self.pair_mappings.values():
+            if mapping.pair_type in ['crypto_stock', 'cryptofuture_stock']:
+                result.setdefault(mapping.leg2, []).append(mapping.leg1)
+        return result
+
+    @property
+    def stocks(self) -> Set[Security]:
+        """
+        向后兼容属性：所有股票 Security 对象集合
+
+        Returns:
+            Set[Security]: 股票 Security 对象集合
+        """
+        return {
+            m.leg2_security
+            for m in self.pair_mappings.values()
+            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
+        }
+
+    @property
+    def cryptos(self) -> Set[Security]:
+        """
+        向后兼容属性：所有 crypto Security 对象集合
+
+        包含 crypto 和 cryptofuture 类型的 Security（与 stock 配对的）。
+
+        Returns:
+            Set[Security]: crypto Security 对象集合
+        """
+        return {
+            m.leg1_security
+            for m in self.pair_mappings.values()
+            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
+        }
 
     def register_observer(self, callback):
         """
@@ -232,42 +324,104 @@ class SpreadManager:
                     f"❌ Observer error for {pair_symbol[0].Value}<->{pair_symbol[1].Value}: {error_msg}"
                 )
 
-    def add_pair(self, crypto: Security, stock: Security):
+    def _detect_pair_type(self, leg1_symbol: Symbol, leg2_symbol: Symbol) -> str:
         """
-        Register a crypto-stock trading pair
+        自动检测配对类型（2025-11-11）
+
+        支持的组合：
+        1. (Crypto, CryptoFuture) -> 'spot_future'
+        2. (CryptoFuture, Crypto) -> 'spot_future'（自动翻转）
+        3. (Crypto, Equity) -> 'crypto_stock'
+        4. (CryptoFuture, Equity) -> 'cryptofuture_stock'
 
         Args:
-            crypto: Crypto Security object
-            stock: Stock Security object
+            leg1_symbol: 第一条腿的 Symbol
+            leg2_symbol: 第二条腿的 Symbol
 
-        Side Effects:
-            - Adds pair to self.pairs
-            - Updates self.stock_to_cryptos for many-to-one tracking
-            - Adds securities to self.cryptos and self.stocks
-            - Notifies all registered pair observers
+        Returns:
+            str: 配对类型（'crypto_stock' | 'cryptofuture_stock' | 'spot_future'）
+
+        Raises:
+            ValueError: 如果配对组合不支持
 
         Example:
-            >>> manager.add_pair(crypto, stock)
-            >>> pairs = manager.get_all_pairs()
-            >>> print(pairs)  # [(TSLAxUSD, TSLA), ...]
+            >>> pair_type = manager._detect_pair_type(spot_symbol, future_symbol)
+            >>> # 'spot_future'
         """
-        crypto_symbol = crypto.Symbol
-        stock_symbol = stock.Symbol
+        type1 = leg1_symbol.SecurityType
+        type2 = leg2_symbol.SecurityType
 
-        # Add to pairs mapping
-        self.pairs[crypto_symbol] = stock_symbol
+        # Spot-Future 配对（支持双向）
+        if {type1, type2} == {SecurityType.Crypto, SecurityType.CryptoFuture}:
+            return 'spot_future'
 
-        # Update reverse mapping (stock -> list of cryptos)
-        if stock_symbol not in self.stock_to_cryptos:
-            self.stock_to_cryptos[stock_symbol] = []
-        self.stock_to_cryptos[stock_symbol].append(crypto_symbol)
+        # Crypto-Stock 配对
+        if type1 == SecurityType.Crypto and type2 == SecurityType.Equity:
+            return 'crypto_stock'
 
-        # Track securities
-        self.cryptos.add(crypto)
-        self.stocks.add(stock)
+        # CryptoFuture-Stock 配对
+        if type1 == SecurityType.CryptoFuture and type2 == SecurityType.Equity:
+            return 'cryptofuture_stock'
+
+        # 未支持的组合
+        raise ValueError(
+            f"Unsupported pair combination: {type1} ({leg1_symbol.Value}) <-> "
+            f"{type2} ({leg2_symbol.Value}). "
+            f"Supported: (Crypto, CryptoFuture), (Crypto, Equity), (CryptoFuture, Equity)"
+        )
+
+    def add_pair(self, leg1: Security, leg2: Security):
+        """
+        Register a trading pair（向后兼容方法，已被 subscribe_trading_pair 内部使用）
+
+        注意（2025-11-11 重构）：
+        - 此方法已被 subscribe_trading_pair 取代，不推荐直接调用
+        - 保留此方法仅为向后兼容，现在内部使用 PairMapping
+        - 自动检测配对类型并创建 PairMapping
+
+        Args:
+            leg1: 第一条腿的 Security 对象
+            leg2: 第二条腿的 Security 对象
+
+        Side Effects:
+            - 创建 PairMapping 并添加到 self.pair_mappings
+            - 更新 self.leg2_to_leg1s 多对一映射
+            - 通知所有注册的 pair 观察者
+
+        Example:
+            >>> # 不推荐直接调用，应使用 subscribe_trading_pair
+            >>> manager.add_pair(crypto, stock)
+        """
+        leg1_symbol = leg1.Symbol
+        leg2_symbol = leg2.Symbol
+
+        # 自动检测配对类型
+        try:
+            pair_type = self._detect_pair_type(leg1_symbol, leg2_symbol)
+        except ValueError:
+            # 如果检测失败，默认为 crypto_stock（向后兼容）
+            pair_type = 'crypto_stock'
+            self.algorithm.Debug(
+                f"⚠️ 无法检测配对类型，默认为 crypto_stock: {leg1_symbol.Value} <-> {leg2_symbol.Value}"
+            )
+
+        # 创建 PairMapping
+        mapping = PairMapping(
+            leg1=leg1_symbol,
+            leg2=leg2_symbol,
+            pair_type=pair_type,
+            leg1_security=leg1,
+            leg2_security=leg2
+        )
+        self.pair_mappings[leg1_symbol] = mapping
+
+        # 更新 leg2 -> [leg1s] 多对一映射
+        if leg2_symbol not in self.leg2_to_leg1s:
+            self.leg2_to_leg1s[leg2_symbol] = []
+        self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
 
         # 通知 pair 观察者（如监控系统）
-        self._notify_pair_observers(crypto, stock)
+        self._notify_pair_observers(leg1, leg2)
 
     def subscribe_trading_pair(
         self,
@@ -278,20 +432,213 @@ class SpreadManager:
         extended_market_hours: bool = False
     ) -> Tuple[Security, Security]:
         """
-        订阅并注册交易对（多账户模式）
+        订阅并注册交易对（重构 2025-11-11）
+
+        支持 3 种配对模式，自动检测类型：
+        1. (Crypto, Stock) - tokenized stock 现货套利
+        2. (CryptoFuture, Stock) - tokenized stock 期货套利
+        3. (Crypto, CryptoFuture) - spot-future basis 套利
 
         封装了完整的交易对初始化流程：
-        1. 添加加密货币和股票数据订阅
-        2. 设置数据标准化模式为 RAW
-        3. 配置 Margin 模式和杠杆倍数
-        4. 设置 Fee Model
-        5. 自动注册到 SpreadManager
+        1. 自动检测配对类型
+        2. 添加两条腿的数据订阅
+        3. 设置数据标准化模式为 RAW
+        4. 配置 Margin 模式和杠杆倍数
+        5. 设置 Fee Model（支持独立配置）
+        6. 创建 PairMapping 并注册到 SpreadManager
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 元组
+            pair_symbol: (leg1_symbol, leg2_symbol) 元组
+            resolution: (leg1_resolution, leg2_resolution) 元组
+            fee_model: (leg1_fee_model, leg2_fee_model) 元组，None 表示使用默认
+            leverage_config: (leg1_leverage, leg2_leverage) 元组
+            extended_market_hours: 股票是否订阅盘前盘后数据（仅对 stock 有效）
+
+        Returns:
+            (leg1_security, leg2_security) 元组
+
+        Examples:
+            >>> # 示例 1: Crypto-Stock 配对
+            >>> crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.CryptoFuture, Market.Gate)
+            >>> stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
+            >>> crypto_sec, stock_sec = manager.subscribe_trading_pair(
+            ...     pair_symbol=(crypto_symbol, stock_symbol),
+            ...     resolution=(Resolution.ORDERBOOK, Resolution.TICK)
+            ... )
+
+            >>> # 示例 2: Spot-Future 配对
+            >>> spot_symbol = Symbol.Create("BTCUSDT", SecurityType.Crypto, Market.Gate)
+            >>> future_symbol = Symbol.Create("BTCUSDT_PERP", SecurityType.CryptoFuture, Market.Gate)
+            >>> spot_sec, future_sec = manager.subscribe_trading_pair(
+            ...     pair_symbol=(spot_symbol, future_symbol),
+            ...     leverage_config=(1.0, 5.0)
+            ... )
+        """
+        # 步骤 1: 解构参数
+        leg1_symbol, leg2_symbol = pair_symbol
+
+        # 处理 fee_model（None = 使用默认）
+        if fee_model is None:
+            leg1_fee = None
+            leg2_fee = InteractiveBrokersFeeModel()  # 默认 IBKR 费用模型（向后兼容）
+        else:
+            leg1_fee, leg2_fee = fee_model
+
+        # 步骤 2: 自动检测配对类型
+        try:
+            pair_type = self._detect_pair_type(leg1_symbol, leg2_symbol)
+        except ValueError as e:
+            self.algorithm.Error(f"配对类型检测失败: {e}")
+            raise
+
+        # 步骤 3: 根据类型调用专用订阅方法
+        if pair_type == 'spot_future':
+            leg1_sec, leg2_sec = self._subscribe_spot_future(
+                leg1_symbol, leg2_symbol, resolution, (leg1_fee, leg2_fee), leverage_config
+            )
+        elif pair_type in ['crypto_stock', 'cryptofuture_stock']:
+            leg1_sec, leg2_sec = self._subscribe_crypto_stock(
+                leg1_symbol, leg2_symbol, resolution, (leg1_fee, leg2_fee),
+                leverage_config, extended_market_hours
+            )
+        else:
+            raise ValueError(f"Unsupported pair type: {pair_type}")
+
+        # 步骤 4: 创建 PairMapping 并注册
+        mapping = PairMapping(
+            leg1=leg1_symbol,
+            leg2=leg2_symbol,
+            pair_type=pair_type,
+            leg1_security=leg1_sec,
+            leg2_security=leg2_sec
+        )
+        self.pair_mappings[leg1_symbol] = mapping
+
+        # 更新 leg2 -> [leg1s] 多对一映射
+        if leg2_symbol not in self.leg2_to_leg1s:
+            self.leg2_to_leg1s[leg2_symbol] = []
+        self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
+
+        # 步骤 5: 通知 pair 观察者（保持向后兼容）
+        self._notify_pair_observers(leg1_sec, leg2_sec)
+
+        self.algorithm.Debug(
+            f"✅ Subscribed {pair_type} pair: {leg1_symbol.Value} <-> {leg2_symbol.Value}"
+        )
+
+        return (leg1_sec, leg2_sec)
+
+    def _subscribe_spot_future(
+        self,
+        leg1_symbol: Symbol,
+        leg2_symbol: Symbol,
+        resolution: Tuple[Resolution, Resolution],
+        fee_model: Tuple,
+        leverage_config: Tuple[float, float]
+    ) -> Tuple[Security, Security]:
+        """
+        订阅 Spot-Future 配对（2025-11-11）
+
+        支持 (Crypto, CryptoFuture) 双向配对，自动标准化为 (spot, future) 顺序。
+
+        Args:
+            leg1_symbol: 第一条腿的 Symbol
+            leg2_symbol: 第二条腿的 Symbol
+            resolution: (leg1_resolution, leg2_resolution) 元组
+            fee_model: (leg1_fee_model, leg2_fee_model) 元组
+            leverage_config: (leg1_leverage, leg2_leverage) 元组
+
+        Returns:
+            (leg1_security, leg2_security) 元组（按输入顺序返回）
+
+        Example:
+            >>> spot_sec, future_sec = manager._subscribe_spot_future(
+            ...     spot_symbol, future_symbol,
+            ...     (Resolution.ORDERBOOK, Resolution.TICK),
+            ...     (None, None),
+            ...     (1.0, 5.0)
+            ... )
+        """
+        # 确保顺序: spot 在前, future 在后（内部标准化）
+        if leg1_symbol.SecurityType == SecurityType.CryptoFuture:
+            # 需要翻转
+            spot_symbol, future_symbol = leg2_symbol, leg1_symbol
+            spot_res, future_res = resolution[1], resolution[0]
+            spot_fee, future_fee = fee_model[1], fee_model[0]
+            spot_lev, future_lev = leverage_config[1], leverage_config[0]
+            should_flip_result = True
+        else:
+            # 已经是 spot 在前
+            spot_symbol, future_symbol = leg1_symbol, leg2_symbol
+            spot_res, future_res = resolution
+            spot_fee, future_fee = fee_model
+            spot_lev, future_lev = leverage_config
+            should_flip_result = False
+
+        # === 订阅 Spot（检查是否已订阅）===
+        if spot_symbol in self.securities:
+            spot_security = self.securities[spot_symbol]
+            self.algorithm.Debug(f"Spot {spot_symbol.Value} already subscribed, reusing existing security")
+        else:
+            spot_security = self.algorithm.add_crypto(
+                spot_symbol.Value, spot_res, spot_symbol.ID.Market
+            )
+            # 设置配置
+            spot_security.DataNormalizationMode = DataNormalizationMode.RAW
+            spot_security.SetBuyingPowerModel(SecurityMarginModel(spot_lev))
+            if spot_fee is not None:
+                spot_security.FeeModel = spot_fee
+
+            # 记录数据类型
+            self.data_types[spot_security.Symbol] = (
+                OrderbookDepth if spot_res == Resolution.ORDERBOOK else Tick
+            )
+            self.securities[spot_symbol] = spot_security
+
+        # === 订阅 Future（检查是否已订阅）===
+        if future_symbol in self.securities:
+            future_security = self.securities[future_symbol]
+            self.algorithm.Debug(f"Future {future_symbol.Value} already subscribed, reusing existing security")
+        else:
+            future_security = self.algorithm.add_crypto_future(
+                future_symbol.Value, future_res, future_symbol.ID.Market
+            )
+            # 设置配置
+            future_security.DataNormalizationMode = DataNormalizationMode.RAW
+            future_security.SetBuyingPowerModel(SecurityMarginModel(future_lev))
+            if future_fee is not None:
+                future_security.FeeModel = future_fee
+
+            # 记录数据类型
+            self.data_types[future_security.Symbol] = (
+                OrderbookDepth if future_res == Resolution.ORDERBOOK else Tick
+            )
+            self.securities[future_symbol] = future_security
+
+        # 返回结果（按输入顺序）
+        if should_flip_result:
+            return (future_security, spot_security)
+        else:
+            return (spot_security, future_security)
+
+    def _subscribe_crypto_stock(
+        self,
+        crypto_symbol: Symbol,
+        stock_symbol: Symbol,
+        resolution: Tuple[Resolution, Resolution],
+        fee_model: Tuple,
+        leverage_config: Tuple[float, float],
+        extended_market_hours: bool
+    ) -> Tuple[Security, Security]:
+        """
+        订阅 Crypto-Stock 配对（2025-11-11 重构自原 subscribe_trading_pair）
+
+        支持 Crypto 和 CryptoFuture 与 Stock 的配对。
+
+        Args:
+            crypto_symbol: Crypto 或 CryptoFuture Symbol
+            stock_symbol: Stock Symbol
             resolution: (crypto_resolution, stock_resolution) 元组
-                - crypto_resolution: 加密货币数据分辨率（如 Resolution.ORDERBOOK, Resolution.TICK）
-                - stock_resolution: 股票数据分辨率（如 Resolution.TICK）
             fee_model: (crypto_fee_model, stock_fee_model) 元组
             leverage_config: (crypto_leverage, stock_leverage) 元组
             extended_market_hours: 股票是否订阅盘前盘后数据
@@ -300,84 +647,102 @@ class SpreadManager:
             (crypto_security, stock_security) 元组
 
         Example:
-            >>> crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.CryptoFuture, Market.Gate)
-            >>> stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
-            >>> # 订阅 Orderbook 深度数据
-            >>> crypto_sec, stock_sec = manager.subscribe_trading_pair(
-            ...     pair_symbol=(crypto_symbol, stock_symbol),
-            ...     resolution=(Resolution.ORDERBOOK, Resolution.TICK)
+            >>> crypto_sec, stock_sec = manager._subscribe_crypto_stock(
+            ...     crypto_symbol, stock_symbol,
+            ...     (Resolution.ORDERBOOK, Resolution.TICK),
+            ...     (None, InteractiveBrokersFeeModel()),
+            ...     (5.0, 2.0),
+            ...     True
             ... )
         """
-        # 解构参数
-        crypto_symbol, stock_symbol = pair_symbol
         crypto_res, stock_res = resolution
+        crypto_fee, stock_fee = fee_model
         crypto_leverage, stock_leverage = leverage_config
 
-        # 处理 fee_model（None = 使用 Brokerage 默认）
-        if fee_model is None:
-            crypto_fee = None
-            stock_fee = InteractiveBrokersFeeModel()
-        else:
-            crypto_fee, stock_fee = fee_model
-
         # === 添加加密货币数据 ===
-        # 使用 add_crypto，支持 Resolution.ORDERBOOK 和其他 Resolution
-        crypto_security = self.algorithm.add_crypto(
-            crypto_symbol.value, crypto_res, crypto_symbol.id.market
+        security_type = crypto_symbol.SecurityType
+
+        if security_type == SecurityType.Crypto:
+            # 现货：使用 add_crypto
+            crypto_security = self.algorithm.add_crypto(
+                crypto_symbol.Value, crypto_res, crypto_symbol.ID.Market
+            )
+        elif security_type == SecurityType.CryptoFuture:
+            # 期货：使用 add_crypto_future
+            crypto_security = self.algorithm.add_crypto_future(
+                crypto_symbol.Value, crypto_res, crypto_symbol.ID.Market
+            )
+        else:
+            raise ValueError(f"Unsupported crypto security type: {security_type}")
+
+        # 记录数据类型
+        self.data_types[crypto_security.Symbol] = (
+            OrderbookDepth if crypto_res == Resolution.ORDERBOOK else Tick
         )
 
-        # 记录数据类型（根据 Resolution 判断）
-        if crypto_res == Resolution.ORDERBOOK:
-            self.data_types[crypto_security.Symbol] = OrderbookDepth
-        else:
-            self.data_types[crypto_security.Symbol] = Tick
-
         # 设置加密货币配置
-        crypto_security.data_normalization_mode = DataNormalizationMode.RAW
-        crypto_security.set_buying_power_model(SecurityMarginModel(crypto_leverage))
+        crypto_security.DataNormalizationMode = DataNormalizationMode.RAW
+        crypto_security.SetBuyingPowerModel(SecurityMarginModel(crypto_leverage))
         if crypto_fee is not None:
-            crypto_security.fee_model = crypto_fee
-        # 否则使用 Brokerage 提供的默认费用模型（GateFuturesFeeModel）
+            crypto_security.FeeModel = crypto_fee
 
-        # === 添加股票数据（检查是否已订阅） ===
-        if stock_symbol in self.algorithm.securities:
-            stock_security = self.algorithm.securities[stock_symbol]
-            self.algorithm.Debug(f"Stock {stock_symbol.value} already subscribed, reusing existing security")
+        # === 添加股票数据（检查是否已订阅）===
+        if stock_symbol in self.algorithm.Securities:
+            stock_security = self.algorithm.Securities[stock_symbol]
+            self.algorithm.Debug(f"Stock {stock_symbol.Value} already subscribed, reusing existing security")
         else:
             stock_security = self.algorithm.add_equity(
-                stock_symbol.value, stock_res, stock_symbol.id.market,
+                stock_symbol.Value, stock_res, stock_symbol.ID.Market,
                 extended_market_hours=extended_market_hours
             )
             # 设置股票配置（仅在首次订阅时）
-            stock_security.data_normalization_mode = DataNormalizationMode.RAW
-            stock_security.set_buying_power_model(SecurityMarginModel(stock_leverage))
-            stock_security.fee_model = stock_fee
-            # 记录股票数据类型为 Tick (使用 Security.Symbol 而非参数 Symbol)
+            stock_security.DataNormalizationMode = DataNormalizationMode.RAW
+            stock_security.SetBuyingPowerModel(SecurityMarginModel(stock_leverage))
+            stock_security.FeeModel = stock_fee
+            # 记录数据类型
             self.data_types[stock_security.Symbol] = Tick
-
-        # === 注册交易对 ===
-        self.add_pair(crypto_security, stock_security)
 
         return (crypto_security, stock_security)
 
     def get_all_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
-        Get all registered crypto-stock pairs
+        Get all registered trading pairs（重构 2025-11-11）
+
+        包含所有类型的配对：crypto-stock, cryptofuture-stock, spot-future
 
         Returns:
-            List of (crypto_symbol, stock_symbol) tuples
+            List of (leg1_symbol, leg2_symbol) tuples
 
         Example:
             >>> pairs = manager.get_all_pairs()
-            >>> for crypto_sym, stock_sym in pairs:
-            ...     print(f"{crypto_sym} -> {stock_sym}")
+            >>> for leg1_sym, leg2_sym in pairs:
+            ...     print(f"{leg1_sym} -> {leg2_sym}")
         """
-        return list(self.pairs.items())
+        return [(m.leg1, m.leg2) for m in self.pair_mappings.values()]
+
+    def get_leg1s_for_leg2(self, leg2_symbol: Symbol) -> List[Symbol]:
+        """
+        获取与 leg2 配对的所有 leg1 列表（多对一关系）（新增 2025-11-11）
+
+        适用于所有配对类型，例如：
+        - 一个 stock 可能对应多个 crypto/cryptofuture
+        - 一个 future 可能对应多个 spot（理论上）
+
+        Args:
+            leg2_symbol: leg2 的 Symbol
+
+        Returns:
+            List[Symbol]: 与该 leg2 配对的所有 leg1
+
+        Example:
+            >>> leg1s = manager.get_leg1s_for_leg2(stock_symbol)
+            >>> print(leg1s)  # [crypto1, crypto2, ...]
+        """
+        return self.leg2_to_leg1s.get(leg2_symbol, [])
 
     def get_cryptos_for_stock(self, stock_symbol: Symbol) -> List[Symbol]:
         """
-        !!! 目前没有任何函数引用他
-        Get all crypto symbols paired with a given stock (many-to-one relationship)
+        获取与 stock 配对的所有 crypto symbols（向后兼容别名）
 
         Args:
             stock_symbol: Stock Symbol
@@ -389,11 +754,30 @@ class SpreadManager:
             >>> cryptos = manager.get_cryptos_for_stock(tsla_symbol)
             >>> print(cryptos)  # [TSLAxUSD, TSLAON, ...]
         """
-        return self.stock_to_cryptos.get(stock_symbol, [])
+        return self.get_leg1s_for_leg2(stock_symbol)
+
+    def get_pair_symbol_from_leg1(self, leg1_symbol: Symbol) -> Optional[Tuple[Symbol, Symbol]]:
+        """
+        从 leg1 获取完整的配对 Symbol（新增 2025-11-11）
+
+        Args:
+            leg1_symbol: leg1 的 Symbol
+
+        Returns:
+            (leg1_symbol, leg2_symbol) tuple, or None if not found
+
+        Example:
+            >>> pair = manager.get_pair_symbol_from_leg1(crypto_symbol)
+            >>> print(pair)  # (crypto_symbol, stock_symbol)
+        """
+        mapping = self.pair_mappings.get(leg1_symbol)
+        if mapping:
+            return (mapping.leg1, mapping.leg2)
+        return None
 
     def get_pair_symbol_from_crypto(self, crypto_symbol: Symbol) -> Optional[Tuple[Symbol, Symbol]]:
         """
-        Get pair symbol from crypto symbol
+        从 crypto symbol 获取配对（向后兼容别名）
 
         Args:
             crypto_symbol: Crypto Symbol
@@ -401,10 +785,7 @@ class SpreadManager:
         Returns:
             (crypto_symbol, stock_symbol) tuple, or None if not found
         """
-        stock_symbol = self.pairs.get(crypto_symbol)
-        if stock_symbol:
-            return (crypto_symbol, stock_symbol)
-        return None
+        return self.get_pair_symbol_from_leg1(crypto_symbol)
 
 
     @staticmethod

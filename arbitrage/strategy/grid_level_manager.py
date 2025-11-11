@@ -71,9 +71,6 @@ class GridLevelManager:
         for level in levels:
             hash_value = hash(level)
             self.level_by_hash[hash_value] = level
-            self.algorithm.debug(
-                f"  📋 Indexed: {level.level_id} → hash={hash_value}"
-            )
 
         # 建立配对关系索引
         self._build_entry_exit_pairs(pair_symbol)
@@ -104,9 +101,6 @@ class GridLevelManager:
                 if exit_level:
                     self.entry_to_exit[entry] = exit_level
                     self.exit_to_entry[exit_level] = entry
-                    self.algorithm.debug(
-                        f"  🔗 Paired: {entry.level_id} (Entry) ↔ {exit_level.level_id} (Exit)"
-                    )
 
     def validate_grid_levels(self, pair_symbol: Tuple[Symbol, Symbol],
                             crypto_fee_pct: float = 0.0026,

@@ -76,7 +76,7 @@ class BaseDataSource(ABC):
 
     # ==================== 公共 API ====================
 
-    def get_tokenized_stock_pairs(self, asset_type: AssetType = 'all') -> List[Tuple[Symbol, Symbol]]:
+    def get_tokenized_stock_pairs(self, asset_type: AssetType = 'all', min_volume_usdt: float = None) -> List[Tuple[Symbol, Symbol]]:
         """
         获取tokenized stock交易对（跨市场套利：Gate ↔ USA）
 
@@ -89,6 +89,9 @@ class BaseDataSource(ABC):
                 - 'spot': 只返回现货tokenized stocks配对
                 - 'future': 只返回期货tokenized stocks配对
                 - 'all': 返回所有tokenized stocks配对
+            min_volume_usdt: 最小24h成交量(USDT)，默认为None（不筛选）
+                - None: 不进行流动性筛选，返回所有tokenized stocks
+                - float: 只返回24h成交量 >= min_volume_usdt 的交易对
 
         Returns:
             List[Tuple[Symbol, Symbol]]: 交易对列表
@@ -97,7 +100,11 @@ class BaseDataSource(ABC):
 
         Example:
             >>> manager = GateSymbolManager()
+            >>> # 获取所有tokenized stock futures
             >>> pairs = manager.get_tokenized_stock_pairs(asset_type='future')
+            >>>
+            >>> # 获取流动性 >= 30万 USDT 的tokenized stock futures
+            >>> liquid_pairs = manager.get_tokenized_stock_pairs(asset_type='future', min_volume_usdt=300000)
             >>> # [(Symbol('TSLAXUSDT', CryptoFuture, gate), Symbol('TSLA', Equity, usa)), ...]
         """
         pairs = []
@@ -122,6 +129,16 @@ class BaseDataSource(ABC):
                 for key, info in self.future_data.items():
                     if self.is_tokenized_stock(info, 'future'):
                         pairs.append(self.parse_symbol(info, 'future'))
+
+        # 流动性筛选（如果指定了 min_volume_usdt）
+        if min_volume_usdt is not None:
+            pairs = self._filter_pairs_by_volume(pairs, asset_type, min_volume_usdt)
+
+        # 增量同步过滤后的交易对到 CSV（仅在 auto_sync=True 时）
+        if pairs and self._auto_sync:
+            sync_result = self._sync_filtered_pairs_to_database(pairs, asset_type)
+            if sync_result.get('added', 0) > 0:
+                print(f"[OK] Incremental sync: Added {sync_result['added']} filtered pairs to CSV")
 
         return pairs
 
@@ -245,22 +262,24 @@ class BaseDataSource(ABC):
                     if not line or line.startswith('#'):
                         continue
                     parts = line.split(',')
-                    if len(parts) >= 2:
+                    if len(parts) >= 3:
                         market = parts[0]
                         symbol = parts[1]
-                        # Store (market, symbol) tuple
-                        existing_symbols.add((market, symbol))
+                        type_ = parts[2]
+                        # Store (market, symbol, type) tuple as unique key
+                        existing_symbols.add((market, symbol, type_))
 
             # Filter new rows to avoid duplicates
             new_rows = []
             for row in csv_rows:
                 parts = row.split(',')
-                if len(parts) >= 2:
+                if len(parts) >= 3:
                     market = parts[0]
                     symbol = parts[1]
-                    if (market, symbol) not in existing_symbols:
+                    type_ = parts[2]
+                    if (market, symbol, type_) not in existing_symbols:
                         new_rows.append(row)
-                        existing_symbols.add((market, symbol))  # Add to set to avoid duplicates within new_rows
+                        existing_symbols.add((market, symbol, type_))  # Add to set to avoid duplicates within new_rows
 
             if new_rows:
                 # Append new rows to file
@@ -279,7 +298,224 @@ class BaseDataSource(ABC):
 
         return results
 
+    def _sync_filtered_pairs_to_database(self, pairs: List[Tuple[Symbol, Symbol]], asset_type: AssetType) -> Dict[str, int]:
+        """
+        增量同步过滤后的交易对到数据库
+
+        用途：当使用 get_tokenized_stock_pairs 进行流动性筛选后，
+              将筛选出的交易对增量写入 CSV（避免重复写入已存在的记录）
+
+        Args:
+            pairs: 交易对列表 [(crypto_symbol, equity_symbol), ...]
+            asset_type: 'spot', 'future', 或 'all'
+
+        Returns:
+            Dict[str, int]: {'added': X, 'skipped': Y}
+        """
+        if not pairs:
+            return {'added': 0, 'skipped': 0}
+
+        # 根据 Symbol 的 SecurityType 将交易对分组
+        spot_pairs = []
+        future_pairs = []
+
+        for crypto_symbol, equity_symbol in pairs:
+            if crypto_symbol.SecurityType == SecurityType.Crypto:
+                spot_pairs.append((crypto_symbol, equity_symbol))
+            elif crypto_symbol.SecurityType == SecurityType.CryptoFuture:
+                future_pairs.append((crypto_symbol, equity_symbol))
+
+        # 将 pairs 转换回原始数据格式以便生成 CSV
+        csv_rows = []
+
+        # 处理现货
+        if (asset_type in ('spot', 'all')) and spot_pairs and self.spot_data:
+            for crypto_symbol, equity_symbol in spot_pairs:
+                # 从 spot_data 中找到对应的原始数据
+                ticker = crypto_symbol.Value.replace('USDT', '_USDT')
+                if ticker in self.spot_data:
+                    csv_rows.append(self.to_csv_row(self.spot_data[ticker], 'spot'))
+
+        # 处理期货
+        if (asset_type in ('future', 'all')) and future_pairs and self.future_data:
+            for crypto_symbol, equity_symbol in future_pairs:
+                # 从 future_data 中找到对应的原始数据
+                ticker = crypto_symbol.Value.replace('USDT', '_USDT')
+                if ticker in self.future_data:
+                    csv_rows.append(self.to_csv_row(self.future_data[ticker], 'future'))
+
+        # 调用增量保存方法
+        if csv_rows:
+            return self._save_to_database(csv_rows)
+
+        return {'added': 0, 'skipped': 0}
+
+    # ==================== 运行时注册方法 ====================
+
+    def register_symbol_properties_runtime(self, algorithm, pairs: List[Tuple[Symbol, Symbol]]) -> int:
+        """
+        运行时动态注册 symbol properties 到 LEAN 内存数据库
+
+        用途：
+            - 支持长时间运行的策略动态添加新交易对
+            - 无需重启算法即可订阅新发现的 symbols
+            - 配合 CSV 写入形成双保险（CSV用于重启预加载，运行时API用于当前会话）
+
+        Args:
+            algorithm: QCAlgorithm 实例（用于访问 symbol_properties_database）
+            pairs: 交易对列表 [(crypto_symbol, equity_symbol), ...]
+
+        Returns:
+            int: 成功注册的 symbol 数量
+
+        示例:
+            >>> manager = GateSymbolManager()
+            >>> pairs = manager.get_tokenized_stock_pairs(asset_type='future', min_volume_usdt=300000)
+            >>> # 运行时注册（立即生效）
+            >>> manager.register_symbol_properties_runtime(self, pairs)
+            >>> # 现在可以订阅这些 symbols
+            >>> for crypto_symbol, equity_symbol in pairs:
+            >>>     self.add_crypto_future(crypto_symbol)
+        """
+        if not pairs:
+            return 0
+
+        registered_count = 0
+
+        for crypto_symbol, equity_symbol in pairs:
+            try:
+                # 从原始数据中获取 symbol info
+                ticker = crypto_symbol.Value.replace('USDT', '_USDT')
+                asset_type = 'spot' if crypto_symbol.SecurityType == SecurityType.Crypto else 'future'
+
+                # 获取原始数据
+                if asset_type == 'spot' and self.spot_data and ticker in self.spot_data:
+                    symbol_info = self.spot_data[ticker]
+                elif asset_type == 'future' and self.future_data and ticker in self.future_data:
+                    symbol_info = self.future_data[ticker]
+                else:
+                    print(f"[WARN] Symbol info not found for {crypto_symbol.Value}, skipping runtime registration")
+                    continue
+
+                # 创建 SymbolProperties 对象
+                symbol_properties = self._create_symbol_properties(symbol_info, asset_type, crypto_symbol)
+
+                # 注册到 LEAN 的 symbol properties database
+                algorithm.symbol_properties_database.set_entry(
+                    crypto_symbol.ID.Market,      # e.g., "gate"
+                    crypto_symbol.Value,           # e.g., "TSLAXUSDT"
+                    crypto_symbol.SecurityType,    # SecurityType.Crypto or CryptoFuture
+                    symbol_properties
+                )
+
+                # 创建并注册 market hours（24/7 for crypto）
+                exchange_hours = self._create_exchange_hours()
+                algorithm.market_hours_database.set_entry(
+                    crypto_symbol.ID.Market,
+                    crypto_symbol.Value,
+                    crypto_symbol.SecurityType,
+                    exchange_hours,
+                    TimeZones.Utc  # Crypto exchanges typically use UTC
+                )
+
+                registered_count += 1
+
+            except Exception as e:
+                print(f"[ERROR] Failed to register {crypto_symbol.Value}: {e}")
+                import traceback
+                traceback.print_exc()
+
+        if registered_count > 0:
+            print(f"[OK] Runtime registered {registered_count} symbols to LEAN database")
+
+        return registered_count
+
+    def _create_symbol_properties(self, symbol_info: Dict, asset_type: str, symbol: Symbol) -> 'SymbolProperties':
+        """
+        从 symbol info 创建 SymbolProperties 对象
+
+        Args:
+            symbol_info: 交易对信息字典（从 spot_data 或 future_data 获取）
+            asset_type: 'spot' 或 'future'
+            symbol: LEAN Symbol 对象
+
+        Returns:
+            SymbolProperties: LEAN 的 SymbolProperties 对象
+        """
+        if asset_type == 'spot':
+            # 现货参数
+            description = symbol_info.get('base_name', '')
+            quote_currency = symbol_info.get('quote', 'USDT')
+            contract_multiplier = 1
+            precision = symbol_info.get('precision', 2)
+            minimum_price_variation = 10 ** -precision
+            lot_size = float(symbol_info.get('min_base_amount', '0.001'))
+            market_ticker = symbol_info.get('id', '')
+            minimum_order_size = float(symbol_info.get('min_quote_amount', '3'))
+
+        else:  # future
+            # 期货参数
+            name = symbol_info.get('name', '')
+            parts = name.split('_')
+            base = parts[0] if len(parts) >= 1 else ''
+            description = f"{base} Perpetual"
+            quote_currency = parts[1] if len(parts) >= 2 else 'USDT'
+            contract_multiplier = float(symbol_info.get('quanto_multiplier', '1'))
+            minimum_price_variation = float(symbol_info.get('order_price_round', '0.01'))
+            lot_size = float(symbol_info.get('order_size_min', 1))
+            market_ticker = name
+            minimum_order_size = None  # futures 通常没有 minimum_order_size
+
+        # 创建 SymbolProperties 对象
+        return SymbolProperties(
+            description,
+            quote_currency,
+            contract_multiplier,
+            minimum_price_variation,
+            lot_size,
+            market_ticker,
+            minimum_order_size
+        )
+
+    def _create_exchange_hours(self) -> 'SecurityExchangeHours':
+        """
+        创建 24/7 交易时间（加密货币市场）
+
+        Returns:
+            SecurityExchangeHours: 24/7 交易时间配置
+        """
+        # 使用 LEAN 内置的 AlwaysOpen 辅助方法创建 24/7 市场时间
+        # 这是 LEAN 官方推荐的方式，适用于加密货币等全天候交易市场
+        return SecurityExchangeHours.AlwaysOpen(TimeZones.Utc)
+
     # ==================== 抽象方法（子类必须实现） ====================
+
+    @abstractmethod
+    def _filter_pairs_by_volume(
+        self,
+        pairs: List[Tuple[Symbol, Symbol]],
+        asset_type: AssetType,
+        min_volume_usdt: float
+    ) -> List[Tuple[Symbol, Symbol]]:
+        """
+        根据24h成交量筛选交易对
+
+        Args:
+            pairs: 待筛选的交易对列表
+            asset_type: 'spot', 'future', 或 'all'
+            min_volume_usdt: 最小24h成交量(USDT)
+
+        Returns:
+            List[Tuple[Symbol, Symbol]]: 符合流动性要求的交易对列表
+
+        实现说明:
+            子类应该实现此方法来获取ticker数据并进行流动性筛选。
+            例如Gate.io应该：
+            1. 调用 fetch_spot_tickers() 和/或 fetch_futures_tickers()
+            2. 对每个交易对检查24h成交量
+            3. 只保留成交量 >= min_volume_usdt 的交易对
+        """
+        pass
 
     @abstractmethod
     def fetch_spot_data(self) -> Dict[str, Any]:

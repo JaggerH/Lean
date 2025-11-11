@@ -95,10 +95,14 @@ class Arbitrage(QCAlgorithm):
         """动态订阅交易对 - 使用 SpreadManager.subscribe_trading_pair"""
         for exchange, manager in self.sources.items():
             try:
-                # ✅ 获取tokenized stock交易对（Gate ↔ USA）
-                self.debug(f"Getting tokenized stock futures pairs from {exchange}...")
-                trade_pairs = manager.get_tokenized_stock_pairs(asset_type='future')
-                self.debug(f"Found {len(trade_pairs)} tokenized stock futures pairs from {exchange}")
+                # ✅ 获取tokenized stock交易对（Gate ↔ USA）with流动性筛选
+                trade_pairs = manager.get_tokenized_stock_pairs(asset_type='future', min_volume_usdt=300000)
+                self.debug(f"Found {len(trade_pairs)} liquid tokenized stock futures pairs from {exchange}")
+
+                # ✅ 运行时注册 symbol properties（关键！CSV写入仅用于重启预加载）
+                # 使用LEAN运行时API立即注册到内存，无需重新加载CSV
+                registered_count = manager.register_symbol_properties_runtime(self, trade_pairs)
+                self.debug(f"Registered {registered_count} symbols to LEAN runtime database")
 
                 # Subscribe to each pair using SpreadManager
                 for crypto_symbol, equity_symbol in trade_pairs:

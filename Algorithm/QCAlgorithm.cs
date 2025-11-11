@@ -2513,7 +2513,46 @@ namespace QuantConnect.Algorithm
         [DocumentationAttribute(AddingData)]
         public CryptoFuture AddCryptoFuture(string ticker, Resolution? resolution = null, string market = null, bool fillForward = true, decimal leverage = Security.NullLeverage)
         {
+            Debug($"[AddCryptoFuture] ticker={ticker}, resolution={resolution}, market={market}");
+
+            // Handle Resolution.Orderbook specially - subscribe to OrderbookDepth data
+            if (resolution == Resolution.Orderbook)
+            {
+                Debug($"[AddCryptoFuture] Detected Resolution.Orderbook, calling AddCryptoFutureOrderbook()");
+                return AddCryptoFutureOrderbook(ticker, market, fillForward, leverage);
+            }
+
+            Debug($"[AddCryptoFuture] Using standard AddSecurity path");
             return AddSecurity<CryptoFuture>(SecurityType.CryptoFuture, ticker, resolution, market, fillForward, leverage, false);
+        }
+
+        /// <summary>
+        /// Internal helper to add crypto future with OrderbookDepth data
+        /// </summary>
+        private CryptoFuture AddCryptoFutureOrderbook(string ticker, string market, bool fillForward, decimal leverage)
+        {
+            market = GetMarket(market, ticker, SecurityType.CryptoFuture);
+
+            Symbol symbol;
+            if (!SymbolCache.TryGetSymbol(ticker, out symbol) ||
+                symbol.ID.Market != market ||
+                symbol.SecurityType != SecurityType.CryptoFuture)
+            {
+                symbol = QuantConnect.Symbol.Create(ticker, SecurityType.CryptoFuture, market);
+            }
+
+            // Create a subscription config for OrderbookDepth while keeping SecurityType.CryptoFuture
+            var config = SubscriptionManager.SubscriptionDataConfigService.Add(
+                typeof(Data.Market.OrderbookDepth),
+                symbol,
+                Resolution.Tick,  // OrderbookDepth uses Tick resolution internally
+                fillForward,
+                extendedMarketHours: true,
+                isCustomData: false);  // Not custom data - it's a built-in market data type
+
+            var security = Securities.CreateSecurity(symbol, new List<SubscriptionDataConfig> { config }, leverage);
+
+            return (CryptoFuture)AddToUserDefinedUniverse(security, new List<SubscriptionDataConfig> { config });
         }
 
         /// <summary>

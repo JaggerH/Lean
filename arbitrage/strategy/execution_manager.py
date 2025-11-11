@@ -12,6 +12,7 @@ Executor - 执行管理器
 from AlgorithmImports import *
 from typing import Tuple, Dict, List, Optional
 from .execution_models import ExecutionTarget, ExecutionStatus, OrderGroup, OrderGroupType
+from QuantConnect.Orders import GateOrderProperties
 
 
 class ExecutionManager:
@@ -289,18 +290,26 @@ class ExecutionManager:
             f"{symbol1.value} x {qty1:.2f}, {symbol2.value} x {qty2:.2f}"
         )
 
+        # 创建 Gate.io 订单属性，启用自动借币和自动还币
+        # 用于现货保证金交易（如做空 tokenized stocks）
+        order_properties = GateOrderProperties()
+        order_properties.AutoBorrow = True  # 自动借入不足的资产
+        order_properties.AutoRepay = True   # 订单成交后自动还币（仅跨仓保证金）
+
         self.algorithm.market_order(
             symbol1,
             qty1,
             asynchronous=True,
-            tag=tag
+            tag=tag,
+            order_properties=order_properties
         )
 
         self.algorithm.market_order(
             symbol2,
             qty2,
             asynchronous=True,
-            tag=tag
+            tag=tag,
+            order_properties=order_properties
         )
 
     def has_active_execution(self, level) -> bool:
