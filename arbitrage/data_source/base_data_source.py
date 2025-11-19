@@ -360,33 +360,56 @@ class BaseDataSource(ABC):
             - 支持长时间运行的策略动态添加新交易对
             - 无需重启算法即可订阅新发现的 symbols
             - 配合 CSV 写入形成双保险（CSV用于重启预加载，运行时API用于当前会话）
+            - 自动处理两个symbol：对于期现套利，会同时注册futures和spot
 
         Args:
             algorithm: QCAlgorithm 实例（用于访问 symbol_properties_database）
-            pairs: 交易对列表 [(crypto_symbol, equity_symbol), ...]
+            pairs: 交易对列表 [(symbol1, symbol2), ...]
+                   - 对于tokenized stocks: [(crypto_future, usa_stock), ...]
+                   - 对于spot-future: [(crypto_future, crypto_spot), ...]
 
         Returns:
-            int: 成功注册的 symbol 数量
+            int: 成功注册的 symbol 数量（会注册pairs中所有Gate.io的Crypto/CryptoFuture symbols）
 
-        示例:
+        示例1 - Tokenized Stocks:
             >>> manager = GateSymbolManager()
             >>> pairs = manager.get_tokenized_stock_pairs(asset_type='future', min_volume_usdt=300000)
-            >>> # 运行时注册（立即生效）
+            >>> # 运行时注册（仅注册Gate crypto futures，USA stocks跳过）
             >>> manager.register_symbol_properties_runtime(self, pairs)
             >>> # 现在可以订阅这些 symbols
             >>> for crypto_symbol, equity_symbol in pairs:
             >>>     self.add_crypto_future(crypto_symbol)
+
+        示例2 - Spot-Future Arbitrage:
+            >>> manager = GateSymbolManager()
+            >>> pairs = manager.get_crypto_basis_pairs(min_volume_usdt=300000)
+            >>> # 运行时注册（同时注册futures和spot两个symbols）
+            >>> manager.register_symbol_properties_runtime(self, pairs)
+            >>> # 现在可以订阅这些 symbols
+            >>> for futures_symbol, spot_symbol in pairs:
+            >>>     self.add_crypto_future(futures_symbol)
+            >>>     self.add_crypto(spot_symbol)
         """
         if not pairs:
             return 0
 
         registered_count = 0
 
-        for crypto_symbol, equity_symbol in pairs:
+        # Helper function to register a single symbol
+        def register_symbol(symbol):
+            nonlocal registered_count
+
+            # Skip symbols that don't need registration (e.g., USA stocks)
+            # Only register Crypto and CryptoFuture symbols on Gate market
+            if symbol.SecurityType not in [SecurityType.Crypto, SecurityType.CryptoFuture]:
+                return
+            if symbol.ID.Market.lower() != 'gate':
+                return
+
             try:
                 # 从原始数据中获取 symbol info
-                ticker = crypto_symbol.Value.replace('USDT', '_USDT')
-                asset_type = 'spot' if crypto_symbol.SecurityType == SecurityType.Crypto else 'future'
+                ticker = symbol.Value.replace('USDT', '_USDT')
+                asset_type = 'spot' if symbol.SecurityType == SecurityType.Crypto else 'future'
 
                 # 获取原始数据
                 if asset_type == 'spot' and self.spot_data and ticker in self.spot_data:
@@ -394,26 +417,26 @@ class BaseDataSource(ABC):
                 elif asset_type == 'future' and self.future_data and ticker in self.future_data:
                     symbol_info = self.future_data[ticker]
                 else:
-                    print(f"[WARN] Symbol info not found for {crypto_symbol.Value}, skipping runtime registration")
-                    continue
+                    print(f"[WARN] Symbol info not found for {symbol.Value} ({asset_type}), skipping runtime registration")
+                    return
 
                 # 创建 SymbolProperties 对象
-                symbol_properties = self._create_symbol_properties(symbol_info, asset_type, crypto_symbol)
+                symbol_properties = self._create_symbol_properties(symbol_info, asset_type, symbol)
 
                 # 注册到 LEAN 的 symbol properties database
                 algorithm.symbol_properties_database.set_entry(
-                    crypto_symbol.ID.Market,      # e.g., "gate"
-                    crypto_symbol.Value,           # e.g., "TSLAXUSDT"
-                    crypto_symbol.SecurityType,    # SecurityType.Crypto or CryptoFuture
+                    symbol.ID.Market,      # e.g., "gate"
+                    symbol.Value,          # e.g., "BTCUSDT"
+                    symbol.SecurityType,   # SecurityType.Crypto or CryptoFuture
                     symbol_properties
                 )
 
                 # 创建并注册 market hours（24/7 for crypto）
                 exchange_hours = self._create_exchange_hours()
                 algorithm.market_hours_database.set_entry(
-                    crypto_symbol.ID.Market,
-                    crypto_symbol.Value,
-                    crypto_symbol.SecurityType,
+                    symbol.ID.Market,
+                    symbol.Value,
+                    symbol.SecurityType,
                     exchange_hours,
                     TimeZones.Utc  # Crypto exchanges typically use UTC
                 )
@@ -421,12 +444,16 @@ class BaseDataSource(ABC):
                 registered_count += 1
 
             except Exception as e:
-                print(f"[ERROR] Failed to register {crypto_symbol.Value}: {e}")
                 import traceback
                 traceback.print_exc()
 
+        # Process both symbols in each pair
+        for symbol1, symbol2 in pairs:
+            register_symbol(symbol1)
+            register_symbol(symbol2)
+
         if registered_count > 0:
-            print(f"[OK] Runtime registered {registered_count} symbols to LEAN database")
+            print(f"[OK] Runtime registered {registered_count} total symbols to LEAN database")
 
         return registered_count
 
