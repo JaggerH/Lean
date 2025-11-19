@@ -231,7 +231,7 @@ namespace QuantConnect.Lean.Engine.Setup
                 //Execute the initialize code:
                 var controls = liveJob.Controls;
                 var isolator = new Isolator();
-                var initializeComplete = isolator.ExecuteWithTimeLimit(BaseSetupHandler.InitializationTimeout, () =>
+                var initializeComplete = isolator.ExecuteWithTimeLimit(TimeSpan.FromSeconds(300), () =>
                 {
                     try
                     {
@@ -375,12 +375,6 @@ namespace QuantConnect.Lean.Engine.Setup
                 var cashBalance = brokerage.GetCashBalance();
                 foreach (var cash in cashBalance)
                 {
-                    if (!CashAmountUtil.ShouldAddCashBalance(cash, algorithm.AccountCurrency))
-                    {
-                        Log.Trace($"BrokerageSetupHandler.Setup(): Skipping {cash.Currency} cash because quantity is zero");
-                        continue;
-                    }
-
                     Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount}");
                     algorithm.Portfolio.SetCash(cash.Currency, cash.Amount, 0);
                 }
