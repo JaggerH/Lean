@@ -20,7 +20,7 @@ using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Orders;
 
-namespace QuantConnect.Securities
+namespace QuantConnect.Securities.MultiAccount
 {
     /// <summary>
     /// Multi-account portfolio manager that maintains separate sub-portfolios for each account

@@ -15,12 +15,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using QuantConnect.Algorithm;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Orders;
 using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 
 namespace QuantConnect.Lean.Engine.Setup.MultiAccount
 {
@@ -141,15 +141,8 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             QCAlgorithm algorithm,
             MultiSecurityPortfolioManager multiPortfolio)
         {
-            var portfolioField = typeof(QCAlgorithm).GetField("_portfolio",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-
-            if (portfolioField == null)
-            {
-                throw new InvalidOperationException("Unable to find _portfolio field");
-            }
-
-            portfolioField.SetValue(algorithm, multiPortfolio);
+            // Portfolio is now a public property with a setter, so we can set it directly
+            algorithm.Portfolio = multiPortfolio;
 
             Log.Trace("MultiAccountPortfolioFactory.ReplacePortfolio(): Replaced algorithm.Portfolio with MultiSecurityPortfolioManager");
         }

@@ -20,13 +20,15 @@ using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Indicators;
+using QuantConnect.Logging;
 using QuantConnect.Orders;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 using QuantConnect.Tests.Engine;
 using QuantConnect.Tests.Engine.DataFeeds;
 
-namespace QuantConnect.Tests.Common.Securities
+namespace QuantConnect.Tests.Common.Securities.MultiAccount
 {
     [TestFixture]
     public class MultiSecurityPortfolioManagerTests
@@ -182,13 +184,16 @@ namespace QuantConnect.Tests.Common.Securities
                 TimeKeeper
             );
 
+            // Router is called once during initialization for pre-existing SPY
+            var initializationCallCount = routerCallCount;
+
             var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
 
             // Act
             var result = portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
 
-            // Assert - verify router was called
-            Assert.AreEqual(1, routerCallCount, "Router should be called once");
+            // Assert - verify router was called once more for buying power validation
+            Assert.AreEqual(initializationCallCount + 1, routerCallCount, "Router should be called once more during validation");
             Assert.AreEqual("AccountA", routedAccount, "Order should route to AccountA");
         }
 
@@ -236,7 +241,7 @@ namespace QuantConnect.Tests.Common.Securities
             };
             var router = new TestRouter("AccountA");
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
 
@@ -251,6 +256,7 @@ namespace QuantConnect.Tests.Common.Securities
             );
 
             var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+            orderProcessor.AddOrder(order);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
 
             var fill = new OrderEvent(
@@ -470,7 +476,7 @@ namespace QuantConnect.Tests.Common.Securities
             var router = new SymbolBasedRouter(symbolMappings, "AccountA");
 
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
             AddSecurity(securities, BTCUSD, 50000m);
@@ -485,8 +491,15 @@ namespace QuantConnect.Tests.Common.Securities
                 TimeKeeper
             );
 
+            // Ensure crypto base currencies are in CashBook
+            EnsureCryptoBaseCurrenciesInCashBook(portfolio, securities);
+
             var spyOrder = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
             var btcOrder = new MarketOrder(BTCUSD, 0.1m, DateTime.UtcNow) { Id = 2 };
+
+            // Register orders with order processor
+            orderProcessor.AddOrder(spyOrder);
+            orderProcessor.AddOrder(btcOrder);
 
             // Act
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { spyOrder });
@@ -514,9 +527,16 @@ namespace QuantConnect.Tests.Common.Securities
                 { "AccountA", 10000m },
                 { "AccountB", 20000m }
             };
-            var router = new TestRouter("AccountA");
+
+            // Use SymbolBasedRouter to explicitly route SPY to AccountA
+            var symbolMappings = new Dictionary<Symbol, string>
+            {
+                { SPY, "AccountA" }
+            };
+            var router = new SymbolBasedRouter(symbolMappings, "AccountB");
+
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
 
@@ -532,6 +552,7 @@ namespace QuantConnect.Tests.Common.Securities
 
             // Act: Execute fills in AccountA
             var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+            orderProcessor.AddOrder(order);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
 
             var fill = new OrderEvent(
@@ -551,20 +572,21 @@ namespace QuantConnect.Tests.Common.Securities
             var accountA = portfolio.GetAccount("AccountA");
             Assert.AreEqual(5000m, accountA.Cash, "AccountA cash should be reduced by 5000");
 
-            // Assert: Verify AccountB's cash remains unchanged
+            // Assert: Verify AccountB's cash remains unchanged (no trades)
             var accountB = portfolio.GetAccount("AccountB");
             Assert.AreEqual(20000m, accountB.Cash, "AccountB cash should be unchanged");
 
-            // Critical: Verify Security.Holdings shows the correct quantity (not doubled)
-            // Note: Since all accounts share the same SecurityManager, Security.Holdings
-            // reflects the fill quantity. Calling base.ProcessFills() would duplicate this.
-            Assert.AreEqual(50, securities[SPY].Holdings.Quantity,
-                "Security holdings should show 50 shares, not duplicated");
+            // Critical: Verify holdings are isolated per account
+            // AccountA should have 50 shares (it executed the trade)
+            Assert.AreEqual(50, accountA[SPY].Quantity, "AccountA should have 50 shares");
 
-            // Note: Both accounts will show the same holdings because they share Securities
-            // This is a known limitation - holdings are NOT isolated per account
-            Assert.AreEqual(50, accountA[SPY].Quantity, "AccountA reflects shared holdings");
-            Assert.AreEqual(50, accountB[SPY].Quantity, "AccountB also reflects shared holdings");
+            // AccountB should NOT have SPY in its SecurityManager (SPY was routed to AccountA only)
+            Assert.IsFalse(accountB.Securities.ContainsKey(SPY),
+                "AccountB should not have SPY - it was routed to AccountA");
+
+            // Main portfolio should show aggregated holdings (50 from AccountA + 0 from AccountB)
+            Assert.AreEqual(50, securities[SPY].Holdings.Quantity,
+                "Main portfolio holdings should show 50 shares (aggregated from AccountA)");
         }
 
         [Test]
@@ -584,8 +606,9 @@ namespace QuantConnect.Tests.Common.Securities
             var router = new SymbolBasedRouter(symbolMappings, "AccountB");
 
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
+            // Add securities BEFORE creating portfolio (constructor will route them to sub-accounts)
             AddSecurity(securities, SPY, 100m);
             var aaplSymbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA);
             AddSecurity(securities, aaplSymbol, 150m);
@@ -602,6 +625,7 @@ namespace QuantConnect.Tests.Common.Securities
 
             // Act: Execute fills in AccountA for SPY
             var orderA = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+            orderProcessor.AddOrder(orderA);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { orderA });
 
             var fillA = new OrderEvent(1, SPY, DateTime.UtcNow, OrderStatus.Filled,
@@ -610,28 +634,38 @@ namespace QuantConnect.Tests.Common.Securities
 
             // Execute fill in AccountB (default) for AAPL with different quantity
             var orderB = new MarketOrder(aaplSymbol, 30, DateTime.UtcNow) { Id = 2 };
+            orderProcessor.AddOrder(orderB);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { orderB });
 
             var fillB = new OrderEvent(2, aaplSymbol, DateTime.UtcNow, OrderStatus.Filled,
                 OrderDirection.Buy, 150m, 30, OrderFee.Zero);
             portfolio.ProcessFills(new List<OrderEvent> { fillB });
 
-            // Assert: Verify GetAccountHolding returns the shared holdings
-            // Note: All accounts share the same SecurityManager, so holdings are the same
+            // Assert: Verify GetAccountHolding returns isolated holdings for each sub-account
+            // Note: Each sub-account only contains securities it trades (routed by the router)
+            // AccountA has SPY (explicitly mapped), AccountB has AAPL (default route)
+
             var holdingA_SPY = portfolio.GetAccountHolding("AccountA", SPY);
-            var holdingB_SPY = portfolio.GetAccountHolding("AccountB", SPY);
-            var holdingA_AAPL = portfolio.GetAccountHolding("AccountA", aaplSymbol);
             var holdingB_AAPL = portfolio.GetAccountHolding("AccountB", aaplSymbol);
 
-            // Both accounts see the same holdings for each symbol (shared SecurityManager)
-            Assert.AreEqual(50, holdingA_SPY.Quantity, "SPY holdings are shared");
-            Assert.AreEqual(50, holdingB_SPY.Quantity, "SPY holdings are shared");
-            Assert.AreEqual(30, holdingA_AAPL.Quantity, "AAPL holdings are shared");
-            Assert.AreEqual(30, holdingB_AAPL.Quantity, "AAPL holdings are shared");
+            // Sub-account holdings should be isolated - each account only holds what it bought
+            Assert.AreEqual(50, holdingA_SPY.Quantity, "AccountA bought 50 shares of SPY");
+            Assert.AreEqual(30, holdingB_AAPL.Quantity, "AccountB bought 30 shares of AAPL");
 
-            // Verify GetAccountHolding method works correctly
-            Assert.AreSame(holdingA_SPY, holdingB_SPY, "Same Security.Holdings object");
-            Assert.AreSame(holdingA_AAPL, holdingB_AAPL, "Same Security.Holdings object");
+            // Verify AccountB does NOT have SPY in its SecurityManager (would throw KeyNotFoundException)
+            var accountB = portfolio.GetAccount("AccountB");
+            Assert.IsFalse(accountB.Securities.ContainsKey(SPY), "AccountB should not have SPY");
+
+            // Verify AccountA does NOT have AAPL in its SecurityManager (would throw KeyNotFoundException)
+            var accountA = portfolio.GetAccount("AccountA");
+            Assert.IsFalse(accountA.Securities.ContainsKey(aaplSymbol), "AccountA should not have AAPL");
+
+            // Main account should show aggregated holdings from all sub-accounts
+            var mainHolding_SPY = portfolio.Securities[SPY].Holdings;
+            var mainHolding_AAPL = portfolio.Securities[aaplSymbol].Holdings;
+
+            Assert.AreEqual(50, mainHolding_SPY.Quantity, "Main account should aggregate SPY holdings (50 from AccountA)");
+            Assert.AreEqual(30, mainHolding_AAPL.Quantity, "Main account should aggregate AAPL holdings (30 from AccountB)");
         }
 
         [Test]
@@ -645,7 +679,7 @@ namespace QuantConnect.Tests.Common.Securities
             };
             var router = new TestRouter("AccountA");
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
 
@@ -661,6 +695,7 @@ namespace QuantConnect.Tests.Common.Securities
 
             // Act: Execute fills that reduce cash in one account
             var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+            orderProcessor.AddOrder(order);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
 
             var fill = new OrderEvent(1, SPY, DateTime.UtcNow, OrderStatus.Filled,
@@ -729,7 +764,7 @@ namespace QuantConnect.Tests.Common.Securities
             };
             var router = new TestRouter("AccountA");
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
 
@@ -748,6 +783,7 @@ namespace QuantConnect.Tests.Common.Securities
 
             // Act: Execute fills in AccountA
             var order = new MarketOrder(SPY, 50, DateTime.UtcNow) { Id = 1 };
+            orderProcessor.AddOrder(order);
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
 
             var fill = new OrderEvent(1, SPY, DateTime.UtcNow, OrderStatus.Filled,
@@ -791,7 +827,7 @@ namespace QuantConnect.Tests.Common.Securities
             var router = new SymbolBasedRouter(symbolMappings, "AccountC");
 
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
             var aaplSymbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA);
@@ -818,8 +854,10 @@ namespace QuantConnect.Tests.Common.Securities
                 new MarketOrder(msftSymbol, 25, DateTime.UtcNow) { Id = 3 } // -> AccountC (default)
             };
 
+            // Register orders with order processor
             foreach (var order in orders)
             {
+                orderProcessor.AddOrder(order);
                 portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { order });
             }
 
@@ -843,19 +881,19 @@ namespace QuantConnect.Tests.Common.Securities
             Assert.AreEqual(10000m, portfolio.GetAccountCash("AccountC"),
                 "AccountC: 30000 - (100 * 150) - (25 * 200)");
 
-            // Note: Holdings are shared across all accounts because they use the same SecurityManager
-            // All accounts see the same holdings for each symbol
-            Assert.AreEqual(50, portfolio.GetAccountHolding("AccountA", SPY).Quantity);
-            Assert.AreEqual(50, portfolio.GetAccountHolding("AccountB", SPY).Quantity);
-            Assert.AreEqual(50, portfolio.GetAccountHolding("AccountC", SPY).Quantity);
+            // Assert: Verify holdings isolation - each account only has securities it traded
+            // AccountA: Only SPY (routed to AccountA)
+            Assert.AreEqual(50, portfolio.GetAccountHolding("AccountA", SPY).Quantity,
+                "AccountA should have SPY holdings");
 
-            Assert.AreEqual(100, portfolio.GetAccountHolding("AccountA", aaplSymbol).Quantity);
-            Assert.AreEqual(100, portfolio.GetAccountHolding("AccountB", aaplSymbol).Quantity);
-            Assert.AreEqual(100, portfolio.GetAccountHolding("AccountC", aaplSymbol).Quantity);
+            // AccountC: Only AAPL and MSFT (routed to default AccountC)
+            Assert.AreEqual(100, portfolio.GetAccountHolding("AccountC", aaplSymbol).Quantity,
+                "AccountC should have AAPL holdings");
+            Assert.AreEqual(25, portfolio.GetAccountHolding("AccountC", msftSymbol).Quantity,
+                "AccountC should have MSFT holdings");
 
-            Assert.AreEqual(25, portfolio.GetAccountHolding("AccountA", msftSymbol).Quantity);
-            Assert.AreEqual(25, portfolio.GetAccountHolding("AccountB", msftSymbol).Quantity);
-            Assert.AreEqual(25, portfolio.GetAccountHolding("AccountC", msftSymbol).Quantity);
+            // AccountB: No securities (no trades routed to AccountB)
+            // Note: Cannot call GetAccountHolding for symbols not in the account's SecurityManager
 
             // Assert: Verify aggregated values are correct
             var expectedTotalCash = 5000m + 20000m + 10000m;
@@ -1088,7 +1126,7 @@ namespace QuantConnect.Tests.Common.Securities
             var router = new SymbolBasedRouter(symbolMappings, "AccountA");
 
             var securities = CreateSecurityManager();
-            var transactions = new SecurityTransactionManager(null, securities);
+            var transactions = CreateTransactionManagerWithOrderProcessor(securities, out var orderProcessor);
 
             AddSecurity(securities, SPY, 100m);
             AddSecurity(securities, BTCUSD, 50000m);
@@ -1106,6 +1144,10 @@ namespace QuantConnect.Tests.Common.Securities
             // Execute fills to generate margin usage
             var spyOrder = new MarketOrder(SPY, 500, DateTime.UtcNow) { Id = 1 };
             var btcOrder = new MarketOrder(BTCUSD, 1m, DateTime.UtcNow) { Id = 2 };
+
+            // Register orders with order processor
+            orderProcessor.AddOrder(spyOrder);
+            orderProcessor.AddOrder(btcOrder);
 
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { spyOrder });
             portfolio.HasSufficientBuyingPowerForOrder(new List<Order> { btcOrder });
@@ -1263,20 +1305,82 @@ namespace QuantConnect.Tests.Common.Securities
             return new SecurityManager(TimeKeeper);
         }
 
+        private static SecurityTransactionManager CreateTransactionManagerWithOrderProcessor(SecurityManager securities, out FakeOrderProcessor orderProcessor)
+        {
+            var transactions = new SecurityTransactionManager(null, securities);
+            orderProcessor = new FakeOrderProcessor();
+            orderProcessor.TransactionManager = transactions;
+            transactions.SetOrderProcessor(orderProcessor);
+            return transactions;
+        }
+
+        private static void EnsureCryptoBaseCurrenciesInCashBook(MultiSecurityPortfolioManager portfolio, SecurityManager securities)
+        {
+            // For each crypto security, ensure its base currency is in the account's CashBook
+            foreach (var kvp in securities)
+            {
+                var security = kvp.Value;
+                if (security is QuantConnect.Securities.Crypto.Crypto crypto)
+                {
+                    // Find which account this crypto belongs to
+                    var tempOrder = new MarketOrder(security.Symbol, 0, DateTime.UtcNow);
+                    var accountName = portfolio.FindAccountForSymbol(security.Symbol);
+
+                    if (!string.IsNullOrEmpty(accountName))
+                    {
+                        var account = portfolio.GetAccount(accountName);
+                        var baseCurrency = crypto.BaseCurrency.Symbol;
+
+                        if (!account.CashBook.ContainsKey(baseCurrency))
+                        {
+                            account.CashBook.Add(baseCurrency, new Cash(baseCurrency, 0, 0));
+                        }
+                    }
+                }
+            }
+        }
+
         private static void AddSecurity(SecurityManager securities, Symbol symbol, decimal price)
         {
             var subscriptions = new SubscriptionManager(TimeKeeper);
             subscriptions.SetDataManager(new DataManagerStub(TimeKeeper));
 
-            var security = new Security(
-                SecurityExchangeHours,
-                subscriptions.Add(symbol, Resolution.Minute, TimeZones.NewYork, TimeZones.NewYork),
-                new Cash(Currencies.USD, 0, 1m),
-                SymbolProperties.GetDefault(Currencies.USD),
-                ErrorCurrencyConverter.Instance,
-                RegisteredSecurityDataTypesProvider.Null,
-                new SecurityCache()
-            );
+            Security security;
+            var config = subscriptions.Add(symbol, Resolution.Minute, TimeZones.NewYork, TimeZones.NewYork);
+
+            // Create appropriate security type based on symbol
+            if (symbol.SecurityType == SecurityType.Crypto)
+            {
+                // Use the correct method to decompose currency pair
+                var symbolProperties = SymbolProperties.GetDefault(Currencies.USD);
+                QuantConnect.Securities.Crypto.Crypto.DecomposeCurrencyPair(symbol, symbolProperties, out var baseCurrency, out var quoteCurrency);
+
+                var baseCash = new Cash(baseCurrency, 0, 0);
+                var quoteCash = new Cash(quoteCurrency, 0, 1m);
+
+                security = new QuantConnect.Securities.Crypto.Crypto(
+                    symbol,
+                    SecurityExchangeHours,
+                    quoteCash,
+                    baseCash,
+                    symbolProperties,
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null,
+                    new SecurityCache()
+                );
+            }
+            else
+            {
+                security = new Security(
+                    SecurityExchangeHours,
+                    config,
+                    new Cash(Currencies.USD, 0, 1m),
+                    SymbolProperties.GetDefault(Currencies.USD),
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null,
+                    new SecurityCache()
+                );
+            }
 
             security.SetMarketPrice(new IndicatorDataPoint(symbol, DateTime.UtcNow, price));
             securities.Add(symbol, security);

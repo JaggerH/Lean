@@ -16,6 +16,7 @@
 
 using System.Linq;
 using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 using QuantConnect.Interfaces;
 using QuantConnect.Orders;
 

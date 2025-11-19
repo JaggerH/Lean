@@ -22,6 +22,7 @@ using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 using QuantConnect.Util;
 using QuantConnect.Data.Fundamental;
 

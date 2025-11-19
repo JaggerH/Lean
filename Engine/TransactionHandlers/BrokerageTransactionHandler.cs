@@ -33,6 +33,7 @@ using QuantConnect.Logging;
 using QuantConnect.Orders;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 using QuantConnect.Securities.Option;
 using QuantConnect.Util;
 
