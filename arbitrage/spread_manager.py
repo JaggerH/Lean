@@ -1,14 +1,18 @@
 """
-SpreadManager - Core position and subscription management for crypto-stock arbitrage
+SpreadManager - Core multi-leg pair subscription and spread management
 
-Manages many-to-one relationships between crypto tokens (e.g., TESLAx on Gate)
-and underlying stocks (e.g., TSLA on IBKR).
+Supports multiple arbitrage pair types:
+1. (Crypto, Stock) - tokenized stock spot arbitrage
+2. (CryptoFuture, Stock) - tokenized stock futures arbitrage
+3. (Crypto, CryptoFuture) - spot-future basis arbitrage
 
-Major Refactoring (2025-10-23):
-- Implemented two-layer spread signal system:
-  1. Theoretical Spread: continuous monitoring for visualization
-  2. Executable Spread: condition-based signals for trading
-- Added market state classification: CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY
+Major Refactoring History:
+- 2025-11-19: Unified naming to leg1/leg2, removed redundant data structures
+- 2025-11-11: Generalized from crypto-stock to multi-pair support
+- 2025-10-23: Implemented two-layer spread signal system
+  * Theoretical Spread: continuous monitoring for visualization
+  * Executable Spread: condition-based signals for trading
+  * Market state classification: CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY
 """
 from AlgorithmImports import *
 from typing import Dict, Set, List, Tuple, Optional, TYPE_CHECKING, Type
@@ -68,17 +72,17 @@ class PairMapping:
 @dataclass
 class SpreadSignal:
     """
-    价差信号（简化版 - 包含市场状态和可执行价差）
+    价差信号（包含市场状态和可执行价差）
 
     设计理念（重构 2025-10-23）：
     - pair_symbol: 交易对标识，包含完整上下文
     - theoretical_spread: 理论最大价差，始终有值（用于连续监控和可视化）
     - executable_spread: 可执行价差，只在 CROSSED 市场时有值（LIMIT_OPPORTUNITY 由执行层计算）
     - 移除冗余字段：crossed_bid_ask 和 limit_opportunity_exists 改用 @property 方法
-    - 移除价格字段：token_bid/ask, stock_bid/ask（可从 Security.Cache 获取）
+    - 移除价格字段：leg1_bid/ask, leg2_bid/ask（可从 Security.Cache 获取）
 
     Attributes:
-        pair_symbol: (crypto_symbol, stock_symbol) 交易对
+        pair_symbol: (leg1_symbol, leg2_symbol) 交易对
         market_state: 市场状态（CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY）
         theoretical_spread: 理论最大价差（用于监控和可视化，始终有值）
         executable_spread: 可执行价差（仅在 CROSSED 市场时非 None）
@@ -108,21 +112,32 @@ class SpreadSignal:
 
 class SpreadManager:
     """
-    Manages crypto-stock trading pairs with automatic deduplication and position tracking.
+    多腿交易对管理器（Multi-leg Pair Manager）
 
-    Key Features:
-    - Automatic stock subscription with deduplication (many tokens -> one stock)
-    - Track all crypto-stock pairs
-    - Calculate spread percentage
-    - (Phase 2) Manage net positions to avoid risk exposure
+    支持多种套利交易对类型，统一管理订阅、价差计算和事件通知。
+
+    支持的交易对类型：
+    - (Crypto, Stock): tokenized stock 现货套利
+    - (CryptoFuture, Stock): tokenized stock 期货套利
+    - (Crypto, CryptoFuture): spot-future basis 套利
+
+    核心功能：
+    - 交易对订阅与自动去重（多对一关系管理）
+    - 价差计算与市场状态分类
+    - 观察者模式事件通知（策略 + 监控）
+    - 直接使用 algorithm.Securities 避免数据冗余
 
     Example Usage:
         manager = SpreadManager(algorithm)
 
-        # Subscribe crypto and auto-subscribe corresponding stock
-        crypto = algorithm.AddCrypto("TSLAxUSD", Resolution.Tick, Market.Kraken)
-        stock = manager.subscribe_stock_by_crypto(crypto)
-        manager.add_pair(crypto, stock)
+        # 订阅 spot-future 配对
+        spot_sec, future_sec = manager.subscribe_trading_pair(
+            pair_symbol=(spot_symbol, future_symbol),
+            resolution=(Resolution.ORDERBOOK, Resolution.TICK)
+        )
+
+        # 注册观察者
+        manager.register_observer(strategy.on_spread_update)
     """
 
     def __init__(self, algorithm: QCAlgorithm):
@@ -146,85 +161,16 @@ class SpreadManager:
         self._pair_observers = []    # pair 事件观察者列表（监控回调）
         self._spread_observers = []  # spread 事件观察者列表（策略回调）
 
-        # === 新数据结构（2025-11-11 重构）===
-        # leg1_symbol -> PairMapping（统一管理所有配对类型）
-        self.pair_mappings: Dict[Symbol, PairMapping] = {}
+        # === 新数据结构（2025-11-19 重构）===
+        # (leg1_symbol, leg2_symbol) -> PairMapping（支持任意多对多关系）
+        self.pair_mappings: Dict[Tuple[Symbol, Symbol], PairMapping] = {}
 
         # leg2 -> [leg1s]（多对一关系，用于 stock 去重和查找）
         self.leg2_to_leg1s: Dict[Symbol, List[Symbol]] = {}
 
-        # Symbol -> Security（统一管理所有证券对象）
-        self.securities: Dict[Symbol, Security] = {}
-
-        # Data type registry (Symbol -> Type mapping for dynamic data access)
-        self.data_types: Dict[Symbol, Type] = {}
-
         # Note: Position and order management has been moved to BaseStrategy
         # for better separation of concerns and to support multiple strategy instances
-
-    # === 向后兼容属性（2025-11-11）===
-    @property
-    def pairs(self) -> Dict[Symbol, Symbol]:
-        """
-        向后兼容属性：crypto/cryptofuture -> stock 映射
-
-        仅包含 crypto_stock 和 cryptofuture_stock 类型的配对，
-        不包含 spot_future 类型（因为原有语义是 crypto-stock）。
-
-        Returns:
-            Dict[Symbol, Symbol]: leg1 -> leg2 映射（仅 crypto-stock 配对）
-        """
-        return {
-            m.leg1: m.leg2
-            for m in self.pair_mappings.values()
-            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
-        }
-
-    @property
-    def stock_to_cryptos(self) -> Dict[Symbol, List[Symbol]]:
-        """
-        向后兼容属性：stock -> [cryptos] 映射
-
-        仅包含 crypto_stock 和 cryptofuture_stock 类型的配对。
-
-        Returns:
-            Dict[Symbol, List[Symbol]]: stock -> [cryptos] 映射
-        """
-        result = {}
-        for mapping in self.pair_mappings.values():
-            if mapping.pair_type in ['crypto_stock', 'cryptofuture_stock']:
-                result.setdefault(mapping.leg2, []).append(mapping.leg1)
-        return result
-
-    @property
-    def stocks(self) -> Set[Security]:
-        """
-        向后兼容属性：所有股票 Security 对象集合
-
-        Returns:
-            Set[Security]: 股票 Security 对象集合
-        """
-        return {
-            m.leg2_security
-            for m in self.pair_mappings.values()
-            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
-        }
-
-    @property
-    def cryptos(self) -> Set[Security]:
-        """
-        向后兼容属性：所有 crypto Security 对象集合
-
-        包含 crypto 和 cryptofuture 类型的 Security（与 stock 配对的）。
-
-        Returns:
-            Set[Security]: crypto Security 对象集合
-        """
-        return {
-            m.leg1_security
-            for m in self.pair_mappings.values()
-            if m.pair_type in ['crypto_stock', 'cryptofuture_stock']
-        }
+        # Note: Security 对象统一从 algorithm.Securities 获取，不再维护副本
 
     def register_observer(self, callback):
         """
@@ -263,7 +209,7 @@ class SpreadManager:
         当通过 add_pair() 或 subscribe_trading_pair() 添加新交易对时触发。
 
         Args:
-            callback: 回调函数，签名为 callback(crypto: Security, stock: Security)
+            callback: 回调函数，签名为 callback(leg1: Security, leg2: Security)
 
         Example:
             >>> manager.register_pair_observer(monitor.write_pair_mapping)
@@ -288,22 +234,22 @@ class SpreadManager:
             callback_name = getattr(callback, '__name__', repr(callback))
             self.algorithm.Debug(f"🗑️ Unregistered pair observer: {callback_name}")
 
-    def _notify_pair_observers(self, crypto: Security, stock: Security):
+    def _notify_pair_observers(self, leg1: Security, leg2: Security):
         """
         通知所有注册的 pair 观察者
 
         Args:
-            crypto: Crypto Security 对象
-            stock: Stock Security 对象
+            leg1: Leg1 Security 对象
+            leg2: Leg2 Security 对象
         """
         for observer in self._pair_observers:
             try:
-                observer(crypto, stock)
+                observer(leg1, leg2)
             except:
                 import traceback
                 error_msg = traceback.format_exc()
                 self.algorithm.Debug(
-                    f"❌ Pair observer error for {crypto.Symbol.Value}<->{stock.Symbol.Value}: {error_msg}"
+                    f"❌ Pair observer error for {leg1.Symbol.Value}<->{leg2.Symbol.Value}: {error_msg}"
                 )
 
     def _notify_observers(self, signal: SpreadSignal):
@@ -413,12 +359,16 @@ class SpreadManager:
             leg1_security=leg1,
             leg2_security=leg2
         )
-        self.pair_mappings[leg1_symbol] = mapping
+
+        # 使用 (leg1, leg2) tuple 作为 key（支持一对多关系）
+        pair_key = (leg1_symbol, leg2_symbol)
+        self.pair_mappings[pair_key] = mapping
 
         # 更新 leg2 -> [leg1s] 多对一映射
         if leg2_symbol not in self.leg2_to_leg1s:
             self.leg2_to_leg1s[leg2_symbol] = []
-        self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
+        if leg1_symbol not in self.leg2_to_leg1s[leg2_symbol]:
+            self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
 
         # 通知 pair 观察者（如监控系统）
         self._notify_pair_observers(leg1, leg2)
@@ -512,12 +462,16 @@ class SpreadManager:
             leg1_security=leg1_sec,
             leg2_security=leg2_sec
         )
-        self.pair_mappings[leg1_symbol] = mapping
+
+        # 使用 (leg1, leg2) tuple 作为 key（支持一对多关系）
+        pair_key = (leg1_symbol, leg2_symbol)
+        self.pair_mappings[pair_key] = mapping
 
         # 更新 leg2 -> [leg1s] 多对一映射
         if leg2_symbol not in self.leg2_to_leg1s:
             self.leg2_to_leg1s[leg2_symbol] = []
-        self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
+        if leg1_symbol not in self.leg2_to_leg1s[leg2_symbol]:
+            self.leg2_to_leg1s[leg2_symbol].append(leg1_symbol)
 
         # 步骤 5: 通知 pair 观察者（保持向后兼容）
         self._notify_pair_observers(leg1_sec, leg2_sec)
@@ -576,8 +530,8 @@ class SpreadManager:
             should_flip_result = False
 
         # === 订阅 Spot（检查是否已订阅）===
-        if spot_symbol in self.securities:
-            spot_security = self.securities[spot_symbol]
+        if spot_symbol in self.algorithm.Securities:
+            spot_security = self.algorithm.Securities[spot_symbol]
             self.algorithm.Debug(f"Spot {spot_symbol.Value} already subscribed, reusing existing security")
         else:
             spot_security = self.algorithm.add_crypto(
@@ -589,15 +543,9 @@ class SpreadManager:
             if spot_fee is not None:
                 spot_security.FeeModel = spot_fee
 
-            # 记录数据类型
-            self.data_types[spot_security.Symbol] = (
-                OrderbookDepth if spot_res == Resolution.ORDERBOOK else Tick
-            )
-            self.securities[spot_symbol] = spot_security
-
         # === 订阅 Future（检查是否已订阅）===
-        if future_symbol in self.securities:
-            future_security = self.securities[future_symbol]
+        if future_symbol in self.algorithm.Securities:
+            future_security = self.algorithm.Securities[future_symbol]
             self.algorithm.Debug(f"Future {future_symbol.Value} already subscribed, reusing existing security")
         else:
             future_security = self.algorithm.add_crypto_future(
@@ -608,12 +556,6 @@ class SpreadManager:
             future_security.SetBuyingPowerModel(SecurityMarginModel(future_lev))
             if future_fee is not None:
                 future_security.FeeModel = future_fee
-
-            # 记录数据类型
-            self.data_types[future_security.Symbol] = (
-                OrderbookDepth if future_res == Resolution.ORDERBOOK else Tick
-            )
-            self.securities[future_symbol] = future_security
 
         # 返回结果（按输入顺序）
         if should_flip_result:
@@ -675,11 +617,6 @@ class SpreadManager:
         else:
             raise ValueError(f"Unsupported crypto security type: {security_type}")
 
-        # 记录数据类型
-        self.data_types[crypto_security.Symbol] = (
-            OrderbookDepth if crypto_res == Resolution.ORDERBOOK else Tick
-        )
-
         # 设置加密货币配置
         crypto_security.DataNormalizationMode = DataNormalizationMode.RAW
         crypto_security.SetBuyingPowerModel(SecurityMarginModel(crypto_leverage))
@@ -699,14 +636,12 @@ class SpreadManager:
             stock_security.DataNormalizationMode = DataNormalizationMode.RAW
             stock_security.SetBuyingPowerModel(SecurityMarginModel(stock_leverage))
             stock_security.FeeModel = stock_fee
-            # 记录数据类型
-            self.data_types[stock_security.Symbol] = Tick
 
         return (crypto_security, stock_security)
 
     def get_all_pairs(self) -> List[Tuple[Symbol, Symbol]]:
         """
-        Get all registered trading pairs（重构 2025-11-11）
+        Get all registered trading pairs（重构 2025-11-19）
 
         包含所有类型的配对：crypto-stock, cryptofuture-stock, spot-future
 
@@ -718,11 +653,11 @@ class SpreadManager:
             >>> for leg1_sym, leg2_sym in pairs:
             ...     print(f"{leg1_sym} -> {leg2_sym}")
         """
-        return [(m.leg1, m.leg2) for m in self.pair_mappings.values()]
+        return list(self.pair_mappings.keys())
 
     def get_leg1s_for_leg2(self, leg2_symbol: Symbol) -> List[Symbol]:
         """
-        获取与 leg2 配对的所有 leg1 列表（多对一关系）（新增 2025-11-11）
+        获取与 leg2 配对的所有 leg1 列表（多对一关系）
 
         适用于所有配对类型，例如：
         - 一个 stock 可能对应多个 crypto/cryptofuture
@@ -740,25 +675,36 @@ class SpreadManager:
         """
         return self.leg2_to_leg1s.get(leg2_symbol, [])
 
-    def get_cryptos_for_stock(self, stock_symbol: Symbol) -> List[Symbol]:
+    def get_pair_symbols_from_leg1(self, leg1_symbol: Symbol) -> List[Tuple[Symbol, Symbol]]:
         """
-        获取与 stock 配对的所有 crypto symbols（向后兼容别名）
+        获取包含指定 leg1 的所有交易对（支持一对多）
+
+        重构自 get_pair_symbol_from_leg1 (2025-11-19)：
+        现在支持一个 leg1 对应多个 leg2 的场景（如跨交易所套利）
 
         Args:
-            stock_symbol: Stock Symbol
+            leg1_symbol: leg1 的 Symbol
 
         Returns:
-            List of crypto Symbols paired with this stock
+            List[Tuple[Symbol, Symbol]]: 所有包含该 leg1 的配对列表，如果不存在则返回空列表
 
-        Example:
-            >>> cryptos = manager.get_cryptos_for_stock(tsla_symbol)
-            >>> print(cryptos)  # [TSLAxUSD, TSLAON, ...]
+        Examples:
+            >>> # 单个配对场景
+            >>> pairs = manager.get_pair_symbols_from_leg1(btc_spot)
+            >>> # [(BTC_Spot, BTC_Future_Gate)]
+
+            >>> # 多个配对场景（跨交易所套利）
+            >>> pairs = manager.get_pair_symbols_from_leg1(btc_spot_gate)
+            >>> # [(BTC_Spot_Gate, BTC_Future_Gate), (BTC_Spot_Gate, BTC_Future_Binance)]
         """
-        return self.get_leg1s_for_leg2(stock_symbol)
+        return [pair for pair in self.pair_mappings.keys() if pair[0] == leg1_symbol]
 
     def get_pair_symbol_from_leg1(self, leg1_symbol: Symbol) -> Optional[Tuple[Symbol, Symbol]]:
         """
-        从 leg1 获取完整的配对 Symbol（新增 2025-11-11）
+        从 leg1 获取第一个匹配的配对（向后兼容方法）
+
+        ⚠️ 注意：如果一个 leg1 对应多个 leg2，此方法只返回第一个。
+        建议使用 get_pair_symbols_from_leg1() 获取所有配对。
 
         Args:
             leg1_symbol: leg1 的 Symbol
@@ -767,30 +713,52 @@ class SpreadManager:
             (leg1_symbol, leg2_symbol) tuple, or None if not found
 
         Example:
-            >>> pair = manager.get_pair_symbol_from_leg1(crypto_symbol)
-            >>> print(pair)  # (crypto_symbol, stock_symbol)
+            >>> pair = manager.get_pair_symbol_from_leg1(leg1_symbol)
+            >>> print(pair)  # (leg1_symbol, leg2_symbol) 或 None
         """
-        mapping = self.pair_mappings.get(leg1_symbol)
-        if mapping:
-            return (mapping.leg1, mapping.leg2)
-        return None
+        pairs = self.get_pair_symbols_from_leg1(leg1_symbol)
+        return pairs[0] if pairs else None
 
-    def get_pair_symbol_from_crypto(self, crypto_symbol: Symbol) -> Optional[Tuple[Symbol, Symbol]]:
+    def get_pair_mapping(self, pair_symbol: Tuple[Symbol, Symbol]) -> Optional[PairMapping]:
         """
-        从 crypto symbol 获取配对（向后兼容别名）
+        通过完整的 pair_symbol 获取 PairMapping（新增 2025-11-19）
 
         Args:
-            crypto_symbol: Crypto Symbol
+            pair_symbol: (leg1_symbol, leg2_symbol) 完整配对
 
         Returns:
-            (crypto_symbol, stock_symbol) tuple, or None if not found
+            PairMapping 对象，如果不存在则返回 None
+
+        Example:
+            >>> mapping = manager.get_pair_mapping((btc_spot, btc_future))
+            >>> if mapping:
+            ...     print(mapping.pair_type)  # 'spot_future'
         """
-        return self.get_pair_symbol_from_leg1(crypto_symbol)
+        return self.pair_mappings.get(pair_symbol)
+
+    def get_pair_symbols_from_leg2(self, leg2_symbol: Symbol) -> List[Tuple[Symbol, Symbol]]:
+        """
+        获取包含指定 leg2 的所有交易对（多对一的反向查询）（新增 2025-11-19）
+
+        与 get_leg1s_for_leg2() 类似，但返回完整的配对列表而不是仅 leg1 列表。
+
+        Args:
+            leg2_symbol: leg2 的 Symbol
+
+        Returns:
+            List[Tuple[Symbol, Symbol]]: 所有包含该 leg2 的配对列表
+
+        Example:
+            >>> # 查找所有与某个 future 配对的 pair
+            >>> pairs = manager.get_pair_symbols_from_leg2(btc_future)
+            >>> # [(BTC_Spot_Gate, BTC_Future), (BTC_Spot_Binance, BTC_Future)]
+        """
+        return [pair for pair in self.pair_mappings.keys() if pair[1] == leg2_symbol]
 
 
     @staticmethod
-    def calculate_spread_pct(token_bid: float, token_ask: float,
-                            stock_bid: float, stock_ask: float) -> dict:
+    def calculate_spread_pct(leg1_bid: float, leg1_ask: float,
+                            leg2_bid: float, leg2_ask: float) -> dict:
         """
         计算价差并分类市场状态（核心计算逻辑，静态方法）
 
@@ -799,20 +767,25 @@ class SpreadManager:
         - 原 analyze_spread_signal：分类市场状态
         现在合并为一个函数，简化调用
 
+        命名统一（2025-11-19 重构）：
+        - leg1: 第一条腿（可以是 crypto, spot, future）
+        - leg2: 第二条腿（可以是 stock, future, spot）
+        - 通用于所有交易对类型
+
         价差计算逻辑：
-        1. Short spread: (token_bid - stock_ask) / token_bid
-        2. Long spread: (token_ask - stock_bid) / token_ask
+        1. Short spread: (leg1_bid - leg2_ask) / leg1_bid
+        2. Long spread: (leg1_ask - leg2_bid) / leg1_ask
         3. Theoretical spread: 取绝对值较大的那个
 
         市场状态分类（基于价格区间）：
         1. CROSSED Market（立即可执行）:
-           - token_bid > stock_ask → SHORT_SPREAD (卖token买stock)
-           - stock_bid > token_ask → LONG_SPREAD (买token卖stock)
+           - leg1_bid > leg2_ask → SHORT_SPREAD (卖leg1买leg2)
+           - leg2_bid > leg1_ask → LONG_SPREAD (买leg1卖leg2)
            - executable_spread = 实际可成交价差
 
         2. LIMIT_OPPORTUNITY（需要挂单）:
-           - token_ask > stock_ask > token_bid > stock_bid → SHORT_SPREAD
-           - stock_ask > token_ask > stock_bid > token_bid → LONG_SPREAD
+           - leg1_ask > leg2_ask > leg1_bid > leg2_bid → SHORT_SPREAD
+           - leg2_ask > leg1_ask > leg2_bid > leg1_bid → LONG_SPREAD
            - executable_spread = None（由执行层根据挂单逻辑计算）
 
         3. NO_OPPORTUNITY（无套利机会）:
@@ -820,10 +793,10 @@ class SpreadManager:
            - executable_spread = None
 
         Args:
-            token_bid: Token 最佳买价
-            token_ask: Token 最佳卖价
-            stock_bid: Stock 最佳买价
-            stock_ask: Stock 最佳卖价
+            leg1_bid: Leg1 最佳买价
+            leg1_ask: Leg1 最佳卖价
+            leg2_bid: Leg2 最佳买价
+            leg2_ask: Leg2 最佳卖价
 
         Returns:
             dict: 价差计算结果，包含以下键：
@@ -840,7 +813,7 @@ class SpreadManager:
             >>> result["direction"]  # "SHORT_SPREAD"
         """
         # 1. 数据验证（检查双侧价格有效性）
-        if token_bid <= 0 or token_ask <= 0 or stock_bid <= 0 or stock_ask <= 0:
+        if leg1_bid <= 0 or leg1_ask <= 0 or leg2_bid <= 0 or leg2_ask <= 0:
             return {
                 "market_state": MarketState.NO_OPPORTUNITY,
                 "theoretical_spread": 0.0,
@@ -849,13 +822,13 @@ class SpreadManager:
             }
 
         # 2. 计算理论价差（始终计算）
-        short_spread = (token_bid - stock_ask) / token_bid
-        long_spread = (token_ask - stock_bid) / token_ask
+        short_spread = (leg1_bid - leg2_ask) / leg1_bid
+        long_spread = (leg1_ask - leg2_bid) / leg1_ask
         theoretical_spread = short_spread if abs(short_spread) >= abs(long_spread) else long_spread
 
         # 3. CROSSED Market（优先级最高，立即可执行）
-        if token_bid > stock_ask:
-            # 卖 token @ bid，买 stock @ ask
+        if leg1_bid > leg2_ask:
+            # 卖 leg1 @ bid，买 leg2 @ ask
             return {
                 "market_state": MarketState.CROSSED,
                 "theoretical_spread": theoretical_spread,
@@ -863,8 +836,8 @@ class SpreadManager:
                 "direction": "SHORT_SPREAD"
             }
 
-        if stock_bid > token_ask:
-            # 买 token @ ask，卖 stock @ bid
+        if leg2_bid > leg1_ask:
+            # 买 leg1 @ ask，卖 leg2 @ bid
             return {
                 "market_state": MarketState.CROSSED,
                 "theoretical_spread": theoretical_spread,
@@ -873,10 +846,10 @@ class SpreadManager:
             }
 
         # 4. LIMIT_OPPORTUNITY（需要挂单）
-        # 场景 1: token 偏贵 (token_ask > stock_ask > token_bid > stock_bid)
-        if token_ask > stock_ask > token_bid > stock_bid:
-            spread_1 = (token_ask - stock_ask) / token_ask
-            spread_2 = (token_bid - stock_bid) / token_bid
+        # 场景 1: leg1 偏贵 (leg1_ask > leg2_ask > leg1_bid > leg2_bid)
+        if leg1_ask > leg2_ask > leg1_bid > leg2_bid:
+            spread_1 = (leg1_ask - leg2_ask) / leg1_ask
+            spread_2 = (leg1_bid - leg2_bid) / leg1_bid
             return {
                 "market_state": MarketState.LIMIT_OPPORTUNITY,
                 "theoretical_spread": theoretical_spread,
@@ -884,10 +857,10 @@ class SpreadManager:
                 "direction": "SHORT_SPREAD"
             }
 
-        # 场景 2: token 偏便宜 (stock_ask > token_ask > stock_bid > token_bid)
-        if stock_ask > token_ask > stock_bid > token_bid:
-            spread_1 = (token_ask - stock_bid) / token_ask
-            spread_2 = (token_bid - stock_ask) / token_bid
+        # 场景 2: leg1 偏便宜 (leg2_ask > leg1_ask > leg2_bid > leg1_bid)
+        if leg2_ask > leg1_ask > leg2_bid > leg1_bid:
+            spread_1 = (leg1_ask - leg2_bid) / leg1_ask
+            spread_2 = (leg1_bid - leg2_ask) / leg1_bid
             return {
                 "market_state": MarketState.LIMIT_OPPORTUNITY,
                 "theoretical_spread": theoretical_spread,
@@ -913,32 +886,32 @@ class SpreadManager:
         3. 构造包含 pair_symbol 的 SpreadSignal 对象
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol) 交易对
+            pair_symbol: (leg1_symbol, leg2_symbol) 交易对
 
         Returns:
             SpreadSignal 对象（包含 pair_symbol 和所有价差信息）
 
         Example:
-            >>> signal = manager.calculate_spread_signal((crypto_symbol, stock_symbol))
-            >>> signal.pair_symbol  # (crypto_symbol, stock_symbol)
+            >>> signal = manager.calculate_spread_signal((leg1_symbol, leg2_symbol))
+            >>> signal.pair_symbol  # (leg1_symbol, leg2_symbol)
             >>> signal.theoretical_spread  # 0.00398 (0.398%)
         """
-        crypto_symbol, stock_symbol = pair_symbol
+        leg1_symbol, leg2_symbol = pair_symbol
 
         # 1. 获取 Security 对象
-        crypto_security = self.algorithm.Securities[crypto_symbol]
-        stock_security = self.algorithm.Securities[stock_symbol]
+        leg1_security = self.algorithm.Securities[leg1_symbol]
+        leg2_security = self.algorithm.Securities[leg2_symbol]
 
         # 2. 从 Cache 获取价格
-        crypto_bid = crypto_security.Cache.BidPrice
-        crypto_ask = crypto_security.Cache.AskPrice
-        stock_bid = stock_security.Cache.BidPrice
-        stock_ask = stock_security.Cache.AskPrice
+        leg1_bid = leg1_security.Cache.BidPrice
+        leg1_ask = leg1_security.Cache.AskPrice
+        leg2_bid = leg2_security.Cache.BidPrice
+        leg2_ask = leg2_security.Cache.AskPrice
 
         # 3. 调用静态方法计算（核心逻辑）
         result = self.calculate_spread_pct(
-            float(crypto_bid), float(crypto_ask),
-            float(stock_bid), float(stock_ask)
+            float(leg1_bid), float(leg1_ask),
+            float(leg2_bid), float(leg2_ask)
         )
 
         # 4. 构造 SpreadSignal（添加 pair_symbol）
@@ -959,13 +932,13 @@ class SpreadManager:
         Args:
             data: Slice对象，包含tick数据
         """
-        for crypto_symbol, stock_symbol in self.get_all_pairs():
-            pair_symbol = (crypto_symbol, stock_symbol)
+        for leg1_symbol, leg2_symbol in self.get_all_pairs():
+            pair_symbol = (leg1_symbol, leg2_symbol)
 
             # 验证 Security 对象存在
-            if crypto_symbol not in self.algorithm.Securities:
+            if leg1_symbol not in self.algorithm.Securities:
                 continue
-            if stock_symbol not in self.algorithm.Securities:
+            if leg2_symbol not in self.algorithm.Securities:
                 continue
 
             # 1. 计算价差信号（封装了价格获取和计算）
@@ -981,12 +954,12 @@ class SpreadManager:
 
             # 3. Debug: 检测异常价差
             if abs(signal.theoretical_spread) > 0.5:  # 超过50%的价差肯定有问题
-                crypto_security = self.algorithm.Securities[crypto_symbol]
-                stock_security = self.algorithm.Securities[stock_symbol]
+                leg1_security = self.algorithm.Securities[leg1_symbol]
+                leg2_security = self.algorithm.Securities[leg2_symbol]
                 self.algorithm.Debug(
                     f"⚠️ 异常价差 {signal.theoretical_spread*100:.2f}% | "
-                    f"{crypto_symbol.Value}: bid={crypto_security.Cache.BidPrice:.2f} ask={crypto_security.Cache.AskPrice:.2f} | "
-                    f"{stock_symbol.Value}: bid={stock_security.Cache.BidPrice:.2f} ask={stock_security.Cache.AskPrice:.2f}"
+                    f"{leg1_symbol.Value}: bid={leg1_security.Cache.BidPrice:.2f} ask={leg1_security.Cache.AskPrice:.2f} | "
+                    f"{leg2_symbol.Value}: bid={leg2_security.Cache.BidPrice:.2f} ask={leg2_security.Cache.AskPrice:.2f}"
                 )
 
             # 4. 通知策略（只传 signal，包含完整上下文）
