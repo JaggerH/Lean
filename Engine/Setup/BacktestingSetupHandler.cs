@@ -29,6 +29,9 @@ using QuantConnect.Orders;
 using QuantConnect.Securities;
 using Newtonsoft.Json;
 using QuantConnect.Algorithm;
+using QuantConnect.Lean.Engine.Setup.MultiAccount;
+using QuantConnect.Securities.MultiAccount;
+using Newtonsoft.Json.Linq;
 
 namespace QuantConnect.Lean.Engine.Setup
 {
@@ -129,48 +132,53 @@ namespace QuantConnect.Lean.Engine.Setup
         public virtual IBrokerage CreateBrokerage(AlgorithmNodePacket algorithmNodePacket, IAlgorithm uninitializedAlgorithm, out IBrokerageFactory factory)
         {
             // Check for multi-account configuration
-            var (accountConfigs, router) = ParseMultiAccountConfig();
+            var configString = Configuration.Config.Get("multi-account-config");
 
-            if (accountConfigs != null && router != null)
+            if (!string.IsNullOrEmpty(configString))
             {
-                Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Multi-account mode enabled with {accountConfigs.Count} accounts");
-
-                // Get the underlying QCAlgorithm instance
-                // For C# algorithms: cast directly
-                // For Python algorithms: unwrap via AlgorithmPythonWrapper.BaseAlgorithm
-                QCAlgorithm algorithm = uninitializedAlgorithm as QCAlgorithm;
-
-                // If not a direct QCAlgorithm (e.g., Python wrapper), try to get BaseAlgorithm
-                if (algorithm == null)
+                try
                 {
-                    var wrapperType = uninitializedAlgorithm.GetType();
-                    var baseAlgorithmProperty = wrapperType.GetProperty("BaseAlgorithm");
-                    if (baseAlgorithmProperty != null)
+                    var configToken = JToken.Parse(configString);
+                    var accountsNode = configToken["accounts"];
+
+                    if (accountsNode != null && accountsNode.HasValues)
                     {
-                        algorithm = baseAlgorithmProperty.GetValue(uninitializedAlgorithm) as QCAlgorithm;
-                        Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Unwrapped Python algorithm to access BaseAlgorithm");
+                        Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Multi-account mode enabled");
+
+                        // Get brokerage factory
+                        var brokerageName = Configuration.Config.Get("brokerage", "DefaultBrokerage");
+                        IBrokerageFactory brokerageFactory = null;
+
+                        try
+                        {
+                            brokerageFactory = Composer.Instance.GetExportedValueByTypeName<IBrokerageFactory>(brokerageName);
+                        }
+                        catch
+                        {
+                            brokerageFactory = new BacktestingBrokerageFactory();
+                        }
+
+                        // Use service classes for configuration and portfolio creation
+                        var configService = new MultiAccountConfigurationService();
+                        var multiConfig = configService.ParseSingleBrokerageConfig(configToken, brokerageFactory, uninitializedAlgorithm);
+                        configService.ValidateConfiguration(multiConfig);
+
+                        Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Parsed {multiConfig.AccountInitialCash.Count} accounts");
+
+                        var portfolioFactory = new MultiAccountPortfolioFactory();
+                        portfolioFactory.CreateAndAttach(
+                            uninitializedAlgorithm,
+                            multiConfig.AccountInitialCash,
+                            multiConfig.AccountCurrencies,
+                            multiConfig.Router);
+
+                        Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
                     }
                 }
-
-                if (algorithm != null)
+                catch (Exception ex)
                 {
-                    // Replace Algorithm's Portfolio with MultiSecurityPortfolioManager
-                    // This MUST happen before algorithm.Initialize() is called
-                    algorithm.Portfolio = new MultiSecurityPortfolioManager(
-                        accountConfigs,
-                        router,
-                        algorithm.Securities,
-                        algorithm.Transactions,
-                        algorithm.Settings,
-                        algorithm.DefaultOrderProperties,
-                        algorithm.TimeKeeper
-                    );
-
-                    Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
-                }
-                else
-                {
-                    Log.Error("BacktestingSetupHandler.CreateBrokerage(): Could not access QCAlgorithm instance, cannot replace Portfolio");
+                    Log.Error($"BacktestingSetupHandler.CreateBrokerage(): Failed to parse multi-account config: {ex.Message}");
+                    throw;
                 }
             }
 
@@ -317,143 +325,6 @@ namespace QuantConnect.Lean.Engine.Setup
             return initializeComplete;
         }
 
-        #region Multi-Account Configuration
-
-        /// <summary>
-        /// Configuration class for multi-account setup
-        /// </summary>
-        private class MultiAccountConfig
-        {
-            [JsonProperty("accounts")]
-            public Dictionary<string, decimal> Accounts { get; set; }
-
-            [JsonProperty("router")]
-            public RouterConfig Router { get; set; }
-        }
-
-        private class RouterConfig
-        {
-            [JsonProperty("type")]
-            public string Type { get; set; }
-
-            [JsonProperty("mappings")]
-            public Dictionary<string, string> Mappings { get; set; }
-
-            [JsonProperty("default")]
-            public string Default { get; set; }
-        }
-
-        /// <summary>
-        /// Parses multi-account configuration from JSON
-        /// </summary>
-        /// <returns>Tuple of (account configs, router) or (null, null) if not configured</returns>
-        private (Dictionary<string, decimal> accounts, IOrderRouter router) ParseMultiAccountConfig()
-        {
-            var configString = Configuration.Config.Get("multi-account-config");
-
-            if (string.IsNullOrEmpty(configString))
-            {
-                return (null, null);
-            }
-
-            try
-            {
-                Log.Trace("BacktestingSetupHandler: Parsing multi-account configuration");
-
-                // Parse JSON configuration
-                var config = JsonConvert.DeserializeObject<MultiAccountConfig>(configString);
-
-                if (config?.Accounts == null || config.Accounts.Count == 0)
-                {
-                    throw new ArgumentException("No accounts defined in multi-account-config");
-                }
-
-                // Log account configurations
-                foreach (var account in config.Accounts)
-                {
-                    Log.Trace($"BacktestingSetupHandler: Account '{account.Key}' with initial cash ${account.Value:N2}");
-                }
-
-                // Create router based on config
-                var router = CreateRouterFromConfig(config);
-
-                return (config.Accounts, router);
-            }
-            catch (JsonException ex)
-            {
-                throw new ArgumentException($"Invalid JSON format in multi-account-config: {ex.Message}", ex);
-            }
-            catch (Exception ex)
-            {
-                throw new ArgumentException($"Failed to parse multi-account-config: {ex.Message}", ex);
-            }
-        }
-
-        /// <summary>
-        /// Creates order router from configuration
-        /// </summary>
-        private IOrderRouter CreateRouterFromConfig(MultiAccountConfig config)
-        {
-            var defaultAccount = config.Router?.Default ?? config.Accounts.Keys.First();
-
-            // If no router config, use simple router to default account
-            if (config.Router == null || config.Router.Mappings == null || config.Router.Mappings.Count == 0)
-            {
-                Log.Trace($"BacktestingSetupHandler: No router mappings, using SimpleOrderRouter to '{defaultAccount}'");
-                return new SimpleOrderRouter(defaultAccount);
-            }
-
-            var routerType = config.Router.Type?.ToLowerInvariant() ?? "market";
-
-            switch (routerType)
-            {
-                case "market":
-                    Log.Trace($"BacktestingSetupHandler: Creating MarketBasedRouter with {config.Router.Mappings.Count} market mappings");
-                    foreach (var mapping in config.Router.Mappings)
-                    {
-                        Log.Trace($"  Market '{mapping.Key}' → Account '{mapping.Value}'");
-                    }
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-
-                case "securitytype":
-                    Log.Trace($"BacktestingSetupHandler: Creating SecurityTypeRouter");
-                    var typeMappings = ParseSecurityTypeMappings(config.Router.Mappings);
-                    return new SecurityTypeRouter(typeMappings, defaultAccount);
-
-                case "symbol":
-                    Log.Error("BacktestingSetupHandler: Symbol-based routing not fully implemented, falling back to MarketBasedRouter");
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-
-                default:
-                    Log.Error($"BacktestingSetupHandler: Unknown router type '{routerType}', using MarketBasedRouter");
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-            }
-        }
-
-        /// <summary>
-        /// Parses security type mappings from string dictionary
-        /// </summary>
-        private Dictionary<SecurityType, string> ParseSecurityTypeMappings(Dictionary<string, string> mappings)
-        {
-            var result = new Dictionary<SecurityType, string>();
-
-            foreach (var kvp in mappings)
-            {
-                if (Enum.TryParse<SecurityType>(kvp.Key, true, out var securityType))
-                {
-                    result[securityType] = kvp.Value;
-                    Log.Trace($"  SecurityType '{securityType}' → Account '{kvp.Value}'");
-                }
-                else
-                {
-                    Log.Error($"BacktestingSetupHandler: Invalid SecurityType '{kvp.Key}' in router mappings");
-                }
-            }
-
-            return result;
-        }
-
-        #endregion
 
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.

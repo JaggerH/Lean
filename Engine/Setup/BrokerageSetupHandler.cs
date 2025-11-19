@@ -37,6 +37,8 @@ using QuantConnect.Util;
 using Newtonsoft.Json;
 using QuantConnect.Algorithm;
 using QuantConnect.Orders;
+using QuantConnect.Lean.Engine.Setup.MultiAccount;
+using QuantConnect.Securities.MultiAccount;
 
 namespace QuantConnect.Lean.Engine.Setup
 {
@@ -86,6 +88,11 @@ namespace QuantConnect.Lean.Engine.Setup
         private IBrokerageFactory _factory;
         private IBrokerage _dataQueueHandlerBrokerage;
         private IBrokerageModel _compositeBrokerageModel;
+
+        // Multi-account services
+        private MultiAccountConfigurationService _configService;
+        private MultiAccountPortfolioFactory _portfolioFactory;
+        private CurrencyConversionCoordinator _conversionCoordinator;
 
         /// <summary>
         /// Initializes a new BrokerageSetupHandler
@@ -140,58 +147,28 @@ namespace QuantConnect.Lean.Engine.Setup
             {
                 Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-brokerage live mode with {multiBrokerageAccounts.Count} accounts");
 
-                // Get the underlying QCAlgorithm instance
-                QCAlgorithm algorithm = uninitializedAlgorithm as QCAlgorithm;
-                if (algorithm == null)
+                // Use MultiAccountConfigurationService to parse and validate configuration
+                _configService = new MultiAccountConfigurationService();
+                var brokerageConfig = new Newtonsoft.Json.Linq.JObject();
+                brokerageConfig["accounts"] = Newtonsoft.Json.Linq.JObject.FromObject(multiBrokerageAccounts);
+                brokerageConfig["router"] = new Newtonsoft.Json.Linq.JObject
                 {
-                    var wrapperType = uninitializedAlgorithm.GetType();
-                    var baseAlgorithmProperty = wrapperType.GetProperty("BaseAlgorithm");
-                    if (baseAlgorithmProperty != null)
-                    {
-                        algorithm = baseAlgorithmProperty.GetValue(uninitializedAlgorithm) as QCAlgorithm;
-                    }
-                }
+                    ["type"] = "Market",
+                    ["mappings"] = Newtonsoft.Json.Linq.JObject.FromObject(multiBrokerageRouter.GetType()
+                        .GetField("_accountRouting", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                        ?.GetValue(multiBrokerageRouter) ?? new Dictionary<string, string>())
+                };
 
-                if (algorithm == null)
-                {
-                    throw new InvalidOperationException("Could not access QCAlgorithm for multi-brokerage setup");
-                }
+                var multiConfig = _configService.ParseMultiBrokerageConfig(brokerageConfig, uninitializedAlgorithm);
+                _configService.ValidateConfiguration(multiConfig);
 
-                // Create account cash configs for MultiSecurityPortfolioManager
-                var accountCash = multiBrokerageAccounts.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.InitialCash);
-
-                // Query default currencies from each brokerage model
-                var accountCurrencies = new Dictionary<string, string>();
-                foreach (var kvp in multiBrokerageAccounts)
-                {
-                    var accountName = kvp.Key;
-                    var accountConfig = kvp.Value;
-
-                    // Find the brokerage factory to get its default currency
-                    var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
-                        bf => bf.BrokerageType.MatchesTypeName(accountConfig.Brokerage)
-                    );
-
-                    // Get the brokerage model to query default currency
-                    var brokerageModel = brokerageFactory.GetBrokerageModel(uninitializedAlgorithm.Transactions);
-                    accountCurrencies[accountName] = brokerageModel.DefaultAccountCurrency;
-
-                    Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Account '{accountName}' will use currency '{brokerageModel.DefaultAccountCurrency}'");
-                }
-
-                // Replace Portfolio with MultiSecurityPortfolioManager
-                algorithm.Portfolio = new MultiSecurityPortfolioManager(
-                    accountCash,
-                    multiBrokerageRouter,
-                    algorithm.Securities,
-                    algorithm.Transactions,
-                    algorithm.Settings,
-                    algorithm.DefaultOrderProperties,
-                    algorithm.TimeKeeper,
-                    accountCurrencies
-                );
-
-                Log.Trace("BrokerageSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
+                // Use MultiAccountPortfolioFactory to create and attach portfolio
+                _portfolioFactory = new MultiAccountPortfolioFactory();
+                _portfolioFactory.CreateAndAttach(
+                    uninitializedAlgorithm,
+                    multiConfig.AccountInitialCash,
+                    multiConfig.AccountCurrencies,
+                    multiConfig.Router);
 
                 // Create MultiBrokerageManager
                 var multiBrokerageManager = new MultiBrokerageManager();
@@ -258,43 +235,28 @@ namespace QuantConnect.Lean.Engine.Setup
             {
                 Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-account mode enabled with {accountConfigs.Count} accounts");
 
-                // Get the underlying QCAlgorithm instance
-                // For C# algorithms: cast directly
-                // For Python algorithms: unwrap via AlgorithmPythonWrapper.BaseAlgorithm
-                QCAlgorithm algorithm = uninitializedAlgorithm as QCAlgorithm;
+                // Get factory to query default currency
+                var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
+                    bf => bf.BrokerageType.MatchesTypeName(liveJob.Brokerage));
 
-                // If not a direct QCAlgorithm (e.g., Python wrapper), try to get BaseAlgorithm
-                if (algorithm == null)
+                // Use MultiAccountConfigurationService to create proper configuration
+                _configService = new MultiAccountConfigurationService();
+                var configToken = new Newtonsoft.Json.Linq.JObject
                 {
-                    var wrapperType = uninitializedAlgorithm.GetType();
-                    var baseAlgorithmProperty = wrapperType.GetProperty("BaseAlgorithm");
-                    if (baseAlgorithmProperty != null)
-                    {
-                        algorithm = baseAlgorithmProperty.GetValue(uninitializedAlgorithm) as QCAlgorithm;
-                        Log.Trace("BrokerageSetupHandler.CreateBrokerage(): Unwrapped Python algorithm to access BaseAlgorithm");
-                    }
-                }
+                    ["accounts"] = Newtonsoft.Json.Linq.JObject.FromObject(accountConfigs)
+                };
 
-                if (algorithm != null)
-                {
-                    // Replace Algorithm's Portfolio with MultiSecurityPortfolioManager
-                    // This MUST happen before algorithm.Initialize() is called
-                    algorithm.Portfolio = new MultiSecurityPortfolioManager(
-                        accountConfigs,
-                        router,
-                        algorithm.Securities,
-                        algorithm.Transactions,
-                        algorithm.Settings,
-                        algorithm.DefaultOrderProperties,
-                        algorithm.TimeKeeper
-                    );
+                var multiConfig = _configService.ParseSingleBrokerageConfig(configToken, brokerageFactory, uninitializedAlgorithm);
+                multiConfig.Router = router; // Use the router from ParseMultiAccountConfig
+                _configService.ValidateConfiguration(multiConfig);
 
-                    Log.Trace("BrokerageSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
-                }
-                else
-                {
-                    Log.Error("BrokerageSetupHandler.CreateBrokerage(): Could not access QCAlgorithm instance, cannot replace Portfolio");
-                }
+                // Use MultiAccountPortfolioFactory to create and attach portfolio
+                _portfolioFactory = new MultiAccountPortfolioFactory();
+                _portfolioFactory.CreateAndAttach(
+                    uninitializedAlgorithm,
+                    multiConfig.AccountInitialCash,
+                    multiConfig.AccountCurrencies,
+                    multiConfig.Router);
             }
 
             // find the correct brokerage factory based on the specified brokerage in the live job packet
@@ -518,13 +480,38 @@ namespace QuantConnect.Lean.Engine.Setup
                 // 3. Main account last (will skip currencies that already have conversions)
                 if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
                 {
-                    // Step 1: Setup sub-account currency conversions
-                    SetupSubAccountCurrencyConversions(multiPortfolio, algorithm, parameters.UniverseSelection);
+                    // Get ISecurityService from universeSelection
+                    var securityServiceField = parameters.UniverseSelection.GetType().GetField("_securityService",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-                    // Step 2: Sync sub-account cash and conversions to main CashBook
-                    SyncSubAccountCashToMain(multiPortfolio);
+                    if (securityServiceField == null)
+                    {
+                        Log.Error("BrokerageSetupHandler.Setup(): Could not get _securityService field from UniverseSelection");
+                    }
+                    else
+                    {
+                        var securityService = securityServiceField.GetValue(parameters.UniverseSelection) as ISecurityService;
+                        if (securityService == null)
+                        {
+                            Log.Error("BrokerageSetupHandler.Setup(): _securityService field value is null or not ISecurityService");
+                        }
+                        else
+                        {
+                            // Initialize coordinator if not already done
+                            if (_conversionCoordinator == null)
+                            {
+                                _conversionCoordinator = new CurrencyConversionCoordinator();
+                            }
 
-                    Log.Trace("BrokerageSetupHandler.Setup(): Sub-account conversions setup and synced to main account");
+                            // Step 1: Setup sub-account currency conversions
+                            _conversionCoordinator.SetupSubAccountConversions(multiPortfolio, algorithm, securityService);
+
+                            // Step 2: Sync sub-account cash and conversions to main CashBook
+                            _conversionCoordinator.SyncConversionsToMain(multiPortfolio);
+
+                            Log.Trace("BrokerageSetupHandler.Setup(): Sub-account conversions setup and synced to main account");
+                        }
+                    }
                 }
 
                 // Step 3: Setup main account currency conversions
@@ -649,171 +636,6 @@ namespace QuantConnect.Lean.Engine.Setup
                 return false;
             }
             return true;
-        }
-
-        /// <summary>
-        /// Sets up currency conversions for all sub-accounts BEFORE syncing to main account.
-        /// This ensures sub-accounts create their own currency conversion subscriptions
-        /// (e.g., Gate creates BTC→USDT), which can then be copied to the main account
-        /// to avoid duplicate/incorrect subscriptions (e.g., BTC→USD).
-        /// </summary>
-        /// <param name="multiPortfolio">The multi-account portfolio manager</param>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="universeSelection">The universe selection instance</param>
-        private void SetupSubAccountCurrencyConversions(
-            MultiSecurityPortfolioManager multiPortfolio,
-            IAlgorithm algorithm,
-            UniverseSelection universeSelection)
-        {
-            Log.Trace("BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Setting up currency conversions for sub-accounts");
-
-            // Get the ISecurityService from universeSelection using reflection
-            var securityServiceField = universeSelection.GetType().GetField("_securityService",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            if (securityServiceField == null)
-            {
-                Log.Error("BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Could not get _securityService field from UniverseSelection");
-                return;
-            }
-
-            var securityService = securityServiceField.GetValue(universeSelection) as ISecurityService;
-            if (securityService == null)
-            {
-                Log.Error("BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): _securityService field value is null or not ISecurityService");
-                return;
-            }
-
-            // Setup currency conversions for each sub-account
-            foreach (var kvp in multiPortfolio.SubAccounts)
-            {
-                var accountName = kvp.Key;
-                var subPortfolio = kvp.Value;
-
-                if (subPortfolio == null)
-                {
-                    continue;
-                }
-
-                Log.Trace($"BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Setting up conversions for sub-account '{accountName}' (AccountCurrency={subPortfolio.CashBook.AccountCurrency})");
-
-                // Log currencies in this sub-account's cashbook for debugging
-                var currencies = string.Join(", ", subPortfolio.CashBook.Select(kvp => $"{kvp.Key}:{kvp.Value.Amount}"));
-                Log.Trace($"BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Sub-account '{accountName}' currencies: [{currencies}]");
-
-                // Set up currency data feeds for this sub-account's cashbook
-                // This will call EnsureCurrencyDataFeed for each currency with the sub-account's AccountCurrency
-                // For example: Gate sub-account will create BTC→USDT conversion using Gate market
-                var configs = subPortfolio.CashBook.EnsureCurrencyDataFeeds(
-                    algorithm.Securities,
-                    algorithm.SubscriptionManager,
-                    algorithm.BrokerageModel.DefaultMarkets,
-                    SecurityChanges.None,
-                    securityService);
-                    // Resolution.Minute,
-                    // accountName);
-
-                if (configs != null && configs.Count > 0)
-                {
-                    Log.Trace($"BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Created {configs.Count} currency conversion configs for sub-account '{accountName}'");
-                }
-            }
-
-            Log.Trace("BrokerageSetupHandler.SetupSubAccountCurrencyConversions(): Completed currency conversion setup for all sub-accounts");
-        }
-
-        /// <summary>
-        /// Synchronizes sub-account cash balances to the main CashBook for accurate reporting
-        /// </summary>
-        /// <param name="multiPortfolio">The multi-account portfolio manager</param>
-        private void SyncSubAccountCashToMain(MultiSecurityPortfolioManager multiPortfolio)
-        {
-            // Log.Trace("BrokerageSetupHandler.SyncSubAccountCashToMain(): Aggregating sub-account cash to main CashBook");
-
-            // Collect all currencies across all sub-accounts
-            // Also track which sub-account has a CurrencyConversion for each currency
-            var currencyTotals = new Dictionary<string, decimal>();
-            var currencyConversions = new Dictionary<string, ICurrencyConversion>();
-
-            foreach (var subAccountKvp in multiPortfolio.SubAccounts)
-            {
-                var accountName = subAccountKvp.Key;
-                var subAccount = subAccountKvp.Value;
-
-                foreach (var cashKvp in subAccount.CashBook)
-                {
-                    var currency = cashKvp.Key;
-                    var amount = cashKvp.Value.Amount;
-                    var currencyConversion = cashKvp.Value.CurrencyConversion;
-
-                    if (!currencyTotals.ContainsKey(currency))
-                    {
-                        currencyTotals[currency] = 0;
-                    }
-
-                    currencyTotals[currency] += amount;
-
-                    // Store the first valid CurrencyConversion we find for this currency
-                    if (!currencyConversions.ContainsKey(currency) && currencyConversion != null &&
-                        currencyConversion.DestinationCurrency != null)
-                    {
-                        currencyConversions[currency] = currencyConversion;
-                    }
-
-                    // Log.Trace($"BrokerageSetupHandler.SyncSubAccountCashToMain(): Account '{accountName}' has {amount} {currency}");
-                }
-            }
-
-            // Update main CashBook with aggregated totals
-            // Access base.CashBook to bypass RoutingCashBook and directly update the main CashBook
-            var baseCashBook = ((SecurityPortfolioManager)multiPortfolio).CashBook;
-
-            foreach (var currencyTotal in currencyTotals)
-            {
-                var currency = currencyTotal.Key;
-                var totalAmount = currencyTotal.Value;
-
-                // Check if this is a stablecoin that needs Identity conversion
-                var isStableCoin = currency == "USDT" || currency == "USDC" ||
-                                   currency == "BUSD" || currency == "DAI" ||
-                                   currency == "TUSD" || currency == "USDP";
-
-                if (baseCashBook.ContainsKey(currency))
-                {
-                    // Update existing currency
-                    baseCashBook[currency].SetAmount(totalAmount);
-                }
-                else
-                {
-                    // Initialize stablecoins with conversion rate 1.0 (pegged to USD)
-                    // Other currencies will be set to 0 and updated later by SetupCurrencyConversions
-                    var conversionRate = isStableCoin ? 1.0m : 0m;
-
-                    baseCashBook.Add(currency, totalAmount, conversionRate);
-
-                    // If we have a CurrencyConversion from a sub-account, copy it to the main cashbook
-                    // This prevents creating incorrect conversions (e.g. BTC→USD when sub-account has BTC→USDT)
-                    if (currencyConversions.ContainsKey(currency))
-                    {
-                        var subAccountConversion = currencyConversions[currency];
-                        baseCashBook[currency].CurrencyConversion = subAccountConversion;
-                    }
-                }
-
-                // For stablecoins, ALWAYS set Identity conversion to prevent subscription creation
-                // This is CRITICAL: without this, SetupCurrencyConversions will try to subscribe to USDTUSD
-                // We do this AFTER add/update because the currency might already exist from initialization
-                if (isStableCoin && currency != baseCashBook.AccountCurrency)
-                {
-                    var cash = baseCashBook[currency];
-                    cash.CurrencyConversion =
-                        QuantConnect.Securities.CurrencyConversion.ConstantCurrencyConversion.Identity(
-                            currency,
-                            baseCashBook.AccountCurrency);
-                }
-
-                // Log.Trace($"BrokerageSetupHandler.SyncSubAccountCashToMain(): Main CashBook {currency} = {totalAmount}");
-            }
         }
 
         /// <summary>

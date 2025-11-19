@@ -31,6 +31,8 @@ using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Lean.Engine.DataFeeds.WorkScheduling;
 using HistoryRequest = QuantConnect.Data.HistoryRequest;
 using QuantConnect.Securities;
+using QuantConnect.Securities.CurrencyConversion;
+using QuantConnect.Securities.MultiAccount;
 
 namespace QuantConnect.Lean.Engine.Setup
 {
@@ -91,6 +93,54 @@ namespace QuantConnect.Lean.Engine.Setup
                 // Single-account mode: create currency conversions for main account
                 universeSelection.EnsureCurrencyDataFeeds(SecurityChanges.None);
             }
+            else
+            {
+                // Multi-account mode: Check for currencies without CurrencyConversion
+                // This handles Force-initialized currencies that were added after holdings loaded
+                var multiPortfolio = (MultiSecurityPortfolioManager)algorithm.Portfolio;
+
+                // Get securityService using reflection
+                var securityServiceField = universeSelection.GetType().GetField("_securityService",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var securityService = securityServiceField?.GetValue(universeSelection) as ISecurityService;
+
+                if (securityService != null)
+                {
+                    foreach (var kvp in multiPortfolio.SubAccounts)
+                    {
+                        var accountName = kvp.Key;
+                        var subAccount = kvp.Value;
+                        var subCashBook = subAccount.CashBook;
+
+                        // Find currencies without CurrencyConversion (Force-initialized ones)
+                        var cashWithoutConversion = subCashBook.Values
+                            .Where(c => c.Symbol != subCashBook.AccountCurrency && c.CurrencyConversion == null)
+                            .ToList();
+
+                        if (cashWithoutConversion.Any())
+                        {
+                            Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                                $"Found {cashWithoutConversion.Count} currencies without CurrencyConversion in sub-account '{accountName}': " +
+                                $"{string.Join(", ", cashWithoutConversion.Select(c => c.Symbol))}");
+
+                            // Create conversions for these currencies
+                            foreach (var cash in cashWithoutConversion)
+                            {
+                                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                                    $"Creating CurrencyConversion for {cash.Symbol} → {subCashBook.AccountCurrency} in account '{accountName}'");
+
+                                cash.EnsureCurrencyDataFeed(
+                                    algorithm.Securities,
+                                    algorithm.SubscriptionManager,
+                                    algorithm.BrokerageModel.DefaultMarkets,
+                                    SecurityChanges.None,
+                                    securityService,
+                                    subCashBook.AccountCurrency);
+                            }
+                        }
+                    }
+                }
+            }
 
             // now set conversion rates
             Func<Cash, bool> cashToUpdateFilter = currenciesToUpdateWhiteList == null
@@ -119,37 +169,59 @@ namespace QuantConnect.Lean.Engine.Setup
                 .Distinct()
                 .ToList();
 
+            // Log diagnostic information for currency conversion setup
+            if (cashToUpdate.Any())
+            {
+                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                    $"Attempting to update conversion rates for {cashToUpdate.Count} currencies: " +
+                    $"{string.Join(", ", cashToUpdate.Select(c => $"{c.Symbol} ({c.Amount})"))}");
+
+                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                    $"Required conversion securities: " +
+                    $"{string.Join(", ", securitiesToUpdate.Select(s => s.Symbol.Value))}");
+            }
+
             var historyRequestFactory = new HistoryRequestFactory(algorithm);
             var historyRequests = new List<HistoryRequest>();
             foreach (var security in securitiesToUpdate)
             {
-                var configs = algorithm
-                    .SubscriptionManager
-                    .SubscriptionDataConfigService
-                    .GetSubscriptionDataConfigs(security.Symbol,
-                        includeInternalConfigs: true);
+                // Only request history if security doesn't have a price yet
+                // With your brokerage implementation, subscriptions already provide initial prices
+                if (security.Price == 0)
+                {
+                    var configs = algorithm
+                        .SubscriptionManager
+                        .SubscriptionDataConfigService
+                        .GetSubscriptionDataConfigs(security.Symbol,
+                            includeInternalConfigs: true);
 
-                // we need to order and select a specific configuration type
-                // so the conversion rate is deterministic
-                var configToUse = configs.OrderBy(x => x.TickType).First();
-                var hours = security.Exchange.Hours;
+                    // we need to order and select a specific configuration type
+                    // so the conversion rate is deterministic
+                    var configToUse = configs.OrderBy(x => x.TickType).First();
+                    var hours = security.Exchange.Hours;
 
-                var resolution = configs.GetHighestResolution();
-                var startTime = historyRequestFactory.GetStartTimeAlgoTz(
-                    security.Symbol,
-                    60,
-                    resolution,
-                    hours,
-                    configToUse.DataTimeZone,
-                    configToUse.Type);
-                var endTime = algorithm.Time;
+                    var resolution = configs.GetHighestResolution();
+                    var startTime = historyRequestFactory.GetStartTimeAlgoTz(
+                        security.Symbol,
+                        60,
+                        resolution,
+                        hours,
+                        configToUse.DataTimeZone,
+                        configToUse.Type);
+                    var endTime = algorithm.Time;
 
-                historyRequests.Add(historyRequestFactory.CreateHistoryRequest(
-                    configToUse,
-                    startTime,
-                    endTime,
-                    security.Exchange.Hours,
-                    resolution));
+                    historyRequests.Add(historyRequestFactory.CreateHistoryRequest(
+                        configToUse,
+                        startTime,
+                        endTime,
+                        security.Exchange.Hours,
+                        resolution));
+                }
+                else
+                {
+                    Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                        $"{security.Symbol} already has price {security.Price}, skipping history request");
+                }
             }
 
             // Attempt to get history for these requests and update cash
@@ -165,6 +237,24 @@ namespace QuantConnect.Lean.Engine.Setup
             foreach (var cash in cashToUpdate)
             {
                 cash.Update();
+            }
+
+            // Log conversion results
+            var successfulConversions = cashToUpdate.Where(c => c.ConversionRate > 0).ToList();
+            var failedConversions = cashToUpdate.Where(c => c.ConversionRate == 0).ToList();
+
+            if (successfulConversions.Any())
+            {
+                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                    $"Successfully updated {successfulConversions.Count} conversion rates: " +
+                    $"{string.Join(", ", successfulConversions.Select(c => $"{c.Symbol}={c.ConversionRate:F4}"))}");
+            }
+
+            if (failedConversions.Any())
+            {
+                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
+                    $"WARNING: {failedConversions.Count} currencies still have zero conversion rate: " +
+                    $"{string.Join(", ", failedConversions.Select(c => c.Symbol))}");
             }
 
             // Any remaining unassigned cash will attempt to fall back to a daily resolution history request to resolve
@@ -208,6 +298,35 @@ namespace QuantConnect.Lean.Engine.Setup
                 }
             }
 
+            // For multi-account mode: Add Identity conversions for USD-pegged stablecoins
+            // Rationale: Main portfolio may aggregate from sub-accounts using different stablecoins
+            // (e.g., Gate.io uses USDT, Coinbase uses USDC), requiring Identity conversions
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager)
+            {
+                var mainCashBook = algorithm.Portfolio.CashBook;
+                var accountCurrency = mainCashBook.AccountCurrency;
+
+                foreach (var cashKvp in mainCashBook)
+                {
+                    var currency = cashKvp.Key;
+                    var cash = cashKvp.Value;
+
+                    // Skip if already has conversion or is the account currency
+                    if (cash.CurrencyConversion != null || currency == accountCurrency)
+                    {
+                        continue;
+                    }
+
+                    // Check if this is a USD-pegged stablecoin that needs Identity conversion
+                    if (UsdPeggedStablecoinRegistry.IsUsdPegged(currency))
+                    {
+                        Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): Adding {currency}→{accountCurrency} Identity conversion for multi-account mode");
+                        cash.CurrencyConversion = ConstantCurrencyConversion.Identity(currency, accountCurrency);
+                        cash.Update();
+                    }
+                }
+            }
+
             Log.Trace($"BaseSetupHandler.SetupCurrencyConversions():{Environment.NewLine}" +
                 $"Account Type: {algorithm.BrokerageModel.AccountType}{Environment.NewLine}{Environment.NewLine}{algorithm.Portfolio.CashBook}");
             // this is useful for debugging
@@ -243,6 +362,13 @@ namespace QuantConnect.Lean.Engine.Setup
         /// <remarks>Should be called after initialize <see cref="LoadBacktestJobAccountCurrency"/></remarks>
         public static void LoadBacktestJobCashAmount(IAlgorithm algorithm, BacktestNodePacket job)
         {
+            // For multi-account mode, skip this method - cash is managed via sub-account aggregation
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager)
+            {
+                Log.Trace("BaseSetupHandler.LoadBacktestJobCashAmount(): Skipped for multi-account mode (cash managed via sub-account aggregation)");
+                return;
+            }
+
             // set initial cash, if present in the job
             if (job.CashAmount.HasValue)
             {

@@ -48,6 +48,14 @@ namespace QuantConnect.Brokerages
         public override IReadOnlyDictionary<SecurityType, string> DefaultMarkets { get; } = GetDefaultMarkets();
 
         /// <summary>
+        /// Gets the default account currency for Gate.io
+        /// </summary>
+        /// <remarks>
+        /// Gate.io uses USDT as the base currency for spot trading in multi-currency mode
+        /// </remarks>
+        public override string DefaultAccountCurrency => "USDT";
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="GateBrokerageModel"/> class
         /// </summary>
         /// <param name="accountType">The type of account to be modeled, defaults to <see cref="AccountType.Margin"/></param>

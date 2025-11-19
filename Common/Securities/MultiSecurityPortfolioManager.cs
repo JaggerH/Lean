@@ -94,17 +94,23 @@ namespace QuantConnect.Securities
                 if (accountCurrencies != null && accountCurrencies.TryGetValue(config.Key, out var currency))
                 {
                     subPortfolio.SetAccountCurrency(currency);
-                    // Log.Trace($"MultiSecurityPortfolioManager: Set account '{config.Key}' currency to {currency}");
+                    Log.Trace($"MultiSecurityPortfolioManager: Account '{config.Key}' using currency '{currency}'");
+                }
+                else
+                {
+                    Log.Trace($"MultiSecurityPortfolioManager: Account '{config.Key}' using default currency '{subPortfolio.CashBook.AccountCurrency}'");
                 }
 
                 subPortfolio.SetCash(config.Value);
                 _subAccounts[config.Key] = subPortfolio;
 
-                // Log.Trace($"MultiSecurityPortfolioManager: Initialized account '{config.Key}' with ${config.Value:N2}");
+                Log.Trace($"MultiSecurityPortfolioManager: Account '{config.Key}' initialized with {config.Value} {subPortfolio.CashBook.AccountCurrency}");
             }
 
-            // Set aggregated cash in main portfolio
+            // Set aggregated cash in main portfolio (for internal state initialization)
+            // This will be cleared and re-aggregated later via SyncConversionsToMain during Setup
             SetCash(accountConfigs.Values.Sum());
+            Log.Trace($"MultiSecurityPortfolioManager: Main portfolio initialized with {accountConfigs.Values.Sum()} {base.CashBook.AccountCurrency} (temporary, will be synced from sub-accounts)");
 
             // Subscribe to main CashBook's Updated event for delayed BaseCurrency synchronization
             // This ensures CurrencyConversion is initialized before syncing to sub-accounts
@@ -113,6 +119,32 @@ namespace QuantConnect.Securities
 
             // Subscribe to SecurityManager changes to sync Securities to sub-accounts
             securityManager.CollectionChanged += OnSecurityManagerCollectionChanged;
+
+            // Process any securities that were added BEFORE the event subscription
+            // This handles test scenarios where securities are added before portfolio creation
+            foreach (var kvp in securityManager)
+            {
+                var security = kvp.Value;
+                var symbol = security.Symbol;
+
+                // Create a temporary order to determine routing target
+                var tempOrder = new MarketOrder(symbol, 0, DateTime.UtcNow);
+                var targetAccount = _router.Route(tempOrder);
+
+                // Add to the target sub-account's SecurityManager
+                if (_subAccountSecurityManagers.TryGetValue(targetAccount, out var subSecurityManager))
+                {
+                    if (!subSecurityManager.ContainsKey(symbol))
+                    {
+                        subSecurityManager.Add(symbol, security);
+                        Log.Trace($"MultiSecurityPortfolioManager: Routed pre-existing {symbol} to account '{targetAccount}'");
+                    }
+                }
+                else
+                {
+                    Log.Error($"MultiSecurityPortfolioManager: ❌ Router returned unknown account '{targetAccount}' for pre-existing {symbol}");
+                }
+            }
 
             // Create RoutingCashBook for transparent currency routing
             _routingCashBook = new RoutingCashBook(base.CashBook, _subAccounts, _subAccountSecurityManagers);
@@ -279,20 +311,21 @@ namespace QuantConnect.Securities
 
                                     // 🔧 DEFENSIVE FIX: Force-initialize BaseCurrency for CryptoFuture securities
                                     // Problem: OnMainCashBookUpdated event may not fire if CurrencyConversion is null
-                                    // Solution: Pre-initialize USDT with rate of 1.0 (will be updated later by event if it fires)
-                                    // This ensures USDT exists in CashBook even if event-based sync fails
+                                    // Solution: Pre-initialize with rate=0 so SetupCurrencyConversions can find it
+                                    // This ensures BaseCurrency exists in CashBook even if event-based sync fails
                                     if (symbol.SecurityType == SecurityType.CryptoFuture)
                                     {
                                         var baseCurrencySymbolStr = baseCurrencySymbol.BaseCurrency.Symbol;
                                         if (!subAccountCashBook.ContainsKey(baseCurrencySymbolStr))
                                         {
-                                            // USDT is pegged to USD, so initial rate is 1.0
-                                            // This will be updated later when EnsureCurrencyDataFeed runs
-                                            var initialRate = baseCurrencySymbolStr == "USDT" ? 1.0m : 1.0m;
-                                            var defensiveCash = new Cash(baseCurrencySymbolStr, 0m, initialRate);
+                                            // Set rate=0 (not 1.0) so SetupCurrencyConversions filter can find it
+                                            // CurrencyConversion will be created by EnsureCurrencyDataFeed
+                                            var defensiveCash = new Cash(baseCurrencySymbolStr, 0m, 0m);
 
                                             subAccountCashBook.Add(baseCurrencySymbolStr, defensiveCash);
-                                            Log.Trace($"MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: 🛡️ Force-initialized '{baseCurrencySymbolStr}' in account '{targetAccount}' for {symbol} (Rate={initialRate})");
+                                            Log.Trace($"MultiSecurityPortfolioManager.OnSecurityManagerCollectionChanged: " +
+                                                $"Pre-initialized '{baseCurrencySymbolStr}' in account '{targetAccount}' for {symbol} " +
+                                                $"(Rate=0, awaiting conversion setup)");
                                         }
                                     }
                                 }
