@@ -155,7 +155,7 @@ namespace QuantConnect.Lean.Engine.Setup
                 {
                     ["type"] = "Market",
                     ["mappings"] = Newtonsoft.Json.Linq.JObject.FromObject(multiBrokerageRouter.GetType()
-                        .GetField("_accountRouting", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                        .GetField("_marketToAccount", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
                         ?.GetValue(multiBrokerageRouter) ?? new Dictionary<string, string>())
                 };
 
