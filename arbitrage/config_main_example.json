@@ -1,0 +1,82 @@
+{
+  "environment": "live-paper",
+  "live-mode": true,
+  "data-queue-handler": ["InteractiveBrokersBrokerage", "GateUnifiedBrokerage"],
+  "setup-handler": "QuantConnect.Lean.Engine.Setup.BrokerageSetupHandler",
+  "result-handler": "QuantConnect.Lean.Engine.Results.LiveTradingResultHandler",
+  "data-feed-handler": "QuantConnect.Lean.Engine.DataFeeds.LiveTradingDataFeed",
+  "real-time-handler": "QuantConnect.Lean.Engine.RealTime.LiveTradingRealTimeHandler",
+  "transaction-handler": "QuantConnect.Lean.Engine.TransactionHandlers.BrokerageTransactionHandler",
+  "history-provider": ["BrokerageHistoryProvider", "SubscriptionDataReaderHistoryProvider"],
+
+  "algorithm-type-name": "Arbitrage",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/main.py",
+
+  "data-folder": "../../../Data/",
+  "cache-location": "../../../Data",
+  "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+
+  "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+  "messaging-handler": "QuantConnect.Messaging.Messaging",
+  "job-queue-handler": "QuantConnect.Queues.JobQueue",
+  "api-handler": "QuantConnect.Api.Api",
+  "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+  "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+
+  "close-automatically": true,
+
+  "maximum-warmup-history-days": 0,
+  "maximum-chart-series": 10,
+
+  "comment-multi-account": "=== Multi-Account Configuration ===",
+  "multi-account-config": {
+    "accounts": {
+      "IBKR": {
+        "initial-cash": 50000,
+        "brokerage": "InteractiveBrokersBrokerage",
+        "market": "USA"
+      },
+      "Gate": {
+        "initial-cash": 50000,
+        "brokerage": "GateUnifiedBrokerage",
+        "market": "Gate"
+      }
+    },
+    "router": {
+      "type": "Market",
+      "mappings": {
+        "USA": "IBKR",
+        "Gate": "Gate"
+      }
+    }
+  },
+
+  "comment-ibkr": "=== Interactive Brokers Configuration (Paper Trading Mode) ===",
+  "ib-account": "U19892138",
+  "ib-user-name": "luanxiaoyue",
+  "ib-password": "676702ava",
+  "ib-host": "127.0.0.1",
+  "ib-port": "4002",
+  "ib-agent-description": "Individual",
+  "ib-tws-dir": "C:\\Jts",
+  "ib-version": "1040",
+  "ib-trading-mode": "paper",
+  "ib-enable-delayed-streaming-data": false,
+  "ib-weekly-restart-utc-time": "22:00:00",
+  "ib-financial-advisors-group-filter": "",
+
+  "comment-gate": "=== Gate.io Configuration ===",
+  "gate-api-key": "9d3fa1eb5bab7722c11453d16f36765c",
+  "gate-api-secret": "6fb181f3ca35a5868ab63315444f35d83bda0d43af791c523ff01a8e88fb4975",
+  "gate-environment": "testnet",
+  "gate-account-mode": "unified",
+  "gate-settle-currency-mode": "multi_currency",
+
+  "comment-data": "=== Data Configuration ===",
+  "data-channel-limit": 20000,
+
+  "comment-limits": "=== Trading Limits ===",
+  "max-trading-pairs": 2,
+  "max-position-per-pair": 100000
+}
