@@ -1298,6 +1298,139 @@ namespace QuantConnect.Tests.Common.Securities.MultiAccount
                 "Cash should remain unchanged after processing null/empty fills");
         }
 
+        [Test]
+        public void SingleGateAccountWithUsdtCurrency()
+        {
+            // Arrange: Create single Gate account with USDT as base currency
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "Gate", 20000m }
+            };
+
+            var accountCurrencies = new Dictionary<string, string>
+            {
+                { "Gate", "USDT" }  // Gate uses USDT as base currency
+            };
+
+            var router = new TestRouter("Gate");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper,
+                accountCurrencies  // Pass currency mappings
+            );
+
+            // Verify Gate account has correct currency
+            var gateAccount = portfolio.GetAccount("Gate");
+            Assert.AreEqual("USDT", gateAccount.CashBook.AccountCurrency,
+                "Gate account should use USDT as base currency");
+            Assert.AreEqual(20000m, gateAccount.CashBook["USDT"].Amount,
+                "Gate account should have 20,000 USDT");
+
+            // Act: Sync currencies to main account
+            var coordinator = new CurrencyConversionCoordinator();
+            coordinator.SyncConversionsToMain(portfolio);
+
+            // Assert: Main account should aggregate currencies from sub-accounts
+            var mainCashBook = ((SecurityPortfolioManager)portfolio).CashBook;
+
+            Assert.IsTrue(mainCashBook.ContainsKey("USDT"),
+                "Main account should have USDT from Gate account");
+            Assert.AreEqual(20000m, mainCashBook["USDT"].Amount,
+                "Main account USDT should equal Gate's 20,000 USDT");
+
+            // Main account should NOT have USD (or should have 0 USD after sync clears it)
+            if (mainCashBook.ContainsKey("USD"))
+            {
+                Assert.AreEqual(0m, mainCashBook["USD"].Amount,
+                    "Main account USD should be 0 when only Gate (USDT) exists");
+            }
+
+            // Verify USDT has proper currency conversion to USD (1:1 for stablecoins)
+            Assert.IsNotNull(mainCashBook["USDT"].CurrencyConversion,
+                "USDT should have currency conversion");
+            Assert.AreEqual("USD", mainCashBook["USDT"].CurrencyConversion.DestinationCurrency,
+                "USDT should convert to USD");
+        }
+
+        [Test]
+        public void MixedIbkrAndGateAccountsWithDifferentCurrencies()
+        {
+            // Arrange: Create IBKR (USD) and Gate (USDT) accounts
+            var accountConfigs = new Dictionary<string, decimal>
+            {
+                { "IBKR", 50000m },  // 50,000 USD
+                { "Gate", 20000m }   // 20,000 USDT
+            };
+
+            var accountCurrencies = new Dictionary<string, string>
+            {
+                { "IBKR", "USD" },   // IBKR uses USD
+                { "Gate", "USDT" }   // Gate uses USDT
+            };
+
+            var router = new TestRouter("IBKR");
+            var securities = CreateSecurityManager();
+            var transactions = new SecurityTransactionManager(null, securities);
+
+            var portfolio = new MultiSecurityPortfolioManager(
+                accountConfigs,
+                router,
+                securities,
+                transactions,
+                new AlgorithmSettings(),
+                null,
+                TimeKeeper,
+                accountCurrencies
+            );
+
+            // Verify each account has correct currency and amount
+            var ibkrAccount = portfolio.GetAccount("IBKR");
+            var gateAccount = portfolio.GetAccount("Gate");
+
+            Assert.AreEqual("USD", ibkrAccount.CashBook.AccountCurrency,
+                "IBKR should use USD");
+            Assert.AreEqual(50000m, ibkrAccount.CashBook["USD"].Amount,
+                "IBKR should have 50,000 USD");
+
+            Assert.AreEqual("USDT", gateAccount.CashBook.AccountCurrency,
+                "Gate should use USDT");
+            Assert.AreEqual(20000m, gateAccount.CashBook["USDT"].Amount,
+                "Gate should have 20,000 USDT");
+
+            // Act: Sync currencies to main account
+            var coordinator = new CurrencyConversionCoordinator();
+            coordinator.SyncConversionsToMain(portfolio);
+
+            // Assert: Main account should aggregate both currencies
+            var mainCashBook = ((SecurityPortfolioManager)portfolio).CashBook;
+
+            Assert.IsTrue(mainCashBook.ContainsKey("USD"),
+                "Main account should have USD from IBKR");
+            Assert.IsTrue(mainCashBook.ContainsKey("USDT"),
+                "Main account should have USDT from Gate");
+
+            Assert.AreEqual(50000m, mainCashBook["USD"].Amount,
+                "Main account should have 50,000 USD from IBKR");
+            Assert.AreEqual(20000m, mainCashBook["USDT"].Amount,
+                "Main account should have 20,000 USDT from Gate");
+
+            // Verify USDT has proper conversion to USD (1:1 Identity conversion)
+            Assert.IsNotNull(mainCashBook["USDT"].CurrencyConversion,
+                "USDT should have currency conversion");
+            Assert.AreEqual("USD", mainCashBook["USDT"].CurrencyConversion.DestinationCurrency,
+                "USDT should convert to USD");
+            Assert.AreEqual(1m, mainCashBook["USDT"].ConversionRate,
+                "USDT should have 1:1 conversion rate to USD");
+        }
+
         // Helper Methods
 
         private static SecurityManager CreateSecurityManager()
