@@ -114,10 +114,6 @@ class GridStrategy(BaseStrategy):
                 pair_symbol, crypto_fee_pct, stock_fee_pct
             )
 
-            # 打印网格线配置摘要
-            summary = self.grid_level_manager.get_summary(pair_symbol)
-            self.algorithm.debug("\n" + summary)
-
         except ValueError as e:
             self.algorithm.error(f"❌ Grid level validation failed: {e}")
             raise
