@@ -83,7 +83,7 @@ class SpotFutureArbitrage(QCAlgorithm):
 
         self.debug("="*60)
         self.debug("✅ Initialization complete!")
-        self.debug(f"📈 Subscribed to {len(self.spread_manager.pairs)} spot-future pairs")
+        self.debug(f"📈 Subscribed to {len(self.spread_manager.get_all_pairs())} spot-future pairs")
         self.debug("="*60)
 
     def _subscribe_trading_pairs(self):

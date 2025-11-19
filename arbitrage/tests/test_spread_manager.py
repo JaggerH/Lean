@@ -145,7 +145,8 @@ class TestSpreadManagerInit(unittest.TestCase):
         # Verify initialization state
         self.assertIsNotNone(manager)
         self.assertEqual(manager.algorithm, algo)
-        self.assertEqual(len(manager._spread_observers), 0)
+        # After Facade refactoring, observers are in _calculator
+        self.assertEqual(len(manager._calculator._spread_observers), 0)
 
         # Verify empty data structures (new structure, no more securities or backward compat properties)
         self.assertEqual(len(manager.pair_mappings), 0)
@@ -392,9 +393,9 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         # Register observer
         manager.register_observer(mock_callback)
 
-        # Verify
-        self.assertEqual(len(manager._spread_observers), 1)
-        self.assertIn(mock_callback, manager._spread_observers)
+        # Verify (after Facade refactoring)
+        self.assertEqual(len(manager._calculator._spread_observers), 1)
+        self.assertIn(mock_callback, manager._calculator._spread_observers)
 
         print("Register observer test passed")
 
@@ -410,8 +411,8 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
         manager.register_observer(mock_callback)
         manager.unregister_observer(mock_callback)
 
-        # Verify
-        self.assertEqual(len(manager._spread_observers), 0)
+        # Verify (after Facade refactoring)
+        self.assertEqual(len(manager._calculator._spread_observers), 0)
 
         print("Unregister observer test passed")
 
