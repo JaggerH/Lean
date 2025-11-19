@@ -135,7 +135,7 @@ class TestSpreadManagerInit(unittest.TestCase):
     """Test SpreadManager initialization"""
 
     def test_init(self):
-        """Test SpreadManager initialization (updated 2025-11-11)"""
+        """Test SpreadManager initialization (updated 2025-11-19)"""
         # Create test algorithm instance
         algo = TestAlgorithm()
 
@@ -147,45 +147,42 @@ class TestSpreadManagerInit(unittest.TestCase):
         self.assertEqual(manager.algorithm, algo)
         self.assertEqual(len(manager._spread_observers), 0)
 
-        # Verify empty data structures (new structure)
+        # Verify empty data structures (new structure, no more securities or backward compat properties)
         self.assertEqual(len(manager.pair_mappings), 0)
         self.assertEqual(len(manager.leg2_to_leg1s), 0)
-        self.assertEqual(len(manager.securities), 0)
-
-        # Verify backward compatibility properties
-        self.assertEqual(len(manager.pairs), 0)
-        self.assertEqual(len(manager.stock_to_cryptos), 0)
-        self.assertEqual(len(manager.stocks), 0)
-        self.assertEqual(len(manager.cryptos), 0)
+        self.assertEqual(len(manager.get_all_pairs()), 0)
 
         print("SpreadManager initialization test passed")
 
     def test_add_pair(self):
-        """Test adding trading pair"""
+        """Test adding trading pair (updated 2025-11-19)"""
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
         # Create Symbol objects
-        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+        leg1_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        leg2_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
 
         # Create mock securities
         class MockSecurity:
             def __init__(self, symbol):
                 self.Symbol = symbol
 
-        crypto = MockSecurity(crypto_symbol)
-        stock = MockSecurity(stock_symbol)
+        leg1 = MockSecurity(leg1_symbol)
+        leg2 = MockSecurity(leg2_symbol)
 
         # Add trading pair
-        manager.add_pair(crypto, stock)
+        manager.add_pair(leg1, leg2)
 
-        # Verify
-        self.assertEqual(len(manager.pairs), 1)
-        self.assertEqual(manager.pairs[crypto.Symbol], stock.Symbol)
-        self.assertEqual(len(manager.stock_to_cryptos[stock.Symbol]), 1)
-        self.assertIn(crypto, manager.cryptos)
-        self.assertIn(stock, manager.stocks)
+        # Verify using new APIs
+        all_pairs = manager.get_all_pairs()
+        self.assertEqual(len(all_pairs), 1)
+        self.assertEqual(all_pairs[0], (leg1_symbol, leg2_symbol))
+
+        # Verify leg2_to_leg1s mapping
+        leg1s = manager.get_leg1s_for_leg2(leg2_symbol)
+        self.assertEqual(len(leg1s), 1)
+        self.assertIn(leg1_symbol, leg1s)
 
         print("Add pair test passed")
 
@@ -225,10 +222,10 @@ class TestSpreadManagerInit(unittest.TestCase):
 
         # Test scenario 1: token higher than stock (CROSSED Market)
         result = SpreadManager.calculate_spread_pct(
-            token_bid=150.5,
-            token_ask=150.6,
-            stock_bid=150.0,
-            stock_ask=150.1
+            leg1_bid=150.5,
+            leg1_ask=150.6,
+            leg2_bid=150.0,
+            leg2_ask=150.1
         )
 
         # Should return dict
@@ -242,10 +239,10 @@ class TestSpreadManagerInit(unittest.TestCase):
 
         # Test scenario 2: token lower than stock (CROSSED Market)
         result = SpreadManager.calculate_spread_pct(
-            token_bid=149.5,
-            token_ask=149.6,
-            stock_bid=150.0,
-            stock_ask=150.1
+            leg1_bid=149.5,
+            leg1_ask=149.6,
+            leg2_bid=150.0,
+            leg2_ask=150.1
         )
 
         # Should return dict
@@ -259,34 +256,6 @@ class TestSpreadManagerInit(unittest.TestCase):
 
         print("Calculate spread percentage test passed")
 
-    def test_get_cryptos_for_stock(self):
-        """Test getting all cryptos for a stock"""
-        algo = TestAlgorithm()
-        manager = SpreadManager(algo)
-
-        # Create mock security helper
-        class MockSecurity:
-            def __init__(self, symbol):
-                self.Symbol = symbol
-
-        # Create one stock with multiple cryptos
-        stock = MockSecurity(Symbol.Create("TSLA", SecurityType.Equity, Market.USA))
-        crypto1 = MockSecurity(Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken))
-        crypto2 = MockSecurity(Symbol.Create("TSLAON", SecurityType.Crypto, Market.Kraken))
-
-        manager.add_pair(crypto1, stock)
-        manager.add_pair(crypto2, stock)
-
-        # Get all cryptos for this stock
-        cryptos = manager.get_cryptos_for_stock(stock.Symbol)
-
-        # Verify
-        self.assertEqual(len(cryptos), 2)
-        self.assertIn(crypto1.Symbol, cryptos)
-        self.assertIn(crypto2.Symbol, cryptos)
-
-        print("Get cryptos for stock test passed")
-
 
 class TestSpreadManagerCalculations(unittest.TestCase):
     """Test spread calculation edge cases"""
@@ -294,10 +263,10 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     def test_calculate_spread_pct_zero_token_bid(self):
         """Test edge case with token bid = 0 (now returns dict)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=0.0,
-            token_ask=150.0,
-            stock_bid=100.0,
-            stock_ask=101.0
+            leg1_bid=0.0,
+            leg1_ask=150.0,
+            leg2_bid=100.0,
+            leg2_ask=101.0
         )
 
         # Should return NO_OPPORTUNITY when token_bid is 0
@@ -310,10 +279,10 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     def test_calculate_spread_pct_zero_token_ask(self):
         """Test edge case with token ask = 0 (now returns dict)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=150.0,
-            token_ask=0.0,
-            stock_bid=100.0,
-            stock_ask=101.0
+            leg1_bid=150.0,
+            leg1_ask=0.0,
+            leg2_bid=100.0,
+            leg2_ask=101.0
         )
 
         # Should return NO_OPPORTUNITY when token_ask is 0
@@ -326,10 +295,10 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     def test_calculate_spread_pct_equal_prices(self):
         """Test all prices equal (now returns dict)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=150.0,
-            token_ask=150.0,
-            stock_bid=150.0,
-            stock_ask=150.0
+            leg1_bid=150.0,
+            leg1_ask=150.0,
+            leg2_bid=150.0,
+            leg2_ask=150.0
         )
 
         # When prices are equal, should be NO_OPPORTUNITY
@@ -342,10 +311,10 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     def test_calculate_spread_pct_large_positive_spread(self):
         """Test large positive spread (token significantly higher than stock)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=200.0,
-            token_ask=201.0,
-            stock_bid=150.0,
-            stock_ask=151.0
+            leg1_bid=200.0,
+            leg1_ask=201.0,
+            leg2_bid=150.0,
+            leg2_ask=151.0
         )
 
         # Should return dict with CROSSED Market (token_bid > stock_ask)
@@ -362,10 +331,10 @@ class TestSpreadManagerCalculations(unittest.TestCase):
     def test_calculate_spread_pct_large_negative_spread(self):
         """Test large negative spread (token significantly lower than stock)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=100.0,
-            token_ask=101.0,
-            stock_bid=150.0,
-            stock_ask=151.0
+            leg1_bid=100.0,
+            leg1_ask=101.0,
+            leg2_bid=150.0,
+            leg2_ask=151.0
         )
 
         # Should return dict with CROSSED Market (stock_bid > token_ask)
@@ -384,13 +353,13 @@ class TestSpreadManagerCalculations(unittest.TestCase):
         # Scenario: short token spread = 0.2%, long token spread = 0.4%
         # Should choose 0.4% as theoretical spread
         result = SpreadManager.calculate_spread_pct(
-            token_bid=150.5,
-            token_ask=150.6,
-            stock_bid=150.0,
-            stock_ask=150.1
+            leg1_bid=150.5,
+            leg1_ask=150.6,
+            leg2_bid=150.0,
+            leg2_ask=150.1
         )
 
-        # This should be CROSSED Market (token_bid=150.5 > stock_ask=150.1)
+        # This should be CROSSED Market (leg1_bid=150.5 > leg2_ask=150.1)
         self.assertIsInstance(result, dict)
         self.assertEqual(result["market_state"], MarketState.CROSSED)
         self.assertEqual(result["direction"], "SHORT_SPREAD")
@@ -600,81 +569,82 @@ class TestSpreadManagerObserverPattern(unittest.TestCase):
 class TestSpreadManagerExecutionEngine(unittest.TestCase):
     """Test ExecutionEngine integration methods"""
 
-    def test_get_pair_symbol_from_crypto_exists(self):
-        """Test getting pair symbol from crypto symbol (exists)"""
+    def test_get_pair_symbol_from_leg1_exists(self):
+        """Test getting pair symbol from leg1 symbol (exists) - updated 2025-11-19"""
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
-        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+        leg1_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        leg2_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
 
         class MockSecurity:
             def __init__(self, symbol):
                 self.Symbol = symbol
 
-        manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
+        manager.add_pair(MockSecurity(leg1_symbol), MockSecurity(leg2_symbol))
 
         # Get pair
-        pair = manager.get_pair_symbol_from_crypto(crypto_symbol)
+        pair = manager.get_pair_symbol_from_leg1(leg1_symbol)
 
         # Verify
         self.assertIsNotNone(pair)
-        self.assertEqual(pair[0], crypto_symbol)
-        self.assertEqual(pair[1], stock_symbol)
+        self.assertEqual(pair[0], leg1_symbol)
+        self.assertEqual(pair[1], leg2_symbol)
 
-        print("Get pair symbol from crypto (exists) test passed")
+        print("Get pair symbol from leg1 (exists) test passed")
 
-    def test_get_pair_symbol_from_crypto_not_exists(self):
-        """Test getting pair symbol from crypto symbol (not exists)"""
+    def test_get_pair_symbol_from_leg1_not_exists(self):
+        """Test getting pair symbol from leg1 symbol (not exists) - updated 2025-11-19"""
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
-        crypto_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        leg1_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
 
         # Get non-existent pair
-        pair = manager.get_pair_symbol_from_crypto(crypto_symbol)
+        pair = manager.get_pair_symbol_from_leg1(leg1_symbol)
 
         # Verify
         self.assertIsNone(pair)
 
-        print("Get pair symbol from crypto (not exists) test passed")
+        print("Get pair symbol from leg1 (not exists) test passed")
 
 
 class TestSpreadManagerManyToOne(unittest.TestCase):
     """Test many-to-one crypto-stock relationships"""
 
-    def test_multiple_cryptos_one_stock(self):
-        """Test multiple cryptos paired with one stock"""
+    def test_multiple_leg1s_one_leg2(self):
+        """Test multiple leg1s paired with one leg2 (updated 2025-11-19)"""
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
-        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
-        crypto1_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
-        crypto2_symbol = Symbol.Create("TSLAON", SecurityType.Crypto, Market.Kraken)
-        crypto3_symbol = Symbol.Create("TSLAzUSD", SecurityType.Crypto, Market.Kraken)
+        leg2_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+        leg1_1_symbol = Symbol.Create("TSLAxUSD", SecurityType.Crypto, Market.Kraken)
+        leg1_2_symbol = Symbol.Create("TSLAON", SecurityType.Crypto, Market.Kraken)
+        leg1_3_symbol = Symbol.Create("TSLAzUSD", SecurityType.Crypto, Market.Kraken)
 
         class MockSecurity:
             def __init__(self, symbol):
                 self.Symbol = symbol
 
-        stock = MockSecurity(stock_symbol)
+        leg2 = MockSecurity(leg2_symbol)
 
-        # Add three cryptos all paired with same stock
-        manager.add_pair(MockSecurity(crypto1_symbol), stock)
-        manager.add_pair(MockSecurity(crypto2_symbol), stock)
-        manager.add_pair(MockSecurity(crypto3_symbol), stock)
+        # Add three leg1s all paired with same leg2
+        manager.add_pair(MockSecurity(leg1_1_symbol), leg2)
+        manager.add_pair(MockSecurity(leg1_2_symbol), leg2)
+        manager.add_pair(MockSecurity(leg1_3_symbol), leg2)
 
-        # Verify stock's crypto list
-        cryptos = manager.get_cryptos_for_stock(stock_symbol)
-        self.assertEqual(len(cryptos), 3)
-        self.assertIn(crypto1_symbol, cryptos)
-        self.assertIn(crypto2_symbol, cryptos)
-        self.assertIn(crypto3_symbol, cryptos)
+        # Verify leg2's leg1 list
+        leg1s = manager.get_leg1s_for_leg2(leg2_symbol)
+        self.assertEqual(len(leg1s), 3)
+        self.assertIn(leg1_1_symbol, leg1s)
+        self.assertIn(leg1_2_symbol, leg1s)
+        self.assertIn(leg1_3_symbol, leg1s)
 
-        # Verify only one stock was added
-        self.assertEqual(len(manager.stocks), 1)
+        # Verify all pairs are registered
+        all_pairs = manager.get_all_pairs()
+        self.assertEqual(len(all_pairs), 3)
 
-        print("Multiple cryptos one stock test passed")
+        print("Multiple leg1s one leg2 test passed")
 
 
 class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
@@ -988,20 +958,20 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
 
         # Test SHORT_SPREAD direction
         result1 = SpreadManager.calculate_spread_pct(
-            token_bid=150.5,  # > stock_ask
-            token_ask=150.6,
-            stock_bid=149.8,
-            stock_ask=150.0
+            leg1_bid=150.5,  # > stock_ask
+            leg1_ask=150.6,
+            leg2_bid=149.8,
+            leg2_ask=150.0
         )
         self.assertIsInstance(result1, dict)
         self.assertEqual(result1["direction"], "SHORT_SPREAD")
 
         # Test LONG_SPREAD direction
         result2 = SpreadManager.calculate_spread_pct(
-            token_bid=149.8,
-            token_ask=150.0,
-            stock_bid=150.5,  # > token_ask
-            stock_ask=150.6
+            leg1_bid=149.8,
+            leg1_ask=150.0,
+            leg2_bid=150.5,  # > token_ask
+            leg2_ask=150.6
         )
         self.assertIsInstance(result2, dict)
         self.assertEqual(result2["direction"], "LONG_SPREAD")
@@ -1011,10 +981,10 @@ class TestSpreadManagerAnalyzeSignal(unittest.TestCase):
     def test_zero_prices_in_signal(self):
         """Test calculate_spread_pct with zero prices (should still return theoretical spread as 0)"""
         result = SpreadManager.calculate_spread_pct(
-            token_bid=0.0,
-            token_ask=150.0,
-            stock_bid=100.0,
-            stock_ask=101.0
+            leg1_bid=0.0,
+            leg1_ask=150.0,
+            leg2_bid=100.0,
+            leg2_ask=101.0
         )
 
         # Verify return type is dict
@@ -1152,9 +1122,10 @@ class TestSpreadManagerPairMapping(unittest.TestCase):
 
         manager.add_pair(crypto, stock)
 
-        # Verify PairMapping was created
-        self.assertIn(crypto_symbol, manager.pair_mappings)
-        mapping = manager.pair_mappings[crypto_symbol]
+        # Verify PairMapping was created (updated 2025-11-19: use tuple key)
+        pair_key = (crypto_symbol, stock_symbol)
+        self.assertIn(pair_key, manager.pair_mappings)
+        mapping = manager.pair_mappings[pair_key]
         self.assertEqual(mapping.leg1, crypto_symbol)
         self.assertEqual(mapping.leg2, stock_symbol)
         self.assertEqual(mapping.pair_type, 'crypto_stock')
@@ -1191,53 +1162,6 @@ class TestSpreadManagerPairMapping(unittest.TestCase):
 
         print("leg2_to_leg1s mapping test passed")
 
-    def test_backward_compatibility_pairs_property(self):
-        """Test backward compatible pairs property"""
-        algo = TestAlgorithm()
-        manager = SpreadManager(algo)
-
-        crypto_symbol = Symbol.Create("AAPLXUSDT", SecurityType.Crypto, Market.Kraken)
-        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
-
-        class MockSecurity:
-            def __init__(self, symbol):
-                self.Symbol = symbol
-
-        manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
-
-        # Verify pairs property works
-        pairs = manager.pairs
-        self.assertIn(crypto_symbol, pairs)
-        self.assertEqual(pairs[crypto_symbol], stock_symbol)
-
-        print("Backward compatible pairs property test passed")
-
-    def test_backward_compatibility_stock_to_cryptos_property(self):
-        """Test backward compatible stock_to_cryptos property"""
-        algo = TestAlgorithm()
-        manager = SpreadManager(algo)
-
-        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
-        crypto1_symbol = Symbol.Create("AAPLXUSDT1", SecurityType.Crypto, Market.Kraken)
-        crypto2_symbol = Symbol.Create("AAPLXUSDT2", SecurityType.Crypto, Market.Kraken)
-
-        class MockSecurity:
-            def __init__(self, symbol):
-                self.Symbol = symbol
-
-        stock = MockSecurity(stock_symbol)
-        manager.add_pair(MockSecurity(crypto1_symbol), stock)
-        manager.add_pair(MockSecurity(crypto2_symbol), stock)
-
-        # Verify stock_to_cryptos property works
-        stock_to_cryptos = manager.stock_to_cryptos
-        self.assertIn(stock_symbol, stock_to_cryptos)
-        self.assertEqual(len(stock_to_cryptos[stock_symbol]), 2)
-        self.assertIn(crypto1_symbol, stock_to_cryptos[stock_symbol])
-        self.assertIn(crypto2_symbol, stock_to_cryptos[stock_symbol])
-
-        print("Backward compatible stock_to_cryptos property test passed")
-
     def test_get_leg1s_for_leg2(self):
         """Test get_leg1s_for_leg2 method"""
         algo = TestAlgorithm()
@@ -1264,7 +1188,7 @@ class TestSpreadManagerPairMapping(unittest.TestCase):
         print("get_leg1s_for_leg2 test passed")
 
     def test_get_pair_symbol_from_leg1(self):
-        """Test get_pair_symbol_from_leg1 method"""
+        """Test get_pair_symbol_from_leg1 and get_pair_symbols_from_leg1 methods (updated 2025-11-19)"""
         algo = TestAlgorithm()
         manager = SpreadManager(algo)
 
@@ -1277,13 +1201,70 @@ class TestSpreadManagerPairMapping(unittest.TestCase):
 
         manager.add_pair(MockSecurity(crypto_symbol), MockSecurity(stock_symbol))
 
-        # Test get_pair_symbol_from_leg1
+        # Test get_pair_symbol_from_leg1 (backward compatible, returns first match)
         pair = manager.get_pair_symbol_from_leg1(crypto_symbol)
         self.assertIsNotNone(pair)
         self.assertEqual(pair[0], crypto_symbol)
         self.assertEqual(pair[1], stock_symbol)
 
+        # Test new get_pair_symbols_from_leg1 (returns list of all matches)
+        pairs = manager.get_pair_symbols_from_leg1(crypto_symbol)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0], (crypto_symbol, stock_symbol))
+
         print("get_pair_symbol_from_leg1 test passed")
+
+    def test_one_leg1_multiple_leg2s(self):
+        """Test one leg1 mapping to multiple leg2s - multi-exchange arbitrage (NEW 2025-11-19)"""
+        algo = TestAlgorithm()
+        manager = SpreadManager(algo)
+
+        # Same spot, different futures (simulating multi-exchange scenario)
+        spot_symbol = Symbol.Create("BTCUSDT", SecurityType.Crypto, Market.Kraken)
+        future1_symbol = Symbol.Create("BTCUSDT_MAR24", SecurityType.CryptoFuture, Market.Kraken)
+        future2_symbol = Symbol.Create("BTCUSDT_JUN24", SecurityType.CryptoFuture, Market.Kraken)
+
+        class MockSecurity:
+            def __init__(self, symbol):
+                self.Symbol = symbol
+
+        spot = MockSecurity(spot_symbol)
+        future1 = MockSecurity(future1_symbol)
+        future2 = MockSecurity(future2_symbol)
+
+        # Add two pairs with same leg1, different leg2s
+        manager.add_pair(spot, future1)
+        manager.add_pair(spot, future2)
+
+        # Verify both pairs exist in pair_mappings
+        self.assertEqual(len(manager.pair_mappings), 2)
+        self.assertIn((spot_symbol, future1_symbol), manager.pair_mappings)
+        self.assertIn((spot_symbol, future2_symbol), manager.pair_mappings)
+
+        # Verify get_pair_symbols_from_leg1 returns both pairs
+        pairs = manager.get_pair_symbols_from_leg1(spot_symbol)
+        self.assertEqual(len(pairs), 2)
+        self.assertIn((spot_symbol, future1_symbol), pairs)
+        self.assertIn((spot_symbol, future2_symbol), pairs)
+
+        # Verify get_all_pairs includes both
+        all_pairs = manager.get_all_pairs()
+        self.assertEqual(len(all_pairs), 2)
+        self.assertIn((spot_symbol, future1_symbol), all_pairs)
+        self.assertIn((spot_symbol, future2_symbol), all_pairs)
+
+        # Verify get_pair_mapping works for both
+        mapping1 = manager.get_pair_mapping((spot_symbol, future1_symbol))
+        self.assertIsNotNone(mapping1)
+        self.assertEqual(mapping1.leg1, spot_symbol)
+        self.assertEqual(mapping1.leg2, future1_symbol)
+
+        mapping2 = manager.get_pair_mapping((spot_symbol, future2_symbol))
+        self.assertIsNotNone(mapping2)
+        self.assertEqual(mapping2.leg1, spot_symbol)
+        self.assertEqual(mapping2.leg2, future2_symbol)
+
+        print("One leg1 to multiple leg2s test passed (multi-exchange arbitrage)")
 
     def test_get_all_pairs_includes_all_types(self):
         """Test get_all_pairs includes all pair types"""
