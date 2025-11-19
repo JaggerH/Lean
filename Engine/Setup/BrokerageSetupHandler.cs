@@ -24,21 +24,14 @@ using QuantConnect.Brokerages;
 using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
-using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
 using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.Engine.TransactionHandlers;
-using QuantConnect.Securities.CurrencyConversion;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
 using QuantConnect.Util;
-using Newtonsoft.Json;
-using QuantConnect.Algorithm;
-using QuantConnect.Orders;
-using QuantConnect.Lean.Engine.Setup.MultiAccount;
-using QuantConnect.Securities.MultiAccount;
 
 namespace QuantConnect.Lean.Engine.Setup
 {
@@ -87,12 +80,6 @@ namespace QuantConnect.Lean.Engine.Setup
         // saves ref to algo so we can call quit if runtime error encountered
         private IBrokerageFactory _factory;
         private IBrokerage _dataQueueHandlerBrokerage;
-        private IBrokerageModel _compositeBrokerageModel;
-
-        // Multi-account services
-        private MultiAccountConfigurationService _configService;
-        private MultiAccountPortfolioFactory _portfolioFactory;
-        private CurrencyConversionCoordinator _conversionCoordinator;
 
         /// <summary>
         /// Initializes a new BrokerageSetupHandler
@@ -100,7 +87,7 @@ namespace QuantConnect.Lean.Engine.Setup
         public BrokerageSetupHandler()
         {
             Errors = new List<Exception>();
-            MaximumRuntime = TimeSpan.FromDays(10*365);
+            MaximumRuntime = TimeSpan.FromDays(10 * 365);
             MaxOrders = int.MaxValue;
         }
 
@@ -140,125 +127,6 @@ namespace QuantConnect.Lean.Engine.Setup
 
             Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): creating brokerage '{liveJob.Brokerage}'");
 
-            // Check for multi-brokerage configuration first (live mode with multiple brokerages)
-            var (multiBrokerageAccounts, multiBrokerageRouter) = ParseMultiBrokerageConfig();
-
-            if (multiBrokerageAccounts != null && multiBrokerageRouter != null)
-            {
-                Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-brokerage live mode with {multiBrokerageAccounts.Count} accounts");
-
-                // Use MultiAccountConfigurationService to parse and validate configuration
-                _configService = new MultiAccountConfigurationService();
-                var brokerageConfig = new Newtonsoft.Json.Linq.JObject();
-                brokerageConfig["accounts"] = Newtonsoft.Json.Linq.JObject.FromObject(multiBrokerageAccounts);
-                brokerageConfig["router"] = new Newtonsoft.Json.Linq.JObject
-                {
-                    ["type"] = "Market",
-                    ["mappings"] = Newtonsoft.Json.Linq.JObject.FromObject(multiBrokerageRouter.GetType()
-                        .GetField("_marketToAccount", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                        ?.GetValue(multiBrokerageRouter) ?? new Dictionary<string, string>())
-                };
-
-                var multiConfig = _configService.ParseMultiBrokerageConfig(brokerageConfig, uninitializedAlgorithm);
-                _configService.ValidateConfiguration(multiConfig);
-
-                // Use MultiAccountPortfolioFactory to create and attach portfolio
-                _portfolioFactory = new MultiAccountPortfolioFactory();
-                _portfolioFactory.CreateAndAttach(
-                    uninitializedAlgorithm,
-                    multiConfig.AccountInitialCash,
-                    multiConfig.AccountCurrencies,
-                    multiConfig.Router);
-
-                // Create MultiBrokerageManager
-                var multiBrokerageManager = new MultiBrokerageManager();
-
-                // Create and register each brokerage
-                IBrokerageFactory firstFactory = null;
-                var brokerageFactories = new List<IBrokerageFactory>();
-
-                foreach (var kvp in multiBrokerageAccounts)
-                {
-                    var accountName = kvp.Key;
-                    var accountConfig = kvp.Value;
-
-                    Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Creating '{accountConfig.Brokerage}' for '{accountName}'");
-
-                    // Find the brokerage factory
-                    var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
-                        bf => bf.BrokerageType.MatchesTypeName(accountConfig.Brokerage)
-                    );
-
-                    // Save first factory for Engine compatibility
-                    if (firstFactory == null)
-                    {
-                        firstFactory = brokerageFactory;
-                    }
-
-                    // Collect all factories for composite model creation
-                    brokerageFactories.Add(brokerageFactory);
-
-                    // Create temporary LiveNodePacket for this brokerage
-                    var brokerageJob = new LiveNodePacket
-                    {
-                        Brokerage = accountConfig.Brokerage,
-                        DataQueueHandler = liveJob.DataQueueHandler,
-                        BrokerageData = new Dictionary<string, string>(liveJob.BrokerageData),
-                        Controls = liveJob.Controls,
-                        UserId = liveJob.UserId,
-                        ProjectId = liveJob.ProjectId
-                    };
-
-                    // Create the brokerage instance
-                    var accountBrokerage = brokerageFactory.CreateBrokerage(brokerageJob, uninitializedAlgorithm);
-
-                    // Register with MultiBrokerageManager
-                    multiBrokerageManager.RegisterBrokerage(accountName, accountBrokerage);
-
-                    Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Registered '{accountConfig.Brokerage}' for '{accountName}'");
-                }
-
-                // Create composite brokerage model with merged DefaultMarkets for multi-account mode
-                _compositeBrokerageModel = CreateCompositeBrokerageModel(brokerageFactories, uninitializedAlgorithm.Transactions);
-                Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Created composite brokerage model with {_compositeBrokerageModel.DefaultMarkets.Count} markets");
-
-                // Return first factory for Engine compatibility (used for BrokerageMessageHandler)
-                _factory = firstFactory;
-                factory = firstFactory;
-                return (IBrokerage)multiBrokerageManager;
-            }
-
-            // Check for multi-account configuration
-            var (accountConfigs, router) = ParseMultiAccountConfig();
-
-            if (accountConfigs != null && router != null)
-            {
-                Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-account mode enabled with {accountConfigs.Count} accounts");
-
-                // Get factory to query default currency
-                var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
-                    bf => bf.BrokerageType.MatchesTypeName(liveJob.Brokerage));
-
-                // Use MultiAccountConfigurationService to create proper configuration
-                _configService = new MultiAccountConfigurationService();
-                var configToken = new Newtonsoft.Json.Linq.JObject
-                {
-                    ["accounts"] = Newtonsoft.Json.Linq.JObject.FromObject(accountConfigs)
-                };
-
-                var multiConfig = _configService.ParseSingleBrokerageConfig(configToken, brokerageFactory, uninitializedAlgorithm);
-                multiConfig.Router = router; // Use the router from ParseMultiAccountConfig
-                _configService.ValidateConfiguration(multiConfig);
-
-                // Use MultiAccountPortfolioFactory to create and attach portfolio
-                _portfolioFactory = new MultiAccountPortfolioFactory();
-                _portfolioFactory.CreateAndAttach(
-                    uninitializedAlgorithm,
-                    multiConfig.AccountInitialCash,
-                    multiConfig.AccountCurrencies,
-                    multiConfig.Router);
-            }
-
             // find the correct brokerage factory based on the specified brokerage in the live job packet
             _factory = Composer.Instance.Single<IBrokerageFactory>(brokerageFactory => brokerageFactory.BrokerageType.MatchesTypeName(liveJob.Brokerage));
             factory = _factory;
@@ -267,6 +135,7 @@ namespace QuantConnect.Lean.Engine.Setup
 
             // initialize the correct brokerage using the resolved factory
             var brokerage = _factory.CreateBrokerage(liveJob, uninitializedAlgorithm);
+            Composer.Instance.AddPart(brokerage);
 
             return brokerage;
         }
@@ -362,29 +231,12 @@ namespace QuantConnect.Lean.Engine.Setup
                 //Execute the initialize code:
                 var controls = liveJob.Controls;
                 var isolator = new Isolator();
-                var initializeComplete = isolator.ExecuteWithTimeLimit(TimeSpan.FromSeconds(300), () =>
+                var initializeComplete = isolator.ExecuteWithTimeLimit(BaseSetupHandler.InitializationTimeout, () =>
                 {
                     try
                     {
                         //Set the default brokerage model before initialize
-                        if (!(brokerage is MultiBrokerageManager))
-                        {
-                            // Single-account mode: use brokerage's model
-                            algorithm.SetBrokerageModel(_factory.GetBrokerageModel(algorithm.Transactions));
-                        }
-                        else
-                        {
-                            // Multi-account mode: use composite model with merged markets
-                            if (_compositeBrokerageModel != null)
-                            {
-                                algorithm.SetBrokerageModel(_compositeBrokerageModel);
-                                Log.Trace($"BrokerageSetupHandler.Setup(): Multi-account mode - set composite brokerage model with {_compositeBrokerageModel.DefaultMarkets.Count} markets");
-                            }
-                            else
-                            {
-                                Log.Error("BrokerageSetupHandler.Setup(): Multi-account mode but composite brokerage model is null");
-                            }
-                        }
+                        algorithm.SetBrokerageModel(_factory.GetBrokerageModel(algorithm.Transactions));
 
                         //Margin calls are disabled by default in live mode
                         algorithm.Portfolio.MarginCallModel = MarginCallModel.Null;
@@ -469,53 +321,11 @@ namespace QuantConnect.Lean.Engine.Setup
                 BaseSetupHandler.SetBrokerageTradingDayPerYear(algorithm);
 
                 var dataAggregator = Composer.Instance.GetPart<IDataAggregator>();
-                dataAggregator?.Initialize(new () { AlgorithmSettings = algorithm.Settings });
+                dataAggregator?.Initialize(new() { AlgorithmSettings = algorithm.Settings });
 
                 //Finalize Initialization
                 algorithm.PostInitialize();
 
-                // For multi-account mode, setup currency conversions in the correct order:
-                // 1. Sub-accounts first (create their own conversions, e.g., Gate: BTC→USDT)
-                // 2. Sync sub-account conversions to main (copy BTC conversion from Gate)
-                // 3. Main account last (will skip currencies that already have conversions)
-                if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
-                {
-                    // Get ISecurityService from universeSelection
-                    var securityServiceField = parameters.UniverseSelection.GetType().GetField("_securityService",
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-                    if (securityServiceField == null)
-                    {
-                        Log.Error("BrokerageSetupHandler.Setup(): Could not get _securityService field from UniverseSelection");
-                    }
-                    else
-                    {
-                        var securityService = securityServiceField.GetValue(parameters.UniverseSelection) as ISecurityService;
-                        if (securityService == null)
-                        {
-                            Log.Error("BrokerageSetupHandler.Setup(): _securityService field value is null or not ISecurityService");
-                        }
-                        else
-                        {
-                            // Initialize coordinator if not already done
-                            if (_conversionCoordinator == null)
-                            {
-                                _conversionCoordinator = new CurrencyConversionCoordinator();
-                            }
-
-                            // Step 1: Setup sub-account currency conversions
-                            _conversionCoordinator.SetupSubAccountConversions(multiPortfolio, algorithm, securityService);
-
-                            // Step 2: Sync sub-account cash and conversions to main CashBook
-                            _conversionCoordinator.SyncConversionsToMain(multiPortfolio);
-
-                            Log.Trace("BrokerageSetupHandler.Setup(): Sub-account conversions setup and synced to main account");
-                        }
-                    }
-                }
-
-                // Step 3: Setup main account currency conversions
-                // (Will skip currencies that already have DestinationCurrency set from sub-accounts)
                 BaseSetupHandler.SetupCurrencyConversions(algorithm, parameters.UniverseSelection);
 
                 if (algorithm.Portfolio.TotalPortfolioValue == 0)
@@ -561,72 +371,18 @@ namespace QuantConnect.Lean.Engine.Setup
             Log.Trace("BrokerageSetupHandler.Setup(): Fetching cash balance from brokerage...");
             try
             {
-                // Multi-brokerage mode: route cash to sub-accounts
-                if (brokerage is MultiBrokerageManager multiBrokerage &&
-                    algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+                // set the algorithm's cash balance for each currency
+                var cashBalance = brokerage.GetCashBalance();
+                foreach (var cash in cashBalance)
                 {
-                    // Clear sub-account CashBooks before loading real balances (like single-account does at line 419-426)
-                    foreach (var accountName in multiBrokerage.GetAccountNames())
+                    if (!CashAmountUtil.ShouldAddCashBalance(cash, algorithm.AccountCurrency))
                     {
-                        var subAccount = multiPortfolio.GetAccount(accountName);
-
-                        // Zero all currencies in this sub-account
-                        foreach (var kvp in subAccount.CashBook)
-                        {
-                            kvp.Value.SetAmount(0);
-                        }
-
-                        Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Cleared initial cash for account '{accountName}'");
+                        Log.Trace($"BrokerageSetupHandler.Setup(): Skipping {cash.Currency} cash because quantity is zero");
+                        continue;
                     }
 
-                    // Load real balances from each brokerage to its corresponding sub-account
-                    foreach (var accountName in multiBrokerage.GetAccountNames())
-                    {
-                        var accountBrokerage = multiBrokerage.GetBrokerage(accountName);
-                        var cashBalance = accountBrokerage.GetCashBalance();
-                        var subAccount = multiPortfolio.GetAccount(accountName);
-
-                        foreach (var cash in cashBalance)
-                        {
-                            // Initialize stablecoins with conversion rate 1.0 (pegged to USD)
-                            // Other currencies will be initialized to 0 and updated later by SetupCurrencyConversions
-                            var isStableCoin = cash.Currency == "USDT" || cash.Currency == "USDC" ||
-                                               cash.Currency == "BUSD" || cash.Currency == "DAI" ||
-                                               cash.Currency == "TUSD" || cash.Currency == "USDP";
-                            var conversionRate = isStableCoin ? 1.0m : 0m;
-
-                            // Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount} for account '{accountName}' (ConversionRate={conversionRate})");
-                            subAccount.SetCash(cash.Currency, cash.Amount, conversionRate);
-
-                            // For stablecoins, set Identity conversion to prevent subscription creation
-                            if (isStableCoin)
-                            {
-                                var subAccountCashBook = multiPortfolio.GetAccount(accountName).CashBook;
-                                var accountCurrency = subAccountCashBook.AccountCurrency;
-
-                                // Set Identity conversion with proper DestinationCurrency
-                                // This prevents EnsureCurrencyDataFeed() from creating subscriptions
-                                subAccountCashBook[cash.Currency].CurrencyConversion =
-                                    QuantConnect.Securities.CurrencyConversion.ConstantCurrencyConversion.Identity(cash.Currency, accountCurrency);
-
-                                Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Set {cash.Currency} as stablecoin identity conversion for account '{accountName}' (AccountCurrency={accountCurrency})");
-                            }
-                        }
-                    }
-
-                    // Note: Do NOT sync to main CashBook here!
-                    // SyncSubAccountCashToMain will be called later (after SetupSubAccountCurrencyConversions)
-                    // to ensure sub-account CurrencyConversions are copied to main account
-                }
-                else
-                {
-                    // Single-brokerage mode (existing logic unchanged)
-                    var cashBalance = brokerage.GetCashBalance();
-                    foreach (var cash in cashBalance)
-                    {
-                        Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount}");
-                        algorithm.Portfolio.SetCash(cash.Currency, cash.Amount, 0);
-                    }
+                    Log.Trace($"BrokerageSetupHandler.Setup(): Setting {cash.Currency} cash to {cash.Amount}");
+                    algorithm.Portfolio.SetCash(cash.Currency, cash.Amount, 0);
                 }
             }
             catch (Exception err)
@@ -759,236 +515,6 @@ namespace QuantConnect.Lean.Engine.Setup
             Errors.Add(new AlgorithmSetupException("During the algorithm initialization, the following exception has occurred: " + message, inner));
         }
 
-        #region Multi-Account Configuration
-
-        /// <summary>
-        /// Configuration class for multi-account setup
-        /// </summary>
-        private class MultiAccountConfig
-        {
-            [JsonProperty("accounts")]
-            public Dictionary<string, object> Accounts { get; set; }
-
-            [JsonProperty("router")]
-            public RouterConfig Router { get; set; }
-        }
-
-        /// <summary>
-        /// Account configuration for multi-brokerage live mode
-        /// </summary>
-        private class AccountBrokerageConfig
-        {
-            [JsonProperty("initial-cash")]
-            public decimal InitialCash { get; set; }
-
-            [JsonProperty("brokerage")]
-            public string Brokerage { get; set; }
-
-            [JsonProperty("market")]
-            public string Market { get; set; }
-        }
-
-        private class RouterConfig
-        {
-            [JsonProperty("type")]
-            public string Type { get; set; }
-
-            [JsonProperty("mappings")]
-            public Dictionary<string, string> Mappings { get; set; }
-
-            [JsonProperty("default")]
-            public string Default { get; set; }
-        }
-
-        /// <summary>
-        /// Parses multi-account configuration from JSON
-        /// </summary>
-        /// <returns>Tuple of (account configs, router) or (null, null) if not configured</returns>
-        private (Dictionary<string, decimal> accounts, IOrderRouter router) ParseMultiAccountConfig()
-        {
-            var configString = Configuration.Config.Get("multi-account-config");
-
-            if (string.IsNullOrEmpty(configString))
-            {
-                return (null, null);
-            }
-
-            try
-            {
-                Log.Trace("BrokerageSetupHandler: Parsing multi-account configuration");
-
-                // Parse JSON configuration
-                var config = JsonConvert.DeserializeObject<MultiAccountConfig>(configString);
-
-                if (config?.Accounts == null || config.Accounts.Count == 0)
-                {
-                    throw new ArgumentException("No accounts defined in multi-account-config");
-                }
-
-                // Convert object to decimal (handles both old and new format for backtesting)
-                var accountCash = new Dictionary<string, decimal>();
-                foreach (var account in config.Accounts)
-                {
-                    var cash = Convert.ToDecimal(account.Value);
-                    accountCash[account.Key] = cash;
-                    Log.Trace($"BrokerageSetupHandler: Account '{account.Key}' with initial cash ${cash:N2}");
-                }
-
-                // Create router based on config
-                var router = CreateRouterFromConfig(config);
-
-                return (accountCash, router);
-            }
-            catch (JsonException ex)
-            {
-                throw new ArgumentException($"Invalid JSON format in multi-account-config: {ex.Message}", ex);
-            }
-            catch (Exception ex)
-            {
-                throw new ArgumentException($"Failed to parse multi-account-config: {ex.Message}", ex);
-            }
-        }
-
-        /// <summary>
-        /// Parses multi-brokerage configuration from JSON
-        /// Returns account-to-brokerage mappings and router
-        /// </summary>
-        private (Dictionary<string, AccountBrokerageConfig> accounts, IOrderRouter router) ParseMultiBrokerageConfig()
-        {
-            var configString = Configuration.Config.Get("multi-account-config");
-
-            if (string.IsNullOrEmpty(configString))
-            {
-                return (null, null);
-            }
-
-            try
-            {
-                Log.Trace("BrokerageSetupHandler: Parsing multi-brokerage configuration");
-
-                // Parse JSON configuration
-                var config = JsonConvert.DeserializeObject<MultiAccountConfig>(configString);
-
-                if (config?.Accounts == null || config.Accounts.Count == 0)
-                {
-                    return (null, null);
-                }
-
-                // Check if this is multi-brokerage format
-                var firstAccount = config.Accounts.First().Value;
-                if (firstAccount is not Newtonsoft.Json.Linq.JObject)
-                {
-                    // Simple format, not multi-brokerage
-                    return (null, null);
-                }
-
-                // Parse accounts as AccountBrokerageConfig objects
-                var accountBrokerages = new Dictionary<string, AccountBrokerageConfig>();
-
-                foreach (var kvp in config.Accounts)
-                {
-                    var accountName = kvp.Key;
-                    var accountValue = kvp.Value;
-
-                    // Deserialize the account config
-                    var accountConfig = JsonConvert.DeserializeObject<AccountBrokerageConfig>(accountValue.ToString());
-
-                    if (accountConfig == null)
-                    {
-                        throw new ArgumentException($"Invalid configuration for account '{accountName}'");
-                    }
-
-                    if (string.IsNullOrEmpty(accountConfig.Brokerage))
-                    {
-                        throw new ArgumentException($"Account '{accountName}' must specify a 'brokerage'");
-                    }
-
-                    accountBrokerages[accountName] = accountConfig;
-
-                    Log.Trace($"BrokerageSetupHandler: Account '{accountName}' → Brokerage '{accountConfig.Brokerage}', Market '{accountConfig.Market}', Cash ${accountConfig.InitialCash:N2}");
-                }
-
-                // Create router based on config
-                var router = CreateRouterFromConfig(config);
-
-                return (accountBrokerages, router);
-            }
-            catch (JsonException ex)
-            {
-                throw new ArgumentException($"Invalid JSON format in multi-account-config: {ex.Message}", ex);
-            }
-            catch (Exception ex)
-            {
-                throw new ArgumentException($"Failed to parse multi-brokerage-config: {ex.Message}", ex);
-            }
-        }
-
-        /// <summary>
-        /// Creates order router from configuration
-        /// </summary>
-        private IOrderRouter CreateRouterFromConfig(MultiAccountConfig config)
-        {
-            var defaultAccount = config.Router?.Default ?? config.Accounts.Keys.First();
-
-            // If no router config, use simple router to default account
-            if (config.Router == null || config.Router.Mappings == null || config.Router.Mappings.Count == 0)
-            {
-                Log.Trace($"BrokerageSetupHandler: No router mappings, using SimpleOrderRouter to '{defaultAccount}'");
-                return new SimpleOrderRouter(defaultAccount);
-            }
-
-            var routerType = config.Router.Type?.ToLowerInvariant() ?? "market";
-
-            switch (routerType)
-            {
-                case "market":
-                    Log.Trace($"BrokerageSetupHandler: Creating MarketBasedRouter with {config.Router.Mappings.Count} market mappings");
-                    foreach (var mapping in config.Router.Mappings)
-                    {
-                        Log.Trace($"  Market '{mapping.Key}' → Account '{mapping.Value}'");
-                    }
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-
-                case "securitytype":
-                    Log.Trace($"BrokerageSetupHandler: Creating SecurityTypeRouter");
-                    var typeMappings = ParseSecurityTypeMappings(config.Router.Mappings);
-                    return new SecurityTypeRouter(typeMappings, defaultAccount);
-
-                case "symbol":
-                    Log.Error("BrokerageSetupHandler: Symbol-based routing not fully implemented, falling back to MarketBasedRouter");
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-
-                default:
-                    Log.Error($"BrokerageSetupHandler: Unknown router type '{routerType}', using MarketBasedRouter");
-                    return new MarketBasedRouter(config.Router.Mappings, defaultAccount);
-            }
-        }
-
-        /// <summary>
-        /// Parses security type mappings from string dictionary
-        /// </summary>
-        private Dictionary<SecurityType, string> ParseSecurityTypeMappings(Dictionary<string, string> mappings)
-        {
-            var result = new Dictionary<SecurityType, string>();
-
-            foreach (var kvp in mappings)
-            {
-                if (Enum.TryParse<SecurityType>(kvp.Key, true, out var securityType))
-                {
-                    result[securityType] = kvp.Value;
-                    Log.Trace($"  SecurityType '{securityType}' → Account '{kvp.Value}'");
-                }
-                else
-                {
-                    Log.Error($"BrokerageSetupHandler: Invalid SecurityType '{kvp.Key}' in router mappings");
-                }
-            }
-
-            return result;
-        }
-
-        #endregion
-
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
         /// </summary>
@@ -1022,54 +548,6 @@ namespace QuantConnect.Lean.Engine.Setup
                 {
                     Log.Trace("BrokerageSetupHandler.Setup(): did not find any data queue handler to dispose");
                 }
-            }
-        }
-
-        /// <summary>
-        /// Creates a composite brokerage model that merges DefaultMarkets from multiple brokerages
-        /// for multi-account mode currency conversion
-        /// </summary>
-        private IBrokerageModel CreateCompositeBrokerageModel(List<IBrokerageFactory> brokerageFactories, SecurityTransactionManager transactions)
-        {
-            // Collect DefaultMarkets from all brokerage models
-            var mergedMarkets = new Dictionary<SecurityType, string>();
-
-            foreach (var factory in brokerageFactories)
-            {
-                var brokerageModel = factory.GetBrokerageModel(transactions);
-                var markets = brokerageModel.DefaultMarkets;
-
-                foreach (var kvp in markets)
-                {
-                    // If market not yet added, add it
-                    // If already exists, keep the first one (could also implement priority logic)
-                    if (!mergedMarkets.ContainsKey(kvp.Key))
-                    {
-                        mergedMarkets[kvp.Key] = kvp.Value;
-                        Log.Trace($"BrokerageSetupHandler.CreateCompositeBrokerageModel(): Added market {kvp.Value} for {kvp.Key}");
-                    }
-                }
-            }
-
-            // Create a custom brokerage model with merged markets
-            return new CompositeBrokerageModel(mergedMarkets);
-        }
-
-        /// <summary>
-        /// Composite brokerage model that combines DefaultMarkets from multiple brokerages
-        /// </summary>
-        private class CompositeBrokerageModel : DefaultBrokerageModel
-        {
-            private readonly IReadOnlyDictionary<SecurityType, string> _mergedMarkets;
-
-            public CompositeBrokerageModel(Dictionary<SecurityType, string> mergedMarkets)
-            {
-                _mergedMarkets = mergedMarkets;
-            }
-
-            public override IReadOnlyDictionary<SecurityType, string> DefaultMarkets
-            {
-                get { return _mergedMarkets; }
             }
         }
 
