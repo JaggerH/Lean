@@ -305,6 +305,16 @@ namespace QuantConnect.Lean.Engine.Setup
             MaximumRuntime = TimeSpan.FromMinutes(job.Controls.MaximumRuntimeMinutes);
 
             BaseSetupHandler.SetupCurrencyConversions(algorithm, parameters.UniverseSelection);
+
+            // For multi-account portfolios, sync currencies from sub-accounts to main account
+            // This ensures StartingPortfolioValue reflects the correct aggregated currencies
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+            {
+                var coordinator = new CurrencyConversionCoordinator();
+                coordinator.SyncConversionsToMain(multiPortfolio);
+                Log.Trace("BacktestingSetupHandler: Synced multi-account currencies to main portfolio");
+            }
+
             StartingPortfolioValue = algorithm.Portfolio.Cash;
 
             // Get and set maximum orders for this job

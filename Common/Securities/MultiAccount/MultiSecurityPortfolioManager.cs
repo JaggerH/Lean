@@ -107,10 +107,9 @@ namespace QuantConnect.Securities.MultiAccount
                 Log.Trace($"MultiSecurityPortfolioManager: Account '{config.Key}' initialized with {config.Value} {subPortfolio.CashBook.AccountCurrency}");
             }
 
-            // Set aggregated cash in main portfolio (for internal state initialization)
-            // This will be cleared and re-aggregated later via SyncConversionsToMain during Setup
-            SetCash(accountConfigs.Values.Sum());
-            Log.Trace($"MultiSecurityPortfolioManager: Main portfolio initialized with {accountConfigs.Values.Sum()} {base.CashBook.AccountCurrency} (temporary, will be synced from sub-accounts)");
+            // Set placeholder cash in main portfolio (will be replaced by SyncConversionsToMain during Setup)
+            // This ensures CashBook is initialized before SyncConversionsToMain aggregates from sub-accounts
+            SetCash(0);
 
             // Subscribe to main CashBook's Updated event for delayed BaseCurrency synchronization
             // This ensures CurrencyConversion is initialized before syncing to sub-accounts
