@@ -27,7 +27,10 @@ SpreadMatcher - 配对交易价差撮合器（纯静态方法实现）
     )
 
     if result and result.executable:
-        tickets = self.spread_market_order(result.legs)
+        tickets = []
+        for symbol, qty in result.legs:
+            ticket = self.market_order(symbol, qty)
+            tickets.append(ticket)
 """
 
 from AlgorithmImports import QCAlgorithm, Symbol
@@ -119,7 +122,10 @@ class SpreadMatcher:
             )
 
             if result and result.executable:
-                tickets = self.spread_market_order(result.legs)
+                tickets = []
+                for symbol, qty in result.legs:
+                    ticket = self.market_order(symbol, qty)
+                    tickets.append(ticket)
         """
         # 1. 检测 OrderbookDepth 支持情况
         has_ob1 = SpreadMatcher._has_orderbook_depth(algorithm, symbol1)

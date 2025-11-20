@@ -118,11 +118,6 @@ namespace QuantConnect.Orders.Fills
                         ? PythonWrapper.ComboLegLimitFill(parameters.Order, parameters)
                         : ComboLegLimitFill(parameters.Order, parameters);
                     break;
-                case OrderType.SpreadMarket:
-                    orderEvents = PythonWrapper != null
-                        ? PythonWrapper.SpreadMarketFill(parameters.Order, parameters)
-                        : SpreadMarketFill(parameters.Order, parameters);
-                    break;
                 default:
                     throw new ArgumentOutOfRangeException();
             }
@@ -155,32 +150,6 @@ namespace QuantConnect.Orders.Fills
             return fills;
         }
 
-        /// <summary>
-        /// Default spread market fill model for the base security class. Fills at the last traded price for each leg with atomic execution guarantee.
-        /// Designed for arbitrage and spread trading strategies requiring simultaneous execution across multiple correlated assets.
-        /// </summary>
-        /// <param name="order">Order to fill</param>
-        /// <param name="parameters">Fill parameters for the order</param>
-        /// <returns>Order fill information detailing the average price and quantity filled for each leg. If any of the fills fails, none of the orders will be filled and the returned list will be empty</returns>
-        public virtual List<OrderEvent> SpreadMarketFill(Order order, FillModelParameters parameters)
-        {
-            var fills = new List<OrderEvent>(parameters.SecuritiesForOrders.Count);
-            foreach (var kvp in parameters.SecuritiesForOrders.OrderBy(x => x.Key.Id))
-            {
-                var targetOrder = kvp.Key;
-                var security = kvp.Value;
-                var fill = InternalMarketFill(security, targetOrder, targetOrder.Quantity);
-                if (fill.Status != OrderStatus.Filled)
-                {
-                    // Atomic execution: if any leg fails to fill, cancel all fills
-                    return new List<OrderEvent>();
-                }
-
-                fills.Add(fill);
-            }
-
-            return fills;
-        }
 
         /// <summary>
         /// Default combo limit fill model for the base security class. Fills at the sum of prices for the assets of every leg.

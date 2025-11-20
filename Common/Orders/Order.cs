@@ -472,10 +472,6 @@ namespace QuantConnect.Orders
                     order = new ComboMarketOrder(symbol, quantity, time, groupOrderManager, tag, properties);
                     break;
 
-                case OrderType.SpreadMarket:
-                    order = new SpreadMarketOrder(symbol, quantity, time, groupOrderManager, tag, properties);
-                    break;
-
                 default:
                     throw new ArgumentOutOfRangeException();
             }
