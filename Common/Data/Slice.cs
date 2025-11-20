@@ -38,6 +38,7 @@ namespace QuantConnect.Data
         private OrderbookDepths _orderbookDepths;
         private OptionChains _optionChains;
         private FuturesChains _futuresChains;
+        private QuantConnect.Data.Market.TradingPairs _tradingPairs;
 
         // aux data
         private Splits _splits;
@@ -178,6 +179,14 @@ namespace QuantConnect.Data
         }
 
         /// <summary>
+        /// Gets the <see cref="Market.TradingPairs"/> for this slice of data
+        /// </summary>
+        public QuantConnect.Data.Market.TradingPairs TradingPairs
+        {
+            get { return _tradingPairs; }
+        }
+
+        /// <summary>
         /// Gets the number of symbols held in this slice
         /// </summary>
         public override int Count
@@ -257,6 +266,7 @@ namespace QuantConnect.Data
                 CreateCollection<Delistings, Delisting>(time, data),
                 CreateCollection<SymbolChangedEvents, SymbolChangedEvent>(time, data),
                 CreateCollection<MarginInterestRates, MarginInterestRate>(time, data),
+                null, // tradingPairs - not created from raw data
                 utcTime: utcTime)
         {
         }
@@ -290,6 +300,7 @@ namespace QuantConnect.Data
             _delistings = slice._delistings;
             _symbolChangedEvents = slice._symbolChangedEvents;
             _marginInterestRates = slice._marginInterestRates;
+            _tradingPairs = slice._tradingPairs;
         }
 
         /// <summary>
@@ -308,9 +319,10 @@ namespace QuantConnect.Data
         /// <param name="delistings">The delistings for this slice</param>
         /// <param name="symbolChanges">The symbol changed events for this slice</param>
         /// <param name="marginInterestRates">The margin interest rates for this slice</param>
+        /// <param name="tradingPairs">The trading pairs for this slice</param>
         /// <param name="utcTime">The timestamp for this slice of data in UTC</param>
         /// <param name="hasData">true if this slice contains data</param>
-        public Slice(DateTime time, List<BaseData> data, TradeBars tradeBars, QuoteBars quoteBars, Ticks ticks, OrderbookDepths orderbookDepths, OptionChains optionChains, FuturesChains futuresChains, Splits splits, Dividends dividends, Delistings delistings, SymbolChangedEvents symbolChanges, MarginInterestRates marginInterestRates, DateTime utcTime, bool? hasData = null)
+        public Slice(DateTime time, List<BaseData> data, TradeBars tradeBars, QuoteBars quoteBars, Ticks ticks, OrderbookDepths orderbookDepths, OptionChains optionChains, FuturesChains futuresChains, Splits splits, Dividends dividends, Delistings delistings, SymbolChangedEvents symbolChanges, MarginInterestRates marginInterestRates, QuantConnect.Data.Market.TradingPairs tradingPairs, DateTime utcTime, bool? hasData = null)
         {
             Time = time;
             UtcTime = utcTime;
@@ -333,6 +345,7 @@ namespace QuantConnect.Data
             _delistings = delistings;
             _symbolChangedEvents = symbolChanges;
             _marginInterestRates = marginInterestRates;
+            _tradingPairs = tradingPairs;
         }
 
         /// <summary>
@@ -588,6 +601,7 @@ namespace QuantConnect.Data
             _delistings = (Delistings)UpdateCollection(_delistings, inputSlice.Delistings);
             _symbolChangedEvents = (SymbolChangedEvents)UpdateCollection(_symbolChangedEvents, inputSlice.SymbolChangedEvents);
             _marginInterestRates = (MarginInterestRates)UpdateCollection(_marginInterestRates, inputSlice.MarginInterestRates);
+            _tradingPairs = (QuantConnect.Data.Market.TradingPairs)UpdateCollection(_tradingPairs, inputSlice.TradingPairs);
 
             if (inputSlice.AllData.Count != 0)
             {

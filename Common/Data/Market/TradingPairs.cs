@@ -17,12 +17,13 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using QuantConnect.Data.Market;
+using QuantConnect.TradingPairs;
 
-namespace QuantConnect.TradingPairs
+namespace QuantConnect.Data.Market
 {
     /// <summary>
-    /// Collection of trading pairs for use in data slices, similar to TradeBars, QuoteBars, etc.
+    /// Collection of TradingPair objects for use in data slices, similar to TradeBars, QuoteBars, etc.
+    /// This provides a time-slice snapshot of all trading pairs at a specific moment.
     /// </summary>
     public class TradingPairs : DataDictionary<TradingPair>
     {
@@ -77,7 +78,7 @@ namespace QuantConnect.TradingPairs
                 {
                     return pair;
                 }
-                throw new KeyNotFoundException($"Trading pair ({key.Item1.Value}, {key.Item2.Value}) not found");
+                throw new KeyNotFoundException($"Trading pair ({key.Item1}, {key.Item2}) not found");
             }
             set
             {
@@ -122,6 +123,14 @@ namespace QuantConnect.TradingPairs
         public bool ContainsKey((Symbol, Symbol) key)
         {
             return _pairsByTuple.ContainsKey(key);
+        }
+
+        /// <summary>
+        /// Returns an enumerator that iterates through the trading pairs
+        /// </summary>
+        public IEnumerator<TradingPair> GetEnumerator()
+        {
+            return _pairsByTuple.Values.GetEnumerator();
         }
     }
 }

@@ -325,6 +325,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.Fut_SPY_Feb19_2016, SecurityType.Future, Resolution.Minute, Field.Volume, new Slice(
                     new DateTime(2013, 10, 3),
@@ -340,6 +341,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.IBM, SecurityType.Equity, Resolution.Minute, Field.AskPrice, new Slice(
                     new DateTime(2013, 10, 3),
@@ -355,6 +357,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.EURGBP, SecurityType.Forex, Resolution.Minute, Field.BidPrice, new Slice(
                     new DateTime(2013, 10, 3),
@@ -370,6 +373,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.EURGBP, SecurityType.Forex, Resolution.Minute, Field.AskPrice, new Slice(
                     new DateTime(2013, 10, 3),
@@ -385,6 +389,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.SPY_C_192_Feb19_2016, SecurityType.Option, Resolution.Minute, Field.BidPrice, new Slice(
                     new DateTime(2013, 10, 3),
@@ -400,6 +405,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m },
             new object[] {Symbols.SPY_C_192_Feb19_2016, SecurityType.Option, Resolution.Minute, Field.AskPrice, new Slice(
                     new DateTime(2013, 10, 3),
@@ -415,6 +421,7 @@ algo.RegisterIndicator(forex.Symbol, indicator, Resolution.Daily)";
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), 103m }
         };
     }

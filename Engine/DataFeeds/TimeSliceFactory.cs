@@ -47,6 +47,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
         private readonly FuturesChains _emptyFuturesChains = new FuturesChains();
         private readonly SymbolChangedEvents _emptySymbolChangedEvents = new SymbolChangedEvents();
         private readonly MarginInterestRates _emptyMarginInterestRates = new MarginInterestRates();
+        private readonly QuantConnect.Data.Market.TradingPairs _emptyTradingPairs = new QuantConnect.Data.Market.TradingPairs();
 
         /// <summary>
         /// Creates a new instance
@@ -402,7 +403,8 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 }
             }
 
-            slice = new Slice(algorithmTime, allDataForAlgorithm, tradeBars ?? _emptyTradeBars, quoteBars ?? _emptyQuoteBars, ticks ?? _emptyTicks, orderbookDepths ?? _emptyOrderbookDepths, optionChains ?? _emptyOptionChains, futuresChains ?? _emptyFuturesChains, splits ?? _emptySplits, dividends ?? _emptyDividends, delistings ?? _emptyDelistings, symbolChanges ?? _emptySymbolChangedEvents, marginInterestRates ?? _emptyMarginInterestRates, utcDateTime, allDataForAlgorithm.Count > 0);
+            // Note: TradingPairs are user-defined and updated separately in AlgorithmManager, not from data feeds
+            slice = new Slice(algorithmTime, allDataForAlgorithm, tradeBars ?? _emptyTradeBars, quoteBars ?? _emptyQuoteBars, ticks ?? _emptyTicks, orderbookDepths ?? _emptyOrderbookDepths, optionChains ?? _emptyOptionChains, futuresChains ?? _emptyFuturesChains, splits ?? _emptySplits, dividends ?? _emptyDividends, delistings ?? _emptyDelistings, symbolChanges ?? _emptySymbolChangedEvents, marginInterestRates ?? _emptyMarginInterestRates, _emptyTradingPairs, utcDateTime, allDataForAlgorithm.Count > 0);
 
             return new TimeSlice(utcDateTime, count, slice, data, security, consolidator, custom ?? _emptyCustom, changes, universeData);
         }
@@ -421,6 +423,7 @@ namespace QuantConnect.Lean.Engine.DataFeeds
             _emptyFuturesChains.Clear();
             _emptySymbolChangedEvents.Clear();
             _emptyMarginInterestRates.Clear();
+            _emptyTradingPairs.Clear();
 
 #pragma warning disable 0618 // DataDictionary.Time is deprecated, ignore until removed entirely
             _emptyTradeBars.Time
@@ -433,7 +436,8 @@ namespace QuantConnect.Lean.Engine.DataFeeds
                 = _emptyOptionChains.Time
                 = _emptyFuturesChains.Time
                 = _emptySymbolChangedEvents.Time
-                = _emptyMarginInterestRates.Time = algorithmTime;
+                = _emptyMarginInterestRates.Time
+                = _emptyTradingPairs.Time = algorithmTime;
 #pragma warning restore 0618
         }
 

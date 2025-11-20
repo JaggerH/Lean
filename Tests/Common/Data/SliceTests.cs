@@ -347,7 +347,7 @@ namespace QuantConnect.Tests.Common.Data
             var slice1 = new Slice(_dataTime, new BaseData[] { tradeBar1, tick1 }, _dataTime);
             //var Use List<tick>
             var ticks = new Ticks { { Symbols.MSFT, new List<Tick> { tick1 } } };
-            var slice2 = new Slice(_dataTime, new List<BaseData>(), null, null, ticks, null, null, null, null, null, null, null, null, _dataTime);
+            var slice2 = new Slice(_dataTime, new List<BaseData>(), null, null, ticks, null, null, null, null, null, null, null, null, null, _dataTime);
             slice1.MergeSlice(slice2);
             Assert.AreEqual(2, slice1.Ticks.Count);
 
@@ -384,13 +384,13 @@ namespace QuantConnect.Tests.Common.Data
                                 new Ticks(), null, optionChain1,
                                 futuresChain1, new Splits(),
                                 new Dividends(_dataTime), new Delistings(),
-                                new SymbolChangedEvents(), new MarginInterestRates(), _dataTime);
+                                new SymbolChangedEvents(), new MarginInterestRates(), null, _dataTime);
             var slice5 = new Slice(_dataTime, new List<BaseData>(),
                 new TradeBars(_dataTime), new QuoteBars(),
                 new Ticks(), null, optionChain2,
                 futuresChain2, new Splits(),
                 new Dividends(_dataTime), new Delistings(),
-                new SymbolChangedEvents(), new MarginInterestRates(), _dataTime);
+                new SymbolChangedEvents(), new MarginInterestRates(), null, _dataTime);
             slice4.MergeSlice(slice5);
             Assert.AreEqual(2, slice4.OptionChains.Count);
             Assert.AreEqual(2, slice4.FutureChains.Count);
@@ -805,7 +805,7 @@ def Test(slice):
             var tradeBars = new TradeBars { { Symbols.BTCUSD, tradeBar } };
             var quoteBars = new QuoteBars { { Symbols.BTCUSD, quoteBar } };
 
-            var slice = new Slice(DateTime.Now, new List<BaseData>() { tradeBar, quoteBar }, tradeBars, quoteBars, null, null, null, null, null, null, null, null, null, DateTime.Now);
+            var slice = new Slice(DateTime.Now, new List<BaseData>() { tradeBar, quoteBar }, tradeBars, quoteBars, null, null, null, null, null, null, null, null, null, null, DateTime.Now);
 
             var tradeBarData = slice.Get<TradeBar>();
             Assert.AreEqual(1, tradeBarData.Count);
@@ -1404,6 +1404,7 @@ def Test(slice, symbol):
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), typeof(QuoteBar), 100m},
             new object[] {new Slice(
                     new DateTime(2013, 10, 3),
@@ -1419,6 +1420,7 @@ def Test(slice, symbol):
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), typeof(TradeBar), 100m},
             new object[] {new Slice(
                     new DateTime(2013, 10, 3),
@@ -1434,6 +1436,7 @@ def Test(slice, symbol):
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), typeof(Tick), 100m},
             new object[] {new Slice(
                     new DateTime(2013, 10, 3),
@@ -1449,6 +1452,7 @@ def Test(slice, symbol):
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), null, 100m},
             new object[] {new Slice(
                     new DateTime(2013, 10, 3),
@@ -1464,6 +1468,7 @@ def Test(slice, symbol):
                     new Delistings(),
                     new SymbolChangedEvents(),
                     new MarginInterestRates(),
+                    null,
                     DateTime.UtcNow), typeof(CustomData), 100m}
         };
     }

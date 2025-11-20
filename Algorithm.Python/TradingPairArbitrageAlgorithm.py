@@ -88,7 +88,7 @@ class TradingPairArbitrageAlgorithm(QCAlgorithm):
 
             # Log arbitrage opportunity
             self.Log(f"ARBITRAGE OPPORTUNITY: {pair.Key}")
-            self.Log(f"  Spread: {pair.Spread:.4f}")
+            self.Log(f"  Executable Spread: {pair.ExecutableSpread:.4%}")
             self.Log(f"  Direction: {pair.Direction}")
             self.Log(f"  Leg1 Bid/Ask: {pair.Leg1BidPrice}/{pair.Leg1AskPrice}")
             self.Log(f"  Leg2 Bid/Ask: {pair.Leg2BidPrice}/{pair.Leg2AskPrice}")
@@ -111,18 +111,8 @@ class TradingPairArbitrageAlgorithm(QCAlgorithm):
         portfolio_value = self.Portfolio.TotalPortfolioValue
         position_size = portfolio_value * 0.1  # Use 10% of portfolio
 
-        if pair.Direction == "buy_leg1_sell_leg2":
-            # Buy leg1, sell leg2
-            leg1_quantity = int(position_size / pair.Leg1AskPrice)
-            leg2_quantity = int(position_size / pair.Leg2BidPrice)
-
-            if leg1_quantity > 0 and leg2_quantity > 0:
-                self.MarketOrder(pair.Leg1Symbol, leg1_quantity)
-                self.MarketOrder(pair.Leg2Symbol, -leg2_quantity)
-                self.Log(f"Executed arbitrage: Buy {leg1_quantity} {pair.Leg1Symbol.Value}, Sell {leg2_quantity} {pair.Leg2Symbol.Value}")
-
-        elif pair.Direction == "buy_leg2_sell_leg1":
-            # Sell leg1, buy leg2
+        if pair.Direction == "SHORT_SPREAD":
+            # SHORT_SPREAD: sell leg1, buy leg2
             leg1_quantity = int(position_size / pair.Leg1BidPrice)
             leg2_quantity = int(position_size / pair.Leg2AskPrice)
 
@@ -130,6 +120,16 @@ class TradingPairArbitrageAlgorithm(QCAlgorithm):
                 self.MarketOrder(pair.Leg1Symbol, -leg1_quantity)
                 self.MarketOrder(pair.Leg2Symbol, leg2_quantity)
                 self.Log(f"Executed arbitrage: Sell {leg1_quantity} {pair.Leg1Symbol.Value}, Buy {leg2_quantity} {pair.Leg2Symbol.Value}")
+
+        elif pair.Direction == "LONG_SPREAD":
+            # LONG_SPREAD: buy leg1, sell leg2
+            leg1_quantity = int(position_size / pair.Leg1AskPrice)
+            leg2_quantity = int(position_size / pair.Leg2BidPrice)
+
+            if leg1_quantity > 0 and leg2_quantity > 0:
+                self.MarketOrder(pair.Leg1Symbol, leg1_quantity)
+                self.MarketOrder(pair.Leg2Symbol, -leg2_quantity)
+                self.Log(f"Executed arbitrage: Buy {leg1_quantity} {pair.Leg1Symbol.Value}, Sell {leg2_quantity} {pair.Leg2Symbol.Value}")
 
     def LogSpreadInfo(self):
         '''Log current spread information for all pairs'''
@@ -140,9 +140,9 @@ class TradingPairArbitrageAlgorithm(QCAlgorithm):
         for pair in self.TradingPairs:
             if pair.HasValidPrices:
                 self.Log(f"{pair.Key}:")
-                self.Log(f"  Theoretical Spread: {pair.TheoreticalSpread:.4f}")
-                self.Log(f"  Bid Spread: {pair.BidSpread:.4f}")
-                self.Log(f"  Ask Spread: {pair.AskSpread:.4f}")
+                self.Log(f"  Theoretical Spread: {pair.TheoreticalSpread:.4%}")
+                self.Log(f"  Short Spread: {pair.ShortSpread:.4%}")
+                self.Log(f"  Long Spread: {pair.LongSpread:.4%}")
                 self.Log(f"  Market State: {pair.MarketState}")
 
     def OnEndOfAlgorithm(self):
@@ -156,4 +156,5 @@ class TradingPairArbitrageAlgorithm(QCAlgorithm):
 
         # Log final state of all pairs
         for pair in self.TradingPairs:
-            self.Log(f"{pair.Key}: Spread={pair.Spread:.4f}, State={pair.MarketState}")
+            exec_spread = f"{pair.ExecutableSpread:.4%}" if pair.ExecutableSpread is not None else "None"
+            self.Log(f"{pair.Key}: Theoretical={pair.TheoreticalSpread:.4%}, Executable={exec_spread}, State={pair.MarketState}")

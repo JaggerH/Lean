@@ -86,26 +86,33 @@ namespace QuantConnect.TradingPairs
         /// </summary>
         public decimal Leg2MidPrice => (Leg2BidPrice + Leg2AskPrice) / 2;
 
-        // Calculated spread properties
+        // Calculated spread properties (all values are percentages)
         /// <summary>
-        /// Gets the current spread between the two legs
-        /// </summary>
-        public decimal Spread { get; private set; }
-
-        /// <summary>
-        /// Gets the theoretical spread based on mid prices
+        /// Gets the theoretical spread percentage (selected from short_spread or long_spread by absolute value, keeps sign)
+        /// Positive: leg1 > leg2, Negative: leg2 > leg1
         /// </summary>
         public decimal TheoreticalSpread { get; private set; }
 
         /// <summary>
-        /// Gets the bid spread (best case when buying leg1 and selling leg2)
+        /// Gets the executable spread percentage when an opportunity exists (CROSSED or LIMIT_OPPORTUNITY)
+        /// For CROSSED: equals ShortSpread or LongSpread depending on direction
+        /// For LIMIT_OPPORTUNITY: calculated based on overlapping quote ranges
+        /// For other states: null
         /// </summary>
-        public decimal BidSpread { get; private set; }
+        public decimal? ExecutableSpread { get; private set; }
 
         /// <summary>
-        /// Gets the ask spread (best case when selling leg1 and buying leg2)
+        /// Gets the short spread percentage: profit when selling leg1 and buying leg2
+        /// Formula: (leg1_bid - leg2_ask) / leg1_bid
         /// </summary>
-        public decimal AskSpread { get; private set; }
+        public decimal ShortSpread { get; private set; }
+
+        /// <summary>
+        /// Gets the long spread percentage: profit when buying leg1 and selling leg2
+        /// Formula: (leg1_ask - leg2_bid) / leg1_ask
+        /// Note: Negative when leg2 > leg1 (which is when this arbitrage is profitable)
+        /// </summary>
+        public decimal LongSpread { get; private set; }
 
         /// <summary>
         /// Gets the current market state
@@ -155,12 +162,14 @@ namespace QuantConnect.TradingPairs
             {
                 MarketState = MarketState.Unknown;
                 Direction = "none";
+                ExecutableSpread = null;
                 return;
             }
 
             CalculateSpreads();
             DetermineMarketState();
             DetermineArbitrageDirection();
+            CalculateExecutableSpread();
         }
 
         /// <summary>
@@ -177,63 +186,171 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
-        /// Calculates various spread metrics
+        /// Calculates various spread metrics using percentage-based formulas
+        /// Ported from Python calculate_spread_pct method
         /// </summary>
         private void CalculateSpreads()
         {
-            // Theoretical spread (mid-to-mid)
-            TheoreticalSpread = Leg1MidPrice - Leg2MidPrice;
+            // Calculate short spread: profit percentage when selling leg1 and buying leg2
+            // Formula: (leg1_bid - leg2_ask) / leg1_bid
+            ShortSpread = Leg1BidPrice > EPSILON
+                ? (Leg1BidPrice - Leg2AskPrice) / Leg1BidPrice
+                : 0m;
 
-            // Bid spread: profit when buying leg1 at ask and selling leg2 at bid
-            BidSpread = Leg2BidPrice - Leg1AskPrice;
+            // Calculate long spread: profit percentage when buying leg1 and selling leg2
+            // Formula: (leg1_ask - leg2_bid) / leg1_ask
+            // Note: This is negative when leg2 > leg1 (which is when longing the spread is profitable)
+            LongSpread = Leg1AskPrice > EPSILON
+                ? (Leg1AskPrice - Leg2BidPrice) / Leg1AskPrice
+                : 0m;
 
-            // Ask spread: profit when selling leg1 at bid and buying leg2 at ask
-            AskSpread = Leg1BidPrice - Leg2AskPrice;
-
-            // The main spread is the best executable spread
-            Spread = Math.Max(BidSpread, AskSpread);
+            // Theoretical spread: select by absolute value magnitude, keep the sign
+            // Positive indicates leg1 > leg2, negative indicates leg2 > leg1
+            TheoreticalSpread = Math.Abs(ShortSpread) >= Math.Abs(LongSpread)
+                ? ShortSpread
+                : LongSpread;
         }
 
         /// <summary>
         /// Determines the current market state based on spreads
+        /// Ported from Python calculate_spread_pct method
         /// </summary>
         private void DetermineMarketState()
         {
-            if (BidSpread > EPSILON || AskSpread > EPSILON)
+            // Check for CROSSED market: leg1_bid > leg2_ask (SHORT_SPREAD opportunity)
+            if (Leg1BidPrice > Leg2AskPrice)
             {
                 MarketState = MarketState.Crossed;
-            }
-            else if (TheoreticalSpread < -EPSILON)
-            {
-                MarketState = MarketState.Inverted;
-            }
-            else
-            {
-                MarketState = MarketState.Normal;
-            }
-        }
-
-        /// <summary>
-        /// Determines the arbitrage direction if market is crossed
-        /// </summary>
-        private void DetermineArbitrageDirection()
-        {
-            if (MarketState != MarketState.Crossed)
-            {
-                Direction = "none";
                 return;
             }
 
-            if (BidSpread > AskSpread)
+            // Check for CROSSED market: leg2_bid > leg1_ask (LONG_SPREAD opportunity)
+            if (Leg2BidPrice > Leg1AskPrice)
             {
-                // More profitable to buy leg1 and sell leg2
-                Direction = "buy_leg1_sell_leg2";
+                MarketState = MarketState.Crossed;
+                return;
             }
-            else
+
+            // Check for LIMIT_OPPORTUNITY (overlapping quote ranges)
+            // Pattern 1: leg1_ask > leg2_ask > leg1_bid > leg2_bid
+            if (Leg1AskPrice > Leg2AskPrice && Leg2AskPrice > Leg1BidPrice && Leg1BidPrice > Leg2BidPrice)
             {
-                // More profitable to sell leg1 and buy leg2
-                Direction = "buy_leg2_sell_leg1";
+                MarketState = MarketState.LimitOpportunity;
+                return;
             }
+
+            // Pattern 2: leg2_ask > leg1_ask > leg2_bid > leg1_bid
+            if (Leg2AskPrice > Leg1AskPrice && Leg1AskPrice > Leg2BidPrice && Leg2BidPrice > Leg1BidPrice)
+            {
+                MarketState = MarketState.LimitOpportunity;
+                return;
+            }
+
+            // Otherwise NO_OPPORTUNITY
+            MarketState = MarketState.NoOpportunity;
+        }
+
+        /// <summary>
+        /// Determines the arbitrage direction based on market state
+        /// Ported from Python calculate_spread_pct method
+        /// </summary>
+        private void DetermineArbitrageDirection()
+        {
+            // CROSSED market
+            if (MarketState == MarketState.Crossed)
+            {
+                // Check which type of crossing: SHORT_SPREAD or LONG_SPREAD
+                if (Leg1BidPrice > Leg2AskPrice)
+                {
+                    // SHORT_SPREAD: sell leg1, buy leg2
+                    Direction = "SHORT_SPREAD";
+                }
+                else if (Leg2BidPrice > Leg1AskPrice)
+                {
+                    // LONG_SPREAD: buy leg1, sell leg2
+                    Direction = "LONG_SPREAD";
+                }
+                else
+                {
+                    Direction = "none";
+                }
+                return;
+            }
+
+            // LIMIT_OPPORTUNITY market
+            if (MarketState == MarketState.LimitOpportunity)
+            {
+                // Pattern 1: leg1_ask > leg2_ask > leg1_bid > leg2_bid -> SHORT_SPREAD
+                if (Leg1AskPrice > Leg2AskPrice && Leg2AskPrice > Leg1BidPrice && Leg1BidPrice > Leg2BidPrice)
+                {
+                    Direction = "SHORT_SPREAD";
+                }
+                // Pattern 2: leg2_ask > leg1_ask > leg2_bid > leg1_bid -> LONG_SPREAD
+                else if (Leg2AskPrice > Leg1AskPrice && Leg1AskPrice > Leg2BidPrice && Leg2BidPrice > Leg1BidPrice)
+                {
+                    Direction = "LONG_SPREAD";
+                }
+                else
+                {
+                    Direction = "none";
+                }
+                return;
+            }
+
+            // No opportunity
+            Direction = "none";
+        }
+
+        /// <summary>
+        /// Calculates the executable spread based on market state and direction
+        /// Ported from Python calculate_spread_pct method
+        /// </summary>
+        private void CalculateExecutableSpread()
+        {
+            // CROSSED market: executable spread is either short_spread or long_spread
+            if (MarketState == MarketState.Crossed)
+            {
+                if (Direction == "SHORT_SPREAD")
+                {
+                    ExecutableSpread = ShortSpread;
+                }
+                else if (Direction == "LONG_SPREAD")
+                {
+                    ExecutableSpread = LongSpread;
+                }
+                else
+                {
+                    ExecutableSpread = null;
+                }
+                return;
+            }
+
+            // LIMIT_OPPORTUNITY market: calculate based on overlapping quote ranges
+            if (MarketState == MarketState.LimitOpportunity)
+            {
+                // Pattern 1: leg1_ask > leg2_ask > leg1_bid > leg2_bid -> SHORT_SPREAD
+                if (Leg1AskPrice > Leg2AskPrice && Leg2AskPrice > Leg1BidPrice && Leg1BidPrice > Leg2BidPrice)
+                {
+                    var spread1 = Leg1AskPrice > EPSILON ? (Leg1AskPrice - Leg2AskPrice) / Leg1AskPrice : 0m;
+                    var spread2 = Leg1BidPrice > EPSILON ? (Leg1BidPrice - Leg2BidPrice) / Leg1BidPrice : 0m;
+                    ExecutableSpread = Math.Max(spread1, spread2);
+                }
+                // Pattern 2: leg2_ask > leg1_ask > leg2_bid > leg1_bid -> LONG_SPREAD
+                else if (Leg2AskPrice > Leg1AskPrice && Leg1AskPrice > Leg2BidPrice && Leg2BidPrice > Leg1BidPrice)
+                {
+                    var spread1 = Leg1AskPrice > EPSILON ? (Leg1AskPrice - Leg2BidPrice) / Leg1AskPrice : 0m;
+                    var spread2 = Leg1BidPrice > EPSILON ? (Leg1BidPrice - Leg2AskPrice) / Leg1BidPrice : 0m;
+                    ExecutableSpread = Math.Min(spread1, spread2);
+                }
+                else
+                {
+                    ExecutableSpread = null;
+                }
+                return;
+            }
+
+            // No opportunity
+            ExecutableSpread = null;
         }
 
         /// <summary>
@@ -241,7 +358,8 @@ namespace QuantConnect.TradingPairs
         /// </summary>
         public override string ToString()
         {
-            return $"TradingPair({Key}, Type={PairType}, Spread={Spread:F4}, State={MarketState})";
+            var execSpreadStr = ExecutableSpread.HasValue ? $"{ExecutableSpread.Value:P2}" : "None";
+            return $"TradingPair({Key}, Type={PairType}, TheoreticalSpread={TheoreticalSpread:P2}, ExecutableSpread={execSpreadStr}, State={MarketState}, Direction={Direction})";
         }
     }
 }

@@ -69,7 +69,7 @@ class BasicTradingPairTest(QCAlgorithm):
         if pair.MarketState == MarketState.Crossed:
             self.crossed_count += 1
             self.Log(f"[{self.Time}] CROSSED MARKET DETECTED!")
-            self.Log(f"  Spread: {pair.Spread:.4f}")
+            self.Log(f"  Executable Spread: {pair.ExecutableSpread:.4%}")
             self.Log(f"  Direction: {pair.Direction}")
             self.Log(f"  AAPL Bid/Ask: {pair.Leg1BidPrice:.2f}/{pair.Leg1AskPrice:.2f}")
             self.Log(f"  MSFT Bid/Ask: {pair.Leg2BidPrice:.2f}/{pair.Leg2AskPrice:.2f}")
@@ -96,9 +96,9 @@ class BasicTradingPairTest(QCAlgorithm):
             self.Log(f"Pair: {pair.Key}")
             self.Log(f"AAPL Mid: {pair.Leg1MidPrice:.2f}")
             self.Log(f"MSFT Mid: {pair.Leg2MidPrice:.2f}")
-            self.Log(f"Theoretical Spread: {pair.TheoreticalSpread:.4f}")
-            self.Log(f"Bid Spread: {pair.BidSpread:.4f}")
-            self.Log(f"Ask Spread: {pair.AskSpread:.4f}")
+            self.Log(f"Theoretical Spread: {pair.TheoreticalSpread:.4%}")
+            self.Log(f"Short Spread: {pair.ShortSpread:.4%}")
+            self.Log(f"Long Spread: {pair.LongSpread:.4%}")
             self.Log(f"Market State: {pair.MarketState}")
 
     def OnEndOfAlgorithm(self):

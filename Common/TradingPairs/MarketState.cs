@@ -26,7 +26,7 @@ namespace QuantConnect.TradingPairs
         Normal,
 
         /// <summary>
-        /// Market is crossed - arbitrage opportunity exists
+        /// Market is crossed - immediate arbitrage opportunity exists
         /// </summary>
         Crossed,
 
@@ -34,6 +34,16 @@ namespace QuantConnect.TradingPairs
         /// Market is inverted but not crossed
         /// </summary>
         Inverted,
+
+        /// <summary>
+        /// Limit order opportunity exists (quote ranges overlap but not crossed)
+        /// </summary>
+        LimitOpportunity,
+
+        /// <summary>
+        /// No arbitrage opportunity exists
+        /// </summary>
+        NoOpportunity,
 
         /// <summary>
         /// Insufficient data to determine market state
