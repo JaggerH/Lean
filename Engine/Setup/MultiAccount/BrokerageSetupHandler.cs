@@ -454,59 +454,79 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                     return false;
                 }
 
-                // CRITICAL FIX: Load cash BEFORE setting up currency conversions
-                // This ensures conversions are created BEFORE holdings load
+                // Zero the CashBook - we'll populate directly from brokerage
+                if (liveJob.Brokerage != "PaperBrokerage")
+                {
+                    var multiAccountPortfolio = (MultiSecurityPortfolioManager)algorithm.Portfolio;
+
+                    // Zero main account CashBook
+                    foreach (var kvp in algorithm.Portfolio.CashBook)
+                    {
+                        kvp.Value.SetAmount(0);
+                    }
+
+                    // Zero all sub-account CashBooks
+                    foreach (var accountName in multiAccountPortfolio.SubAccounts.Keys)
+                    {
+                        var subAccount = multiAccountPortfolio.GetAccount(accountName);
+                        foreach (var kvp in subAccount.CashBook)
+                        {
+                            kvp.Value.SetAmount(0);
+                        }
+                    }
+                }
+
+                // Load cash balance from brokerage
                 if (!LoadCashBalance(brokerage, algorithm))
                 {
                     return false;
                 }
 
-                // PostInitialize must run before currency conversion setup
+                // Load existing holdings and orders BEFORE currency conversion setup
+                // This ensures securities are created as user-facing (isInternalFeed: false) first,
+                // so currency conversions can reuse them instead of creating internal-only feeds
+                if (!LoadExistingHoldingsAndOrders(brokerage, algorithm, parameters))
+                {
+                    return false;
+                }
+
+                // PostInitialize must run after holdings/orders loaded but before currency conversion setup
+                // This ensures subscriptions are created before SetupCurrencyConversions tries to use them
                 algorithm.PostInitialize();
 
                 // Multi-account currency conversion setup
-                if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
-                {
-                    // Get ISecurityService from universeSelection
-                    var securityServiceField = parameters.UniverseSelection.GetType().GetField("_securityService",
-                        BindingFlags.NonPublic | BindingFlags.Instance);
+                var multiPortfolio = (MultiSecurityPortfolioManager)algorithm.Portfolio;
 
-                    if (securityServiceField == null)
+                // Get ISecurityService from universeSelection
+                var securityServiceField = parameters.UniverseSelection.GetType().GetField("_securityService",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+                if (securityServiceField == null)
+                {
+                    Log.Error("BrokerageSetupHandler.Setup(): Could not get _securityService field from UniverseSelection");
+                }
+                else
+                {
+                    var securityService = securityServiceField.GetValue(parameters.UniverseSelection) as ISecurityService;
+                    if (securityService == null)
                     {
-                        Log.Error("BrokerageSetupHandler.Setup(): Could not get _securityService field from UniverseSelection");
+                        Log.Error("BrokerageSetupHandler.Setup(): _securityService field value is null or not ISecurityService");
                     }
                     else
                     {
-                        var securityService = securityServiceField.GetValue(parameters.UniverseSelection) as ISecurityService;
-                        if (securityService == null)
-                        {
-                            Log.Error("BrokerageSetupHandler.Setup(): _securityService field value is null or not ISecurityService");
-                        }
-                        else
-                        {
-                            // Step 1: Setup sub-account currency conversions FIRST
-                            _conversionCoordinator.SetupSubAccountConversions(multiPortfolio, algorithm, securityService);
+                        // Step 1: Setup sub-account currency conversions
+                        _conversionCoordinator.SetupSubAccountConversions(multiPortfolio, algorithm, securityService);
 
-                            // Step 2: Sync sub-account cash and conversions to main CashBook
-                            _conversionCoordinator.SyncConversionsToMain(multiPortfolio);
+                        // Step 2: Sync sub-account cash and conversions to main CashBook
+                        _conversionCoordinator.SyncConversionsToMain(multiPortfolio);
 
-                            // Step 3: OnEndOfTimeStep to update conversion rates
-                            algorithm.OnEndOfTimeStep();
-
-                            Log.Trace("BrokerageSetupHandler.Setup(): Multi-account currency conversions setup complete");
-                        }
+                        // Step 3: OnEndOfTimeStep to update conversion rates
+                        algorithm.OnEndOfTimeStep();
                     }
                 }
 
                 // Setup main account currency conversions (will skip currencies already converted by sub-accounts)
                 BaseSetupHandler.SetupCurrencyConversions(algorithm, parameters.UniverseSelection);
-
-                // CRITICAL FIX: Load holdings AFTER currency conversions are setup
-                // This prevents holdings from creating securities without internal subscriptions
-                if (!LoadExistingHoldingsAndOrders(brokerage, algorithm, parameters))
-                {
-                    return false;
-                }
 
                 // Set trading days per year for portfolio statistics
                 BaseSetupHandler.SetBrokerageTradingDayPerYear(algorithm);
@@ -560,11 +580,7 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             Log.Trace("BrokerageSetupHandler.LoadCashBalance(): Fetching cash balance from brokerage...");
             try
             {
-                // Multi-account mode only
-                if (!(algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio))
-                {
-                    throw new InvalidOperationException("Multi-account BrokerageSetupHandler requires MultiSecurityPortfolioManager");
-                }
+                var multiPortfolio = (MultiSecurityPortfolioManager)algorithm.Portfolio;
 
                 // Multi-brokerage mode
                 if (brokerage is MultiBrokerageManager multiBrokerage)
@@ -612,21 +628,8 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         /// </summary>
         private void LoadCashForMultiBrokerage(MultiBrokerageManager multiBrokerage, MultiSecurityPortfolioManager multiPortfolio)
         {
-            // Clear sub-account CashBooks before loading real balances
-            foreach (var accountName in multiBrokerage.GetAccountNames())
-            {
-                var subAccount = multiPortfolio.GetAccount(accountName);
-
-                // Zero all currencies in this sub-account
-                foreach (var kvp in subAccount.CashBook)
-                {
-                    kvp.Value.SetAmount(0);
-                }
-
-                Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Cleared initial cash for account '{accountName}'");
-            }
-
             // Load real balances from each brokerage to its corresponding sub-account
+            // Note: CashBook zeroing is now handled in Setup() before LoadCashBalance()
             foreach (var accountName in multiBrokerage.GetAccountNames())
             {
                 var accountBrokerage = multiBrokerage.GetBrokerage(accountName);
@@ -658,7 +661,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         /// </summary>
         private bool LoadExistingHoldingsAndOrders(IBrokerage brokerage, IAlgorithm algorithm, SetupHandlerParameters parameters)
         {
-            Log.Trace("BrokerageSetupHandler.LoadExistingHoldingsAndOrders(): Fetching open orders from brokerage...");
             try
             {
                 GetOpenOrders(algorithm, parameters.ResultHandler, parameters.TransactionHandler, brokerage);
@@ -670,7 +672,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 return false;
             }
 
-            Log.Trace("BrokerageSetupHandler.LoadExistingHoldingsAndOrders(): Fetching holdings from brokerage...");
             try
             {
                 var utcNow = DateTime.UtcNow;
