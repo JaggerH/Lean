@@ -396,6 +396,12 @@ namespace QuantConnect.AlgorithmFactory.Python.Wrappers
         public SecurityManager Securities => _baseAlgorithm.Securities;
 
         /// <summary>
+        /// Trading pair collection that manages pairs of securities for spread trading and arbitrage strategies.
+        /// Trading pairs automatically calculate spreads and market states based on their constituent securities.
+        /// </summary>
+        public TradingPairs.TradingPairManager TradingPairs => _baseAlgorithm.TradingPairs;
+
+        /// <summary>
         /// Gets an instance that is to be used to initialize newly created securities.
         /// </summary>
         public ISecurityInitializer SecurityInitializer => _baseAlgorithm.SecurityInitializer;

@@ -202,6 +202,7 @@ namespace QuantConnect.Algorithm
             SubscriptionManager = new SubscriptionManager(_timeKeeper);
 
             Securities = new SecurityManager(_timeKeeper);
+            TradingPairs = new TradingPairs.TradingPairManager(Securities);
             Transactions = new SecurityTransactionManager(this, Securities);
             Portfolio = new SecurityPortfolioManager(Securities, Transactions, Settings, DefaultOrderProperties);
             SignalExport = new SignalExportManager(this);
@@ -261,6 +262,17 @@ namespace QuantConnect.Algorithm
         /// </summary>
         [DocumentationAttribute(SecuritiesAndPortfolio)]
         public SecurityManager Securities
+        {
+            get;
+            set;
+        }
+
+        /// <summary>
+        /// Trading pair collection that manages pairs of securities for spread trading and arbitrage strategies.
+        /// Trading pairs automatically calculate spreads and market states based on their constituent securities.
+        /// </summary>
+        [DocumentationAttribute(SecuritiesAndPortfolio)]
+        public TradingPairs.TradingPairManager TradingPairs
         {
             get;
             set;
@@ -2435,6 +2447,27 @@ namespace QuantConnect.Algorithm
             return AddSecurity<Cfd>(SecurityType.Cfd, ticker, resolution, market, fillForward, leverage, false);
         }
 
+        /// <summary>
+        /// Creates and adds a new trading pair for spread trading and arbitrage strategies
+        /// </summary>
+        /// <param name="leg1">The first leg symbol</param>
+        /// <param name="leg2">The second leg symbol</param>
+        /// <param name="pairType">The type of trading pair (e.g., "spread", "tokenized", "futures")</param>
+        /// <returns>The new <see cref="TradingPairs.TradingPair"/> object</returns>
+        [DocumentationAttribute(SecuritiesAndPortfolio)]
+        public TradingPairs.TradingPair AddTradingPair(Symbol leg1, Symbol leg2, string pairType = "spread")
+        {
+            if (!Securities.ContainsKey(leg1))
+            {
+                throw new ArgumentException($"Security {leg1} must be added to the algorithm before creating a trading pair");
+            }
+            if (!Securities.ContainsKey(leg2))
+            {
+                throw new ArgumentException($"Security {leg2} must be added to the algorithm before creating a trading pair");
+            }
+
+            return TradingPairs.AddPair(leg1, leg2, pairType);
+        }
 
         /// <summary>
         /// Creates and adds a new <see cref="Index"/> security to the algorithm
