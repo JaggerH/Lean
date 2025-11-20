@@ -2,6 +2,23 @@
 
 本项目是基于 LEAN 引擎的套利算法，用于监控 Kraken xStocks（代币化股票）的实时订单簿数据。
 
+## ⚠️ 重要更新 (2025-11-20)
+
+**架构重构：SpreadManager → SubscriptionHelper + TradingPairs**
+
+订阅和价差管理架构已重构以充分利用 LEAN 的原生 TradingPair 基础设施：
+
+- ✅ **新代码**: 使用 `subscription_helper.py` + 直接访问 `algorithm.TradingPairs`
+- ⚠️ **旧代码**: `spread_manager.py` 已标记为弃用但仍可用于向后兼容
+- 📖 **迁移指南**: 查看 [MIGRATION_GUIDE.md](./MIGRATION_GUIDE.md) 了解如何迁移现有代码
+- 🎯 **参考实现**: 查看 `spot_future_arbitrage.py` 了解新架构的完整示例
+
+**关键改进**:
+- 减少 ~750 行 Python 代码
+- 使用 LEAN 标准的 `CollectionChanged` 事件
+- 在 OnData 中直接访问 `slice.TradingPairs`
+- 统一的订阅逻辑
+
 ## 项目结构
 
 ```

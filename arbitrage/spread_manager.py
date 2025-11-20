@@ -1,5 +1,17 @@
 """
-SpreadManager - Core multi-leg pair subscription and spread management
+⚠️ DEPRECATED - This module is deprecated as of 2025-11-20
+
+USE INSTEAD:
+- subscription_helper.py for subscription functionality
+- Direct access to algorithm.TradingPairs for spread data
+- TradingPairs.CollectionChanged event for pair registration notifications
+
+This file is kept for backward compatibility with existing tests and algorithms.
+New code should use the new architecture. See MIGRATION_GUIDE.md for details.
+
+---
+
+SpreadManager - Core multi-leg pair subscription and spread management (DEPRECATED)
 
 Supports multiple arbitrage pair types:
 1. (Crypto, Stock) - tokenized stock spot arbitrage

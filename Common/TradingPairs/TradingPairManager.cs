@@ -16,6 +16,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Linq;
 using QuantConnect.Securities;
 
@@ -24,8 +25,12 @@ namespace QuantConnect.TradingPairs
     /// <summary>
     /// Manages a collection of trading pairs with automatic updates
     /// </summary>
-    public class TradingPairManager : IEnumerable<TradingPair>
+    public class TradingPairManager : IEnumerable<TradingPair>, INotifyCollectionChanged
     {
+        /// <summary>
+        /// Event fired when a trading pair is added or removed from the collection
+        /// </summary>
+        public event NotifyCollectionChangedEventHandler CollectionChanged;
         private readonly SecurityManager _securities;
         private readonly Dictionary<(Symbol, Symbol), TradingPair> _pairs;
 
@@ -78,6 +83,7 @@ namespace QuantConnect.TradingPairs
             );
 
             _pairs[key] = pair;
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, pair));
 
             return pair;
         }
@@ -119,6 +125,7 @@ namespace QuantConnect.TradingPairs
             if (_pairs.TryGetValue(key, out var pair))
             {
                 _pairs.Remove(key);
+                OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, pair));
                 return true;
             }
             return false;
@@ -165,6 +172,16 @@ namespace QuantConnect.TradingPairs
         public void Clear()
         {
             _pairs.Clear();
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
+
+        /// <summary>
+        /// Raises the CollectionChanged event
+        /// </summary>
+        /// <param name="e">Event arguments for the CollectionChanged event</param>
+        protected virtual void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+        {
+            CollectionChanged?.Invoke(this, e);
         }
 
         /// <summary>

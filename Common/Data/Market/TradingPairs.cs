@@ -55,10 +55,11 @@ namespace QuantConnect.Data.Market
         {
             // Create a composite symbol for the DataDictionary base class
             // This allows us to maintain compatibility with existing Lean patterns
-            var compositeSymbol = Symbol.CreateBase(
-                typeof(TradingPair),
+            var compositeSymbol = Symbol.Create(
                 pair.Key,
-                pair.Leg1Symbol.ID.Market
+                SecurityType.Base,
+                pair.Leg1Symbol.ID.Market,
+                baseDataType: typeof(TradingPair)
             );
 
             base[compositeSymbol] = pair;
@@ -84,10 +85,11 @@ namespace QuantConnect.Data.Market
             {
                 _pairsByTuple[key] = value;
                 // Also update the base dictionary
-                var compositeSymbol = Symbol.CreateBase(
-                    typeof(TradingPair),
+                var compositeSymbol = Symbol.Create(
                     value.Key,
-                    value.Leg1Symbol.ID.Market
+                    SecurityType.Base,
+                    value.Leg1Symbol.ID.Market,
+                    baseDataType: typeof(TradingPair)
                 );
                 base[compositeSymbol] = value;
             }

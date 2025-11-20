@@ -1,12 +1,15 @@
 # region imports
 from AlgorithmImports import *
 from QuantConnect.Configuration import Config
+from System.Collections.Specialized import NotifyCollectionChangedAction
+from dataclasses import dataclass
+from typing import Tuple, Optional
 
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 from data_source import GateSymbolManager
-from spread_manager import SpreadManager
+from subscription_helper import SubscriptionHelper
 from strategy.both_side_grid_strategy import BothSideGridStrategy
 
 
@@ -51,21 +54,13 @@ class SpotFutureArbitrage(QCAlgorithm):
             enable_monitoring=True     # ✅ 策略内部会创建 MonitoringContext
         )
 
-        # === 3. 初始化 SpreadManager（不再直接注入 monitor）===
-        self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(algorithm=self)
+        # === 3. 初始化 SubscriptionHelper ===
+        self.debug("📊 Initializing SubscriptionHelper...")
+        self.subscription_helper = SubscriptionHelper(algorithm=self)
 
-        # === 4. 注册监控系统为观察者（观察者模式）===
-        if self.strategy.monitoring_context:
-            spread_monitor = self.strategy.monitoring_context.get_spread_monitor()
-            if spread_monitor:
-                self.debug("🔗 Registering monitor as pair/spread observer...")
-                self.spread_manager.register_pair_observer(spread_monitor.write_pair_mapping)
-                self.spread_manager.register_observer(spread_monitor.write_spread)
-
-        # === 5. 注册策略到 SpreadManager（观察者模式）===
-        self.debug("🔗 Registering strategy as spread observer...")
-        self.spread_manager.register_observer(self.strategy.on_spread_update)
+        # === 4. 订阅 TradingPairManager 集合变化事件 ===
+        self.debug("🔗 Subscribing to TradingPairs.CollectionChanged event...")
+        self.TradingPairs.CollectionChanged += self._on_trading_pairs_changed
 
         # === 6. 动态订阅交易对（配置 grid levels）===
         self._subscribe_trading_pairs()
@@ -83,11 +78,11 @@ class SpotFutureArbitrage(QCAlgorithm):
 
         self.debug("="*60)
         self.debug("✅ Initialization complete!")
-        self.debug(f"📈 Subscribed to {len(self.spread_manager.get_all_pairs())} spot-future pairs")
+        self.debug(f"📈 Subscribed to {self.TradingPairs.Count} spot-future pairs")
         self.debug("="*60)
 
     def _subscribe_trading_pairs(self):
-        """动态订阅交易对 - 使用 SpreadManager.subscribe_trading_pair"""
+        """动态订阅交易对 - 使用 SubscriptionHelper"""
         manager = self.sources["gate"]  # Only Gate exchange needed
 
         try:
@@ -106,24 +101,52 @@ class SpotFutureArbitrage(QCAlgorithm):
             registered_count = manager.register_symbol_properties_runtime(self, trade_pairs)
             self.debug(f"Registered {registered_count} symbols to LEAN runtime database")
 
-            # Subscribe to each pair using SpreadManager
+            # Subscribe to each pair using SubscriptionHelper
             for futures_symbol, spot_symbol in trade_pairs:
                 try:
-                    # Use SpreadManager's subscribe_trading_pair for consistent setup
-                    # Note: For crypto, extended_market_hours is not applicable
-                    futures_security, spot_security = self.spread_manager.subscribe_trading_pair(
-                        pair_symbol=(futures_symbol, spot_symbol),
-                        extended_market_hours=False  # Not applicable for crypto 24/7 markets
+                    # Use SubscriptionHelper's subscribe_pair for unified subscription
+                    # Triggers TradingPairs.CollectionChanged event automatically
+                    futures_security, spot_security = self.subscription_helper.subscribe_pair(
+                        leg1_symbol=futures_symbol,
+                        leg2_symbol=spot_symbol,
+                        pair_type="spot_future"
                     )
-                    # Initialize grid levels for this trading pair
-                    self.strategy.initialize_pair((futures_security.Symbol, spot_security.Symbol))
+                    # Note: Grid initialization moved to _on_trading_pairs_changed event handler
                 except Exception as e:
                     self.debug(f"❌ Failed to subscribe to {futures_symbol.value}/{spot_symbol.value}: {str(e)}")
         except Exception as e:
             self.debug(f"❌ Error initializing gate data source: {str(e)}")
 
+    def _on_trading_pairs_changed(self, sender, e):
+        """
+        处理 TradingPair 集合变化事件
+        用于初始化 monitor 和 strategy
+        """
+        if e.Action == NotifyCollectionChangedAction.Add:
+            for pair in e.NewItems:
+                # 通知 monitor（配对映射）
+                if self.strategy.monitoring_context:
+                    spread_monitor = self.strategy.monitoring_context.get_spread_monitor()
+                    if spread_monitor:
+                        spread_monitor.write_pair_mapping(
+                            pair.Leg1Security,
+                            pair.Leg2Security
+                        )
+
+                # 初始化策略
+                self.strategy.initialize_pair(
+                    (pair.Leg1Symbol, pair.Leg2Symbol)
+                )
+
+                self.debug(f"✅ Trading pair added and initialized: {pair.Key}")
+
     def on_data(self, data: Slice):
-        """处理数据 - 委托给SpreadManager处理"""
+        """
+        处理数据 - TradingPairs 已在 Slice 中自动更新
+
+        TradingPairManager.UpdateAll() 已在 AlgorithmManager 中自动调用
+        可以直接访问 data.TradingPairs 或 self.TradingPairs
+        """
         if not data.Ticks or len(data.Ticks) == 0:
             return
 
@@ -131,12 +154,44 @@ class SpotFutureArbitrage(QCAlgorithm):
         symbols_with_data = [f"{symbol.Value}({symbol.SecurityType})" for symbol in data.Ticks.Keys]
         self.debug(f"📊 on_data received ticks for: {', '.join(symbols_with_data)}")
 
+        # 策略处理
         self.strategy.on_data(data)
 
-        # 📈 Log before spread calculation
-        self.debug(f"📈 Calling spread_manager.on_data() to calculate spreads...")
-        self.spread_manager.on_data(data)
-        self.debug(f"✅ spread_manager.on_data() completed")
+        # 处理 TradingPair 更新（监控和策略通知）
+        if hasattr(data, 'TradingPairs') and data.TradingPairs is not None:
+            for pair in data.TradingPairs.Values:
+                if pair.HasValidPrices:
+                    # 监控记录
+                    if self.strategy.monitoring_context:
+                        spread_monitor = self.strategy.monitoring_context.get_spread_monitor()
+                        if spread_monitor:
+                            spread_monitor.write_spread(
+                                self._adapt_to_spread_signal(pair)
+                            )
+
+                    # 策略通知（仅在有套利机会时）
+                    if pair.ExecutableSpread is not None:
+                        self.strategy.on_spread_update(
+                            self._adapt_to_spread_signal(pair)
+                        )
+
+    def _adapt_to_spread_signal(self, trading_pair):
+        """临时适配层：将 C# TradingPair 转换为 Python SpreadSignal"""
+        @dataclass
+        class SpreadSignal:
+            pair_symbol: Tuple[Symbol, Symbol]
+            market_state: MarketState
+            theoretical_spread: float
+            executable_spread: Optional[float]
+            direction: Optional[str]
+
+        return SpreadSignal(
+            pair_symbol=(trading_pair.Leg1Symbol, trading_pair.Leg2Symbol),
+            market_state=trading_pair.MarketState,
+            theoretical_spread=float(trading_pair.TheoreticalSpread),
+            executable_spread=float(trading_pair.ExecutableSpread) if trading_pair.ExecutableSpread else None,
+            direction=trading_pair.Direction
+        )
 
     def on_order_event(self, order_event: OrderEvent):
         """
