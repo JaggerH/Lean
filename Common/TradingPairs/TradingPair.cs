@@ -14,14 +14,16 @@
 */
 
 using System;
+using System.Collections.Generic;
 using QuantConnect.Securities;
+using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.TradingPairs
 {
     /// <summary>
     /// Represents a trading pair consisting of two securities with automatic spread calculation
     /// </summary>
-    public class TradingPair
+    public partial class TradingPair
     {
         private const decimal EPSILON = 1e-10m;
 
@@ -146,6 +148,10 @@ namespace QuantConnect.TradingPairs
             Leg2Security = leg2Security;
             Direction = "none";
             MarketState = MarketState.Unknown;
+
+            // Initialize Grid collections
+            GridLevels = new List<GridLevelPair>();
+            GridPositions = new Dictionary<string, GridPosition>();
         }
 
         /// <summary>
