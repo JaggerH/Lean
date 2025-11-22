@@ -106,11 +106,6 @@ namespace QuantConnect.TradingPairs
                     HandleOrderCompleted(orderEvent, context);
                     break;
 
-                case OrderStatus.Canceled:
-                case OrderStatus.Invalid:
-                    HandleOrderCompleted(orderEvent, context);
-                    break;
-
                 // OrderStatus.None, OrderStatus.New, OrderStatus.Submitted, OrderStatus.UpdateSubmitted
                 // are not actionable for grid positions
                 default:
