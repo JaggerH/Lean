@@ -66,8 +66,7 @@ namespace QuantConnect.TradingPairs
 
             // Create new position
             var newPosition = new GridPosition(
-                Leg1Symbol,
-                Leg2Symbol,
+                this,
                 levelPair,
                 openTime
             );

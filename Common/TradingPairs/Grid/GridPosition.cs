@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Orders;
+using QuantConnect.Securities;
 using Newtonsoft.Json;
 
 namespace QuantConnect.TradingPairs.Grid
@@ -31,6 +32,13 @@ namespace QuantConnect.TradingPairs.Grid
     /// </summary>
     public class GridPosition
     {
+        /// <summary>
+        /// Reference to parent TradingPair (for accessing securities and lot sizes).
+        /// Not serialized to avoid circular references.
+        /// </summary>
+        [JsonIgnore]
+        public TradingPair TradingPair { get; private set; }
+
         /// <summary>
         /// Position open time
         /// </summary>
@@ -92,47 +100,18 @@ namespace QuantConnect.TradingPairs.Grid
         private readonly GridLevelPair _levelPair;
 
         /// <summary>
-        /// Associated order tickets (runtime tracking)
-        /// Not serialized - will be rebuilt from BrokerIds on restart
-        /// </summary>
-        [JsonIgnore]
-        private readonly List<OrderTicket> _tickets;
-
-        /// <summary>
-        /// Read-only view of order tickets
-        /// </summary>
-        [JsonIgnore]
-        public IReadOnlyList<OrderTicket> Tickets => _tickets.AsReadOnly();
-
-        /// <summary>
-        /// Broker order IDs (for restart recovery)
-        /// These persist across algorithm restarts, unlike Lean's internal OrderIds
-        /// </summary>
-        [JsonProperty("broker_ids")]
-        private readonly HashSet<string> _brokerIds;
-
-        /// <summary>
-        /// Read-only view of broker IDs
-        /// </summary>
-        [JsonIgnore]
-        public IReadOnlyCollection<string> BrokerIds => _brokerIds;
-
-        /// <summary>
         /// Creates a new grid position
         /// </summary>
-        /// <param name="leg1Symbol">Leg 1 symbol</param>
-        /// <param name="leg2Symbol">Leg 2 symbol</param>
+        /// <param name="tradingPair">Parent trading pair</param>
         /// <param name="levelPair">Grid level pair (entry and exit)</param>
         /// <param name="openTime">Position open time</param>
-        public GridPosition(Symbol leg1Symbol, Symbol leg2Symbol, GridLevelPair levelPair, DateTime openTime)
+        public GridPosition(TradingPair tradingPair, GridLevelPair levelPair, DateTime openTime)
         {
-            Leg1Symbol = leg1Symbol;
-            Leg2Symbol = leg2Symbol;
+            TradingPair = tradingPair ?? throw new ArgumentNullException(nameof(tradingPair));
+            Leg1Symbol = tradingPair.Leg1Symbol;
+            Leg2Symbol = tradingPair.Leg2Symbol;
             _levelPair = levelPair ?? throw new ArgumentNullException(nameof(levelPair));
             OpenTime = openTime;
-
-            _tickets = new List<OrderTicket>();
-            _brokerIds = new HashSet<string>();
 
             Leg1Quantity = 0m;
             Leg2Quantity = 0m;
@@ -153,8 +132,7 @@ namespace QuantConnect.TradingPairs.Grid
             decimal leg2Quantity,
             decimal leg1AverageCost,
             decimal leg2AverageCost,
-            GridLevelPair levelPair,
-            HashSet<string> brokerIds)
+            GridLevelPair levelPair)
         {
             OpenTime = openTime;
             FirstFillTime = firstFillTime;
@@ -165,51 +143,15 @@ namespace QuantConnect.TradingPairs.Grid
             Leg1AverageCost = leg1AverageCost;
             Leg2AverageCost = leg2AverageCost;
             _levelPair = levelPair;
-            _brokerIds = brokerIds ?? new HashSet<string>();
-            _tickets = new List<OrderTicket>();
         }
 
         /// <summary>
-        /// Adds an order ticket to this position
-        /// </summary>
-        /// <param name="ticket">Order ticket to track</param>
-        public void AddTicket(OrderTicket ticket)
-        {
-            if (ticket == null)
-            {
-                throw new ArgumentNullException(nameof(ticket));
-            }
-
-            if (!_tickets.Contains(ticket))
-            {
-                _tickets.Add(ticket);
-            }
-        }
-
-        /// <summary>
-        /// Handles order submitted event - stores broker IDs from the order
-        /// </summary>
-        /// <param name="order">Order object</param>
-        public void OnOrderSubmitted(Order order)
-        {
-            if (order != null && order.BrokerId != null)
-            {
-                foreach (var brokerId in order.BrokerId)
-                {
-                    if (!string.IsNullOrEmpty(brokerId))
-                    {
-                        _brokerIds.Add(brokerId);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Handles order filled event - updates quantities and costs
+        /// Processes order fill and updates position quantities and costs.
+        /// Called by TradingPairManager.ProcessGridOrderEvent().
         /// </summary>
         /// <param name="fill">Fill event</param>
         /// <param name="ticket">Associated order ticket</param>
-        public void OnOrderFilled(OrderEvent fill, OrderTicket ticket)
+        public void ProcessFill(OrderEvent fill, OrderTicket ticket)
         {
             if (FirstFillTime == null)
             {
@@ -235,27 +177,6 @@ namespace QuantConnect.TradingPairs.Grid
             }
         }
 
-        /// <summary>
-        /// Handles order termination (filled/canceled/invalid) - cleans up tracking
-        /// </summary>
-        /// <param name="order">Order object</param>
-        public void OnOrderTerminated(Order order)
-        {
-            // Remove ticket from tracking
-            _tickets.RemoveAll(t => t.OrderId == order.Id);
-
-            // Remove broker IDs
-            if (order != null && order.BrokerId != null)
-            {
-                foreach (var brokerId in order.BrokerId)
-                {
-                    if (!string.IsNullOrEmpty(brokerId))
-                    {
-                        _brokerIds.Remove(brokerId);
-                    }
-                }
-            }
-        }
 
         /// <summary>
         /// Checks if position should exit based on current spread
@@ -264,9 +185,9 @@ namespace QuantConnect.TradingPairs.Grid
         /// <returns>True if exit condition is met</returns>
         public bool ShouldExit(decimal currentSpread)
         {
-            if (IsEmpty)
+            if (!Invested)
             {
-                return false;  // Already closed
+                return false;  // No position to exit
             }
 
             if (_levelPair.Exit.Direction == "LONG_SPREAD")
@@ -282,26 +203,29 @@ namespace QuantConnect.TradingPairs.Grid
         }
 
         /// <summary>
-        /// Checks if position is empty (no holdings)
+        /// Checks if the position has any holdings (mirrors SecurityHolding.Invested).
+        /// Uses each security's lot size to determine if quantity is significant.
         /// </summary>
         [JsonIgnore]
-        public bool IsEmpty
+        public bool Invested
         {
             get
             {
-                return Math.Abs(Leg1Quantity) < 0.01m && Math.Abs(Leg2Quantity) < 0.01m;
+                var leg1LotSize = TradingPair?.Leg1Security?.SymbolProperties.LotSize ?? 0.01m;
+                var leg2LotSize = TradingPair?.Leg2Security?.SymbolProperties.LotSize ?? 0.01m;
+                return Math.Abs(Leg1Quantity) >= leg1LotSize || Math.Abs(Leg2Quantity) >= leg2LotSize;
             }
         }
 
         /// <summary>
-        /// Finds a ticket by order ID
+        /// Sets the trading pair reference (used after deserialization to restore parent reference)
         /// </summary>
-        /// <param name="orderId">Order ID to find</param>
-        /// <returns>Matching ticket, or null if not found</returns>
-        public OrderTicket FindTicket(int orderId)
+        /// <param name="tradingPair">Parent trading pair</param>
+        public void SetTradingPair(TradingPair tradingPair)
         {
-            return _tickets.FirstOrDefault(t => t.OrderId == orderId);
+            TradingPair = tradingPair ?? throw new ArgumentNullException(nameof(tradingPair));
         }
+
 
         /// <summary>
         /// String representation for debugging
