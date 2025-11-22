@@ -27,47 +27,39 @@ namespace QuantConnect.TradingPairs
     public partial class TradingPair
     {
         /// <summary>
-        /// Grid level configurations for this trading pair.
+        /// Grid level pair configurations for this trading pair.
         /// Each GridLevelPair defines an entry and exit trigger.
         /// </summary>
-        public List<GridLevelPair> GridLevels { get; }
+        public List<GridLevelPair> LevelPairs { get; }
 
         /// <summary>
-        /// Active grid positions indexed by entry level's natural key.
-        /// Key format: "{spread}|{direction}|{type}" (e.g., "-0.0200|LONG_SPREAD|ENTRY")
+        /// Active grid positions indexed by Tag (encoded grid configuration).
+        /// Key format: "{Symbol1.ID}|{Symbol2.ID}|{EntrySpread}|{ExitSpread}|{Direction}|{PositionSize}"
+        /// Example: "BTCUSD 8O|MSTR 2T|-0.0200|0.0050|LONG_SPREAD|0.2500"
+        ///
+        /// This Tag-based indexing enables:
+        /// - Direct lookup from Order.Tag without re-parsing
+        /// - Self-contained position identification
+        /// - Automatic recovery after algorithm restart
         /// </summary>
         public Dictionary<string, GridPosition> GridPositions { get; }
 
         /// <summary>
-        /// Initializes grid collections in the constructor.
-        /// This must be called from TradingPair's main constructor.
-        /// </summary>
-        private void InitializeGridCollections()
-        {
-            // These are initialized in the field declarations above
-            // This method is a placeholder for future initialization logic if needed
-        }
-
-        /// <summary>
         /// Gets or creates a grid position for the specified level pair.
-        /// Uses the entry level's NaturalKey as the dictionary key to ensure
-        /// only one position exists per entry level.
+        /// Uses EncodeGridTag() to generate the dictionary key.
         /// </summary>
         /// <param name="levelPair">The grid level pair (entry and exit configuration)</param>
-        /// <param name="time">Position open time</param>
+        /// <param name="openTime">Position open time (used only when creating new position)</param>
         /// <returns>Existing or newly created grid position</returns>
-        public GridPosition GetOrCreatePosition(GridLevelPair levelPair, DateTime time)
+        public GridPosition GetOrCreatePosition(GridLevelPair levelPair, DateTime openTime)
         {
             if (levelPair == null)
             {
                 throw new ArgumentNullException(nameof(levelPair));
             }
 
-            // Use entry level's natural key for indexing
-            string key = levelPair.Entry.NaturalKey;
-
             // Return existing position if found
-            if (GridPositions.TryGetValue(key, out var existingPosition))
+            if (TryGetPosition(levelPair, out var existingPosition, out var tag))
             {
                 return existingPosition;
             }
@@ -77,22 +69,36 @@ namespace QuantConnect.TradingPairs
                 Leg1Symbol,
                 Leg2Symbol,
                 levelPair,
-                time
+                openTime
             );
 
-            GridPositions[key] = newPosition;
+            GridPositions[tag] = newPosition;
             return newPosition;
         }
 
         /// <summary>
-        /// Tries to get an existing grid position by entry level.
+        /// Tries to get an existing grid position by Tag.
         /// </summary>
-        /// <param name="entryLevel">The entry level to look up</param>
+        /// <param name="tag">The Tag (from Order.Tag or EncodeGridTag)</param>
         /// <param name="position">Output parameter for the found position</param>
         /// <returns>True if position exists, false otherwise</returns>
-        public bool TryGetPosition(GridLevel entryLevel, out GridPosition position)
+        public bool TryGetPosition(string tag, out GridPosition position)
         {
-            return GridPositions.TryGetValue(entryLevel.NaturalKey, out position);
+            return GridPositions.TryGetValue(tag, out position);
+        }
+
+        /// <summary>
+        /// Tries to get an existing grid position by GridLevelPair.
+        /// Encodes the Tag internally using EncodeGridTag().
+        /// </summary>
+        /// <param name="levelPair">The grid level pair to search for</param>
+        /// <param name="position">Output parameter for the found position</param>
+        /// <param name="tag">Output parameter for the encoded tag</param>
+        /// <returns>True if position exists, false otherwise</returns>
+        public bool TryGetPosition(GridLevelPair levelPair, out GridPosition position, out string tag)
+        {
+            tag = TradingPairManager.EncodeGridTag(Leg1Symbol, Leg2Symbol, levelPair);
+            return GridPositions.TryGetValue(tag, out position);
         }
 
         /// <summary>
@@ -121,13 +127,13 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
-        /// Removes a grid position by its entry level's natural key.
+        /// Removes a grid position by its Tag.
         /// </summary>
-        /// <param name="entryLevelKey">The natural key of the entry level</param>
+        /// <param name="tag">The Tag (from Order.Tag or EncodeGridTag)</param>
         /// <returns>True if position was removed, false if it didn't exist</returns>
-        public bool RemovePosition(string entryLevelKey)
+        public bool RemovePosition(string tag)
         {
-            return GridPositions.Remove(entryLevelKey);
+            return GridPositions.Remove(tag);
         }
 
         /// <summary>

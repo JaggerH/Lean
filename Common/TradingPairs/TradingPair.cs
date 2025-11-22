@@ -150,7 +150,7 @@ namespace QuantConnect.TradingPairs
             MarketState = MarketState.Unknown;
 
             // Initialize Grid collections
-            GridLevels = new List<GridLevelPair>();
+            LevelPairs = new List<GridLevelPair>();
             GridPositions = new Dictionary<string, GridPosition>();
         }
 

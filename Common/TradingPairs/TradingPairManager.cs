@@ -25,7 +25,7 @@ namespace QuantConnect.TradingPairs
     /// <summary>
     /// Manages a collection of trading pairs with automatic updates
     /// </summary>
-    public class TradingPairManager : IEnumerable<TradingPair>, INotifyCollectionChanged
+    public partial class TradingPairManager : IEnumerable<TradingPair>, INotifyCollectionChanged
     {
         /// <summary>
         /// Event fired when a trading pair is added or removed from the collection
