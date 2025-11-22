@@ -32,6 +32,7 @@ namespace QuantConnect.TradingPairs
         /// </summary>
         public event NotifyCollectionChangedEventHandler CollectionChanged;
         private readonly SecurityManager _securities;
+        private readonly IOrderProvider _transactions;
         private readonly Dictionary<(Symbol, Symbol), TradingPair> _pairs;
 
         /// <summary>
@@ -43,9 +44,11 @@ namespace QuantConnect.TradingPairs
         /// Initializes a new instance of the <see cref="TradingPairManager"/> class
         /// </summary>
         /// <param name="securities">The security manager containing all securities</param>
-        public TradingPairManager(SecurityManager securities)
+        /// <param name="transactions">The order provider for order operations</param>
+        public TradingPairManager(SecurityManager securities, IOrderProvider transactions)
         {
-            _securities = securities;
+            _securities = securities ?? throw new ArgumentNullException(nameof(securities));
+            _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
             _pairs = new Dictionary<(Symbol, Symbol), TradingPair>();
         }
 

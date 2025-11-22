@@ -150,8 +150,7 @@ namespace QuantConnect.TradingPairs.Grid
         /// Called by TradingPairManager.ProcessGridOrderEvent().
         /// </summary>
         /// <param name="fill">Fill event</param>
-        /// <param name="ticket">Associated order ticket</param>
-        public void ProcessFill(OrderEvent fill, OrderTicket ticket)
+        public void ProcessFill(OrderEvent fill)
         {
             if (FirstFillTime == null)
             {
@@ -159,7 +158,7 @@ namespace QuantConnect.TradingPairs.Grid
             }
 
             // Use Symbol.Equals for strict comparison (compares SecurityIdentifier)
-            bool isLeg1 = ticket.Symbol.Equals(Leg1Symbol);
+            bool isLeg1 = fill.Symbol.Equals(Leg1Symbol);
 
             if (isLeg1)
             {

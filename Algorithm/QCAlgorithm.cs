@@ -202,8 +202,8 @@ namespace QuantConnect.Algorithm
             SubscriptionManager = new SubscriptionManager(_timeKeeper);
 
             Securities = new SecurityManager(_timeKeeper);
-            TradingPairs = new TradingPairs.TradingPairManager(Securities);
             Transactions = new SecurityTransactionManager(this, Securities);
+            TradingPairs = new TradingPairs.TradingPairManager(Securities, Transactions);
             Portfolio = new SecurityPortfolioManager(Securities, Transactions, Settings, DefaultOrderProperties);
             SignalExport = new SignalExportManager(this);
 
