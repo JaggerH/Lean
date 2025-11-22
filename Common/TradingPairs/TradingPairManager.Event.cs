@@ -62,7 +62,7 @@ namespace QuantConnect.TradingPairs
                 return null;
 
             // Get or create GridPosition for this order
-            var position = pair.GetOrCreatePosition(levelPair, orderEvent.UtcTime);
+            var position = pair.GetOrCreatePosition(levelPair);
 
             return new OrderContext
             {

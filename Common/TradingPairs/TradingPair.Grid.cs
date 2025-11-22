@@ -49,9 +49,8 @@ namespace QuantConnect.TradingPairs
         /// Uses EncodeGridTag() to generate the dictionary key.
         /// </summary>
         /// <param name="levelPair">The grid level pair (entry and exit configuration)</param>
-        /// <param name="openTime">Position open time (used only when creating new position)</param>
         /// <returns>Existing or newly created grid position</returns>
-        public GridPosition GetOrCreatePosition(GridLevelPair levelPair, DateTime openTime)
+        public GridPosition GetOrCreatePosition(GridLevelPair levelPair)
         {
             if (levelPair == null)
             {
@@ -67,8 +66,7 @@ namespace QuantConnect.TradingPairs
             // Create new position
             var newPosition = new GridPosition(
                 this,
-                levelPair,
-                openTime
+                levelPair
             );
 
             GridPositions[tag] = newPosition;

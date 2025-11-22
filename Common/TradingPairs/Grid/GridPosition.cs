@@ -40,12 +40,6 @@ namespace QuantConnect.TradingPairs.Grid
         public TradingPair TradingPair { get; private set; }
 
         /// <summary>
-        /// Position open time
-        /// </summary>
-        [JsonProperty("open_time")]
-        public DateTime OpenTime { get; private set; }
-
-        /// <summary>
         /// First fill time (when position became active)
         /// </summary>
         [JsonProperty("first_fill_time")]
@@ -104,14 +98,12 @@ namespace QuantConnect.TradingPairs.Grid
         /// </summary>
         /// <param name="tradingPair">Parent trading pair</param>
         /// <param name="levelPair">Grid level pair (entry and exit)</param>
-        /// <param name="openTime">Position open time</param>
-        public GridPosition(TradingPair tradingPair, GridLevelPair levelPair, DateTime openTime)
+        public GridPosition(TradingPair tradingPair, GridLevelPair levelPair)
         {
             TradingPair = tradingPair ?? throw new ArgumentNullException(nameof(tradingPair));
             Leg1Symbol = tradingPair.Leg1Symbol;
             Leg2Symbol = tradingPair.Leg2Symbol;
             _levelPair = levelPair ?? throw new ArgumentNullException(nameof(levelPair));
-            OpenTime = openTime;
 
             Leg1Quantity = 0m;
             Leg2Quantity = 0m;
@@ -124,7 +116,6 @@ namespace QuantConnect.TradingPairs.Grid
         /// </summary>
         [JsonConstructor]
         private GridPosition(
-            DateTime openTime,
             DateTime? firstFillTime,
             Symbol leg1Symbol,
             Symbol leg2Symbol,
@@ -134,7 +125,6 @@ namespace QuantConnect.TradingPairs.Grid
             decimal leg2AverageCost,
             GridLevelPair levelPair)
         {
-            OpenTime = openTime;
             FirstFillTime = firstFillTime;
             Leg1Symbol = leg1Symbol;
             Leg2Symbol = leg2Symbol;

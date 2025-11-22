@@ -120,8 +120,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Act
             var position = new GridPosition(
                 pair,
-                levelPair,
-                _testTime
+                levelPair
             );
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
             pair.GridPositions[tag] = position;
@@ -183,8 +182,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Act
             var position = new GridPosition(
                 pair,
-                levelPair,
-                _testTime
+                levelPair
             );
 
             // Assert
@@ -193,7 +191,6 @@ namespace QuantConnect.Tests.Common.TradingPairs
             Assert.AreEqual(0m, position.Leg1AverageCost);
             Assert.AreEqual(0m, position.Leg2AverageCost);
             Assert.IsFalse(position.Invested);
-            Assert.AreEqual(_testTime, position.OpenTime);
             Assert.IsNull(position.FirstFillTime);
         }
 
