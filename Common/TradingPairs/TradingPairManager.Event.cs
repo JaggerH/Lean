@@ -48,12 +48,11 @@ namespace QuantConnect.TradingPairs
         /// <returns>OrderContext if successful, null otherwise</returns>
         private OrderContext ParseOrderContext(OrderEvent orderEvent)
         {
-            var order = _transactions.GetOrderById(orderEvent.OrderId);
-            if (order == null || string.IsNullOrEmpty(order.Tag))
+            if (orderEvent.Ticket == null || string.IsNullOrEmpty(orderEvent.Ticket.Tag))
                 return null;
 
             // Decode Tag (single parse point) - directly get Symbols
-            if (!TryDecodeGridTag(order.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
+            if (!TryDecodeGridTag(orderEvent.Ticket.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
                 return null;
 
             // Find TradingPair using Symbols
@@ -69,7 +68,7 @@ namespace QuantConnect.TradingPairs
                 Pair = pair,
                 Position = position,
                 LevelPair = levelPair,
-                Tag = order.Tag
+                Tag = orderEvent.Ticket.Tag
             };
         }
         
@@ -87,6 +86,10 @@ namespace QuantConnect.TradingPairs
         /// <param name="orderEvent">The order event to process</param>
         public void ProcessGridOrderEvent(OrderEvent orderEvent)
         {
+            // 记录该市场的最新OrderEvent时间
+            var market = orderEvent.Symbol.ID.Market;
+            _lastOrderEventTime[market] = orderEvent.UtcTime;
+
             // Parse order context once (avoids redundant Tag parsing)
             // This also creates GridPosition if it doesn't exist
             var context = ParseOrderContext(orderEvent);
