@@ -382,7 +382,24 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                         algorithm.SetFutureChainProvider(futureChainProvider);
 
                         // Inject ExecutionHistoryProvider for AIAlgorithm
-                        ((Interfaces.AIAlgorithm)algorithm).ExecutionHistoryProvider = new ExecutionHistory.BrokerageExecutionHistoryProvider((MultiBrokerageManager)brokerage);
+                        if (algorithm is Interfaces.AIAlgorithm aiAlgorithm)
+                        {
+                            var multiBrokerage = (MultiBrokerageManager)brokerage;
+
+                            // Validate execution history support before injecting provider
+                            var unsupportedAccounts = ValidateExecutionHistorySupport(multiBrokerage);
+                            if (unsupportedAccounts.Any())
+                            {
+                                var accountList = string.Join(", ", unsupportedAccounts);
+                                var message = $"Warning: The following brokerage accounts do not support execution history (GetExecutionHistory): {accountList}. " +
+                                             "Reconciliation features may not work correctly for these accounts.";
+                                algorithm.Debug(message);
+                                Log.Error($"BrokerageSetupHandler.Setup(): {message}");
+                            }
+
+                            aiAlgorithm.ExecutionHistoryProvider = new ExecutionHistory.BrokerageExecutionHistoryProvider(multiBrokerage);
+                            Log.Trace("BrokerageSetupHandler.Setup(): ExecutionHistoryProvider injected successfully");
+                        }
 
                         // Initialize the algorithm
                         algorithm.Initialize();
@@ -770,6 +787,51 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             }
         }
 
+        /// <summary>
+        /// Validates which brokerage accounts in the MultiBrokerageManager support execution history.
+        /// </summary>
+        /// <param name="manager">The MultiBrokerageManager to validate</param>
+        /// <returns>List of account names that do not support GetExecutionHistory</returns>
+        private List<string> ValidateExecutionHistorySupport(MultiBrokerageManager manager)
+        {
+            var unsupportedAccounts = new List<string>();
+
+            // Get all brokerages from the manager using reflection
+            var brokeragesField = typeof(MultiBrokerageManager).GetField("_brokerages",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            if (brokeragesField != null)
+            {
+                var brokerages = brokeragesField.GetValue(manager) as Dictionary<string, IBrokerage>;
+                if (brokerages != null)
+                {
+                    foreach (var kvp in brokerages)
+                    {
+                        var accountName = kvp.Key;
+                        var brokerage = kvp.Value;
+
+                        // Check if this brokerage has GetExecutionHistory method
+                        var method = brokerage.GetType().GetMethod(
+                            "GetExecutionHistory",
+                            new[] { typeof(DateTime), typeof(DateTime) });
+
+                        if (method == null)
+                        {
+                            unsupportedAccounts.Add($"{accountName} ({brokerage.Name})");
+                            Log.Trace($"BrokerageSetupHandler.ValidateExecutionHistorySupport(): " +
+                                     $"Account '{accountName}' brokerage '{brokerage.Name}' does not implement GetExecutionHistory");
+                        }
+                        else
+                        {
+                            Log.Trace($"BrokerageSetupHandler.ValidateExecutionHistorySupport(): " +
+                                     $"Account '{accountName}' brokerage '{brokerage.Name}' supports GetExecutionHistory");
+                        }
+                    }
+                }
+            }
+
+            return unsupportedAccounts;
+        }
 
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.

@@ -32,5 +32,15 @@ namespace QuantConnect.Interfaces
         /// Trading pairs automatically calculate spreads and market states based on their constituent securities.
         /// </summary>
         TradingPairs.TradingPairManager TradingPairs { get; }
+
+        /// <summary>
+        /// Gets whether the algorithm supports execution history reconciliation.
+        /// Returns true if ExecutionHistoryProvider is set and available.
+        /// </summary>
+        /// <remarks>
+        /// Use this property to check if reconciliation features are available before using them.
+        /// If false, the brokerage does not support execution history queries or the provider was not injected.
+        /// </remarks>
+        bool SupportsExecutionHistory { get; }
     }
 }

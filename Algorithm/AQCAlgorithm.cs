@@ -39,6 +39,12 @@ namespace QuantConnect.Algorithm
         public TradingPairs.TradingPairManager TradingPairs { get; private set; }
 
         /// <summary>
+        /// Gets whether the algorithm supports execution history reconciliation.
+        /// Implementation of AIAlgorithm.SupportsExecutionHistory.
+        /// </summary>
+        public bool SupportsExecutionHistory => ExecutionHistoryProvider != null;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="AQCAlgorithm"/> class.
         /// </summary>
         public AQCAlgorithm()
@@ -48,6 +54,45 @@ namespace QuantConnect.Algorithm
 
             // Initialize Framework components (Alpha, Insights, etc.)
             InitializeFramework();
+        }
+
+        /// <summary>
+        /// Called after the algorithm has been initialized and securities are added.
+        /// Sets up reconciliation scheduling for live trading.
+        /// </summary>
+        public override void PostInitialize()
+        {
+            base.PostInitialize();
+
+            // Only setup reconciliation in live mode
+            if (LiveMode && TradingPairs != null)
+            {
+                // Initialize baseline for trading pairs reconciliation
+                TradingPairs.InitializeBaseline(Portfolio);
+                Debug("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
+
+                // Setup periodic reconciliation if ExecutionHistoryProvider is available
+                if (ExecutionHistoryProvider != null)
+                {
+                    // Schedule reconciliation every 15 minutes
+                    Schedule.On(
+                        DateRules.EveryDay(),
+                        TimeRules.Every(System.TimeSpan.FromMinutes(15)),
+                        () =>
+                        {
+                            if (!IsWarmingUp)
+                            {
+                                TradingPairs.CompareBaseline(Portfolio);
+                            }
+                        }
+                    );
+                    Debug("AQCAlgorithm: Scheduled periodic reconciliation every 15 minutes");
+                }
+                else
+                {
+                    Debug("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
+                }
+            }
         }
 
         /// <summary>
