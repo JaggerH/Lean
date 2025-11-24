@@ -1,0 +1,68 @@
+using QuantConnect.Interfaces;
+
+namespace QuantConnect.Algorithm
+{
+    /// <summary>
+    /// Arbitrage QCAlgorithm - Extended base class with arbitrage-specific features.
+    /// Inherits all functionality from QCAlgorithm and implements AIAlgorithm interface.
+    /// </summary>
+    /// <remarks>
+    /// This class extends QCAlgorithm with arbitrage-specific capabilities without modifying
+    /// the core LEAN framework. Use this as the base class for arbitrage trading algorithms
+    /// that require execution history reconciliation and advanced order management.
+    ///
+    /// By implementing AIAlgorithm interface, this class provides:
+    /// - ExecutionHistoryProvider for accessing brokerage execution records
+    /// - ExecutionHistory() methods for querying historical executions
+    /// - All standard QCAlgorithm functionality (inherited)
+    ///
+    /// The ExecutionHistoryProvider can be set by the Engine layer or manually injected
+    /// for testing. If the provider is set, all ExecutionHistory() methods will work;
+    /// otherwise they return empty results.
+    /// </remarks>
+    public partial class AQCAlgorithm : QCAlgorithm, AIAlgorithm
+    {
+        /// <summary>
+        /// Gets or sets the execution history provider for the algorithm.
+        /// Implementation of AIAlgorithm.ExecutionHistoryProvider.
+        /// </summary>
+        public IExecutionHistoryProvider ExecutionHistoryProvider { get; set; }
+
+        /// <summary>
+        /// Gets the trading pair collection that manages pairs of securities for spread trading and arbitrage strategies.
+        /// Trading pairs automatically calculate spreads and market states based on their constituent securities.
+        /// Implementation of AIAlgorithm.TradingPairs.
+        /// </summary>
+        public TradingPairs.TradingPairManager TradingPairs { get; private set; }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AQCAlgorithm"/> class.
+        /// </summary>
+        public AQCAlgorithm()
+        {
+            // Initialize TradingPairs manager for arbitrage strategies
+            TradingPairs = new TradingPairs.TradingPairManager(this);
+        }
+
+        /// <summary>
+        /// Creates and adds a new trading pair for spread trading and arbitrage strategies
+        /// </summary>
+        /// <param name="leg1">The first leg symbol</param>
+        /// <param name="leg2">The second leg symbol</param>
+        /// <param name="pairType">The type of trading pair (e.g., "spread", "tokenized", "futures")</param>
+        /// <returns>The new <see cref="TradingPairs.TradingPair"/> object</returns>
+        public TradingPairs.TradingPair AddTradingPair(Symbol leg1, Symbol leg2, string pairType = "spread")
+        {
+            if (!Securities.ContainsKey(leg1))
+            {
+                throw new System.ArgumentException($"Security {leg1} must be added to the algorithm before creating a trading pair");
+            }
+            if (!Securities.ContainsKey(leg2))
+            {
+                throw new System.ArgumentException($"Security {leg2} must be added to the algorithm before creating a trading pair");
+            }
+
+            return TradingPairs.AddPair(leg1, leg2, pairType);
+        }
+    }
+}

@@ -32,7 +32,7 @@ namespace QuantConnect.TradingPairs
         /// Event fired when a trading pair is added or removed from the collection
         /// </summary>
         public event NotifyCollectionChangedEventHandler CollectionChanged;
-        private readonly IAlgorithm _algorithm;
+        private readonly AIAlgorithm _algorithm;
         private readonly SecurityManager _securities;
         private readonly IOrderProvider _transactions;
         private readonly Dictionary<(Symbol, Symbol), TradingPair> _pairs;
@@ -45,8 +45,8 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// Initializes a new instance of the <see cref="TradingPairManager"/> class
         /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        public TradingPairManager(IAlgorithm algorithm)
+        /// <param name="algorithm">The arbitrage algorithm instance (must implement AIAlgorithm)</param>
+        public TradingPairManager(AIAlgorithm algorithm)
         {
             _algorithm = algorithm ?? throw new ArgumentNullException(nameof(algorithm));
             _securities = algorithm.Securities;

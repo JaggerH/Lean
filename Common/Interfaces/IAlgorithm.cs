@@ -92,15 +92,6 @@ namespace QuantConnect.Interfaces
         }
 
         /// <summary>
-        /// Trading pair collection that manages pairs of securities for spread trading and arbitrage strategies.
-        /// Trading pairs automatically calculate spreads and market states based on their constituent securities.
-        /// </summary>
-        TradingPairs.TradingPairManager TradingPairs
-        {
-            get;
-        }
-
-        /// <summary>
         /// Gets the collection of universes for the algorithm
         /// </summary>
         UniverseManager UniverseManager

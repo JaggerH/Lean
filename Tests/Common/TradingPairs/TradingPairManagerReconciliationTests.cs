@@ -34,7 +34,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
     {
         private SecurityManager _securities;
         private SecurityTransactionManager _transactions;
-        private Mock<IAlgorithm> _mockAlgorithm;
+        private Mock<AIAlgorithm> _mockAlgorithm;
         private SecurityPortfolioManager _portfolio;
         private Security _btcSecurity;
         private Security _mstrSecurity;
@@ -44,7 +44,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Setup()
         {
             _securities = new SecurityManager(new TimeKeeper(DateTime.UtcNow, TimeZones.NewYork));
-            _mockAlgorithm = new Mock<IAlgorithm>();
+            _mockAlgorithm = new Mock<AIAlgorithm>();
             _transactions = new SecurityTransactionManager(_mockAlgorithm.Object, _securities);
             _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
             _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);
@@ -483,7 +483,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         // Create a testable subclass that allows us to spy on protected virtual methods
         private class TestableTradingPairManager : TradingPairManager
         {
-            public TestableTradingPairManager(IAlgorithm algorithm)
+            public TestableTradingPairManager(AIAlgorithm algorithm)
                 : base(algorithm)
             {
             }

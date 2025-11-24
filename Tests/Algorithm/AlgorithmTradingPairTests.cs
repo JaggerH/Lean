@@ -30,12 +30,12 @@ namespace QuantConnect.Tests.Algorithm
     [TestFixture]
     public class AlgorithmTradingPairTests
     {
-        private QCAlgorithm _algorithm;
+        private AQCAlgorithm _algorithm;
 
         [SetUp]
         public void Setup()
         {
-            _algorithm = new QCAlgorithm();
+            _algorithm = new AQCAlgorithm();
             _algorithm.SubscriptionManager.SetDataManager(new DataManagerStub(_algorithm));
         }
 
@@ -378,7 +378,7 @@ namespace QuantConnect.Tests.Algorithm
 
         #region Test Algorithms
 
-        private class TradingPairAccessTestAlgorithm : QCAlgorithm
+        private class TradingPairAccessTestAlgorithm : AQCAlgorithm
         {
             public bool TradingPairsAccessed { get; private set; }
             public int PairsCount { get; private set; }
@@ -393,7 +393,7 @@ namespace QuantConnect.Tests.Algorithm
             }
         }
 
-        private class TradingPairIterationTestAlgorithm : QCAlgorithm
+        private class TradingPairIterationTestAlgorithm : AQCAlgorithm
         {
             public int IteratedPairsCount { get; private set; }
 
@@ -409,7 +409,7 @@ namespace QuantConnect.Tests.Algorithm
             }
         }
 
-        private class CrossedPairsFilterTestAlgorithm : QCAlgorithm
+        private class CrossedPairsFilterTestAlgorithm : AQCAlgorithm
         {
             public int CrossedPairsCount { get; private set; }
 
@@ -422,7 +422,7 @@ namespace QuantConnect.Tests.Algorithm
             }
         }
 
-        private class PairPropertiesReadTestAlgorithm : QCAlgorithm
+        private class PairPropertiesReadTestAlgorithm : AQCAlgorithm
         {
             public bool PropertiesRead { get; private set; }
             public bool HasValidPrices { get; private set; }

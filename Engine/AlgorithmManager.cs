@@ -244,10 +244,11 @@ namespace QuantConnect.Lean.Engine
                     algorithm.TradeBuilder.SetMarketPrice(security.Symbol, security.Price);
                 }
 
-                // Update all trading pairs after securities have been updated
-                if (algorithm.TradingPairs != null && algorithm.TradingPairs.Count > 0)
+                // Update all trading pairs after securities have been updated (only for arbitrage algorithms)
+                var arbitrageAlgorithm = algorithm as Interfaces.AIAlgorithm;
+                if (arbitrageAlgorithm?.TradingPairs != null && arbitrageAlgorithm.TradingPairs.Count > 0)
                 {
-                    algorithm.TradingPairs.UpdateAll();
+                    arbitrageAlgorithm.TradingPairs.UpdateAll();
                 }
 
                 // TODO: potentially push into a scheduled event

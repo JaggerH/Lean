@@ -30,7 +30,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
     {
         private SecurityManager _securities;
         private SecurityTransactionManager _transactions;
-        private Mock<IAlgorithm> _mockAlgorithm;
+        private Mock<AIAlgorithm> _mockAlgorithm;
         private Security _btcSecurity;
         private Security _mstrSecurity;
         private DateTime _testTime;
@@ -40,7 +40,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         {
             _testTime = new DateTime(2024, 1, 1, 9, 30, 0);
             _securities = new SecurityManager(new TimeKeeper(_testTime, TimeZones.NewYork));
-            _mockAlgorithm = new Mock<IAlgorithm>();
+            _mockAlgorithm = new Mock<AIAlgorithm>();
             _transactions = new SecurityTransactionManager(_mockAlgorithm.Object, _securities);
             _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
             _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);

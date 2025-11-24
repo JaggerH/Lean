@@ -145,35 +145,14 @@ namespace QuantConnect.TradingPairs
 
             try
             {
-                // Get brokerage from algorithm via reflection (IAlgorithm doesn't expose Brokerage property)
-                var brokerageProperty = _algorithm.GetType().GetProperty("Brokerage");
-                if (brokerageProperty == null)
+                // Use ExecutionHistoryProvider from AIAlgorithm interface (type-safe, no reflection)
+                if (_algorithm.ExecutionHistoryProvider == null)
                 {
-                    Log.Trace("TradingPairManager.Reconciliation: Algorithm does not have Brokerage property");
+                    Log.Trace("TradingPairManager.Reconciliation: ExecutionHistoryProvider not set on algorithm");
                     return;
                 }
 
-                var brokerage = brokerageProperty.GetValue(_algorithm);
-                if (brokerage == null)
-                {
-                    Log.Trace("TradingPairManager.Reconciliation: Brokerage is null");
-                    return;
-                }
-
-                // Get executions from brokerage via reflection (avoid Engine layer dependency)
-                var getHistoryMethod = brokerage.GetType().GetMethod(
-                    "GetExecutionHistory",
-                    new[] { typeof(DateTime), typeof(DateTime) });
-
-                if (getHistoryMethod == null)
-                {
-                    Log.Trace("TradingPairManager.Reconciliation: Brokerage does not support GetExecutionHistory");
-                    return;
-                }
-
-                var executions = (List<ExecutionRecord>)getHistoryMethod.Invoke(
-                    brokerage,
-                    new object[] { earliestTime, endTime });
+                var executions = _algorithm.ExecutionHistoryProvider.GetExecutionHistory(earliestTime, endTime);
 
                 if (executions == null || executions.Count == 0)
                 {
