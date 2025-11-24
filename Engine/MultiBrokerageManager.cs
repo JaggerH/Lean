@@ -484,7 +484,7 @@ namespace QuantConnect.Lean.Engine
 
                         if (getHistoryMethod == null)
                         {
-                            Log.Trace($"MultiBrokerageManager.GetExecutionHistory(): Brokerage '{brokerage.Name}' (account '{accountName}') does not implement GetExecutionHistory method");
+                            Log.Error($"MultiBrokerageManager.GetExecutionHistory(): Brokerage '{brokerage.Name}' (account '{accountName}') does not implement GetExecutionHistory method");
                             continue;
                         }
 

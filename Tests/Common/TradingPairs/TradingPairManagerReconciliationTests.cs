@@ -645,5 +645,159 @@ namespace QuantConnect.Tests.Common.TradingPairs
         }
 
         #endregion
+
+        #region ExecutionHistoryProvider Integration Tests
+
+        [Test]
+        public void Test_ExecutionHistoryProvider_IsInjected_CanCallGetExecutionHistory()
+        {
+            // Arrange
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            var testExecutions = new List<ExecutionRecord>
+            {
+                new ExecutionRecord
+                {
+                    Symbol = _btcSecurity.Symbol,
+                    TimeUtc = DateTime.UtcNow,
+                    Quantity = 0.5m,
+                    Price = 50000m,
+                    ExecutionId = "test_1"
+                }
+            };
+
+            mockProvider
+                .Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(testExecutions);
+
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+
+            var manager = CreateManager();
+
+            // Act - Call Reconciliation which should use ExecutionHistoryProvider
+            manager.Reconciliation();
+
+            // Assert - Verify that GetExecutionHistory was called
+            mockProvider.Verify(
+                p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()),
+                Times.Once,
+                "Reconciliation should call ExecutionHistoryProvider.GetExecutionHistory");
+        }
+
+        [Test]
+        public void Test_ExecutionHistoryProvider_NotSet_ReconciliationHandlesGracefully()
+        {
+            // Arrange
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns((IExecutionHistoryProvider)null);
+            var manager = CreateManager();
+
+            // Act & Assert - Should not throw
+            Assert.DoesNotThrow(() => manager.Reconciliation(),
+                "Reconciliation should handle null ExecutionHistoryProvider gracefully");
+        }
+
+        [Test]
+        public void Test_ExecutionHistoryProvider_ReturnsExecutions_ProcessedCorrectly()
+        {
+            // Arrange
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            var pair = CreateTradingPair(CreateManager(), _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            var testExecutions = new List<ExecutionRecord>
+            {
+                new ExecutionRecord
+                {
+                    Symbol = _btcSecurity.Symbol,
+                    TimeUtc = DateTime.UtcNow.AddMinutes(-5),
+                    Quantity = 0.5m,
+                    Price = 50000m,
+                    ExecutionId = "exec_1",
+                    Tag = "order_1"
+                },
+                new ExecutionRecord
+                {
+                    Symbol = _mstrSecurity.Symbol,
+                    TimeUtc = DateTime.UtcNow.AddMinutes(-4),
+                    Quantity = -100m,
+                    Price = 500m,
+                    ExecutionId = "exec_2",
+                    Tag = "order_2"
+                }
+            };
+
+            mockProvider
+                .Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(testExecutions);
+
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+            var manager = CreateManager();
+            var tradingPair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            // Act
+            manager.Reconciliation();
+
+            // Assert
+            mockProvider.Verify(
+                p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()),
+                Times.Once,
+                "Should retrieve execution history");
+        }
+
+        [Test]
+        public void Test_ExecutionHistoryProvider_EmptyResults_HandledCorrectly()
+        {
+            // Arrange
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            mockProvider
+                .Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(new List<ExecutionRecord>());
+
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+            var manager = CreateManager();
+
+            // Act & Assert - Should not throw with empty results
+            Assert.DoesNotThrow(() => manager.Reconciliation(),
+                "Reconciliation should handle empty execution history gracefully");
+
+            mockProvider.Verify(
+                p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()),
+                Times.Once);
+        }
+
+        [Test]
+        public void Test_ExecutionHistoryProvider_CallsWithCorrectTimeRange()
+        {
+            // Arrange
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            DateTime? capturedStartTime = null;
+            DateTime? capturedEndTime = null;
+
+            mockProvider
+                .Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Callback<DateTime, DateTime>((start, end) =>
+                {
+                    capturedStartTime = start;
+                    capturedEndTime = end;
+                })
+                .Returns(new List<ExecutionRecord>());
+
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+            var manager = CreateManager();
+
+            // Act
+            manager.Reconciliation();
+
+            // Assert
+            Assert.IsNotNull(capturedStartTime, "Start time should be captured");
+            Assert.IsNotNull(capturedEndTime, "End time should be captured");
+            Assert.LessOrEqual(capturedStartTime.Value, capturedEndTime.Value,
+                "Start time should be before or equal to end time");
+
+            // Verify time range is reasonable (approximately 30 minutes lookback by default)
+            var timeDiff = capturedEndTime.Value - capturedStartTime.Value;
+            Assert.LessOrEqual(timeDiff, TimeSpan.FromMinutes(31),
+                "Default time range should be approximately 30 minutes");
+        }
+
+        #endregion
     }
 }

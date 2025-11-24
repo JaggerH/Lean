@@ -381,6 +381,9 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                         }
                         algorithm.SetFutureChainProvider(futureChainProvider);
 
+                        // Inject ExecutionHistoryProvider for AIAlgorithm
+                        ((Interfaces.AIAlgorithm)algorithm).ExecutionHistoryProvider = new ExecutionHistory.BrokerageExecutionHistoryProvider((MultiBrokerageManager)brokerage);
+
                         // Initialize the algorithm
                         algorithm.Initialize();
                     }
@@ -434,13 +437,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 // This ensures securities are created as user-facing (isInternalFeed: false) first,
                 // so currency conversions can reuse them instead of creating internal-only feeds
                 if (!LoadExistingHoldingsAndOrders(brokerage, algorithm, parameters))
-                {
-                    return false;
-                }
-
-                // Load historical execution records for trading pair management
-                // Uses TradingPairManager convention-based detection
-                if (!LoadExecutionHistory(brokerage, algorithm, parameters))
                 {
                     return false;
                 }
@@ -774,62 +770,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             }
         }
 
-        /// <summary>
-        /// Triggers reconciliation for TradingPairManager if present in algorithm.
-        /// TradingPairManager handles its own execution history querying and processing.
-        /// </summary>
-        /// <param name="brokerage">The brokerage instance</param>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="parameters">Setup handler parameters</param>
-        /// <returns>True if successful or not supported; false if error occurred</returns>
-        private bool LoadExecutionHistory(IBrokerage brokerage, IAlgorithm algorithm, SetupHandlerParameters parameters)
-        {
-            Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Checking for TradingPairManager...");
-
-            // Check if algorithm has a TradingPairManager property (convention-based approach)
-            var tradingPairManagerProperty = algorithm.GetType()
-                .GetProperty("TradingPairManager", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-
-            if (tradingPairManagerProperty == null)
-            {
-                Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Algorithm does not have a TradingPairManager property, skipping");
-                return true;
-            }
-
-            var tradingPairManager = tradingPairManagerProperty.GetValue(algorithm);
-            if (tradingPairManager == null)
-            {
-                Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): TradingPairManager property is null, skipping");
-                return true;
-            }
-
-            Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Found TradingPairManager, triggering reconciliation...");
-
-            try
-            {
-                // Trigger reconciliation - TradingPairManager handles everything internally
-                var reconciliationMethod = tradingPairManager.GetType().GetMethod("Reconciliation");
-
-                if (reconciliationMethod != null)
-                {
-                    reconciliationMethod.Invoke(tradingPairManager, null);
-                    Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Reconciliation completed successfully");
-                }
-                else
-                {
-                    Log.Error("BrokerageSetupHandler.LoadExecutionHistory(): TradingPairManager does not have Reconciliation() method");
-                }
-
-                return true;
-            }
-            catch (Exception err)
-            {
-                Log.Error(err, "BrokerageSetupHandler.LoadExecutionHistory(): Error during reconciliation");
-                // Don't fail setup - reconciliation is optional enhancement
-                AddInitializationError($"Warning: Failed to perform reconciliation: {err.Message}");
-                return true;  // Return true to continue setup
-            }
-        }
 
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
