@@ -20,6 +20,7 @@ using Moq;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
+using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 using QuantConnect.TradingPairs;
 
@@ -29,7 +30,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
     public class TradingPairManagerTests
     {
         private SecurityManager _securities;
-        private Mock<IOrderProvider> _mockTransactions;
+        private SecurityTransactionManager _transactions;
+        private Mock<IAlgorithm> _mockAlgorithm;
         private Security _spySecurity;
         private Security _aaplSecurity;
         private Security _qqqSecurity;
@@ -38,7 +40,10 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Setup()
         {
             _securities = new SecurityManager(new TimeKeeper(DateTime.UtcNow, TimeZones.NewYork));
-            _mockTransactions = new Mock<IOrderProvider>();
+            _mockAlgorithm = new Mock<IAlgorithm>();
+            _transactions = new SecurityTransactionManager(_mockAlgorithm.Object, _securities);
+            _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
+            _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);
 
             // Create test securities
             var exchangeHours = SecurityExchangeHours.AlwaysOpen(TimeZones.NewYork);
@@ -100,7 +105,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Constructor_InitializesEmptyManager()
         {
             // Arrange & Act
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Assert
             Assert.AreEqual(0, manager.Count);
@@ -115,7 +120,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_CreatesNewPair()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
@@ -132,7 +137,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_ReturnsSamePairIfExists()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair1 = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
@@ -147,7 +152,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_ThrowsIfLeg1SecurityNotFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var unknownSymbol = Symbol.Create("UNKNOWN", SecurityType.Equity, Market.USA);
 
             // Act & Assert
@@ -160,7 +165,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_ThrowsIfLeg2SecurityNotFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var unknownSymbol = Symbol.Create("UNKNOWN", SecurityType.Equity, Market.USA);
 
             // Act & Assert
@@ -173,7 +178,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_DefaultPairType()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
@@ -186,7 +191,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_CustomPairType()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL, "futures");
@@ -203,7 +208,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_RemovePair_RemovesExistingPair()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
@@ -218,7 +223,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_RemovePair_ReturnsFalseIfNotFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var removed = manager.RemovePair(Symbols.SPY, Symbols.AAPL);
@@ -231,7 +236,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_RemovePair_UpdatesCount()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
             Assert.AreEqual(2, manager.Count);
@@ -251,7 +256,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Indexer_ReturnsExistingPair()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var addedPair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
@@ -265,7 +270,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Indexer_ThrowsIfNotFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act & Assert
             Assert.Throws<KeyNotFoundException>(() =>
@@ -278,7 +283,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_TryGetValue_ReturnsTrueIfFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var addedPair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
@@ -293,7 +298,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_TryGetValue_ReturnsFalseIfNotFound()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var found = manager.TryGetValue((Symbols.SPY, Symbols.AAPL), out var pair);
@@ -311,7 +316,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_UpdateAll_UpdatesAllPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Set prices to create a crossed market
@@ -331,7 +336,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_UpdateAll_WithNoPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act & Assert - should not throw
             Assert.DoesNotThrow(() => manager.UpdateAll());
@@ -341,7 +346,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_UpdateAll_UpdatesMultiplePairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair1 = manager.AddPair(Symbols.SPY, Symbols.AAPL);
             var pair2 = manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
 
@@ -366,7 +371,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetByState_ReturnsCrossedPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
 
@@ -389,7 +394,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetByState_ReturnsNoOpportunityPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
 
@@ -411,7 +416,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetByState_ReturnsEmptyIfNoMatches()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Set prices with slightly overlapping ranges but no crossing
@@ -431,7 +436,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetByState_FiltersCorrectly()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.AAPL, _qqqSecurity.Symbol);
 
@@ -461,7 +466,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetCrossedPairs_ReturnsOnlyCrossedPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
 
@@ -484,7 +489,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetCrossedPairs_ReturnsEmptyIfNone()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Prices clearly not crossed: SPY bid (100) < AAPL ask (102)
@@ -508,7 +513,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetAll_ReturnsAllPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
             manager.AddPair(Symbols.AAPL, _qqqSecurity.Symbol);
@@ -524,7 +529,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GetAll_ReturnsEmptyIfNone()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var allPairs = manager.GetAll().ToList();
@@ -541,7 +546,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Clear_RemovesAllPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
             Assert.AreEqual(2, manager.Count);
@@ -558,7 +563,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Clear_SetsCountToZero()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
@@ -576,7 +581,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Enumeration_IteratesAllPairs()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
 
@@ -596,7 +601,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_Enumeration_SupportsLinq()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             manager.AddPair(Symbols.SPY, Symbols.AAPL);
             manager.AddPair(Symbols.SPY, _qqqSecurity.Symbol);
             manager.AddPair(Symbols.AAPL, _qqqSecurity.Symbol);

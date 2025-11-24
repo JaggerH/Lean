@@ -18,6 +18,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Linq;
+using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 
 namespace QuantConnect.TradingPairs
@@ -31,6 +32,7 @@ namespace QuantConnect.TradingPairs
         /// Event fired when a trading pair is added or removed from the collection
         /// </summary>
         public event NotifyCollectionChangedEventHandler CollectionChanged;
+        private readonly IAlgorithm _algorithm;
         private readonly SecurityManager _securities;
         private readonly IOrderProvider _transactions;
         private readonly Dictionary<(Symbol, Symbol), TradingPair> _pairs;
@@ -43,12 +45,12 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// Initializes a new instance of the <see cref="TradingPairManager"/> class
         /// </summary>
-        /// <param name="securities">The security manager containing all securities</param>
-        /// <param name="transactions">The order provider for order operations</param>
-        public TradingPairManager(SecurityManager securities, IOrderProvider transactions)
+        /// <param name="algorithm">The algorithm instance</param>
+        public TradingPairManager(IAlgorithm algorithm)
         {
-            _securities = securities ?? throw new ArgumentNullException(nameof(securities));
-            _transactions = transactions ?? throw new ArgumentNullException(nameof(transactions));
+            _algorithm = algorithm ?? throw new ArgumentNullException(nameof(algorithm));
+            _securities = algorithm.Securities;
+            _transactions = algorithm.Transactions;
             _pairs = new Dictionary<(Symbol, Symbol), TradingPair>();
         }
 

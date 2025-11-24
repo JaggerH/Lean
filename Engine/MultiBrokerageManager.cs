@@ -459,6 +459,57 @@ namespace QuantConnect.Lean.Engine
         }
 
         /// <summary>
+        /// Gets execution history across all accounts within a time range.
+        /// Uses reflection to detect GetExecutionHistory method on each brokerage.
+        /// </summary>
+        /// <param name="startTimeUtc">Start time (UTC)</param>
+        /// <param name="endTimeUtc">End time (UTC)</param>
+        /// <returns>List of execution records from all brokerages</returns>
+        public List<TradingPairs.ExecutionRecord> GetExecutionHistory(DateTime startTimeUtc, DateTime endTimeUtc)
+        {
+            var allExecutions = new List<TradingPairs.ExecutionRecord>();
+            lock (_lock)
+            {
+                foreach (var kvp in _brokerages)
+                {
+                    var accountName = kvp.Key;
+                    var brokerage = kvp.Value;
+
+                    try
+                    {
+                        // Use reflection to detect and call GetExecutionHistory method
+                        var getHistoryMethod = brokerage.GetType().GetMethod(
+                            "GetExecutionHistory",
+                            new[] { typeof(DateTime), typeof(DateTime) });
+
+                        if (getHistoryMethod == null)
+                        {
+                            Log.Trace($"MultiBrokerageManager.GetExecutionHistory(): Brokerage '{brokerage.Name}' (account '{accountName}') does not implement GetExecutionHistory method");
+                            continue;
+                        }
+
+                        var executions = (List<TradingPairs.ExecutionRecord>)getHistoryMethod.Invoke(
+                            brokerage,
+                            new object[] { startTimeUtc, endTimeUtc });
+
+                        if (executions != null && executions.Count > 0)
+                        {
+                            allExecutions.AddRange(executions);
+                            Log.Trace($"MultiBrokerageManager.GetExecutionHistory(): Retrieved {executions.Count} executions from account '{accountName}'");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"MultiBrokerageManager.GetExecutionHistory(): Error querying account '{accountName}': {ex.Message}");
+                    }
+                }
+            }
+
+            Log.Trace($"MultiBrokerageManager.GetExecutionHistory(): Total {allExecutions.Count} executions retrieved from {startTimeUtc:yyyy-MM-dd HH:mm:ss} to {endTimeUtc:yyyy-MM-dd HH:mm:ss}");
+            return allExecutions;
+        }
+
+        /// <summary>
         /// Connects all brokerages
         /// </summary>
         public void Connect()

@@ -18,6 +18,7 @@ using Moq;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
+using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 using QuantConnect.TradingPairs;
 using QuantConnect.TradingPairs.Grid;
@@ -28,7 +29,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
     public class TradingPairManagerGridTests
     {
         private SecurityManager _securities;
-        private Mock<IOrderProvider> _mockTransactions;
+        private SecurityTransactionManager _transactions;
+        private Mock<IAlgorithm> _mockAlgorithm;
         private Security _btcSecurity;
         private Security _mstrSecurity;
         private DateTime _testTime;
@@ -38,7 +40,10 @@ namespace QuantConnect.Tests.Common.TradingPairs
         {
             _testTime = new DateTime(2024, 1, 1, 9, 30, 0);
             _securities = new SecurityManager(new TimeKeeper(_testTime, TimeZones.NewYork));
-            _mockTransactions = new Mock<IOrderProvider>();
+            _mockAlgorithm = new Mock<IAlgorithm>();
+            _transactions = new SecurityTransactionManager(_mockAlgorithm.Object, _securities);
+            _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
+            _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);
 
             var exchangeHours = SecurityExchangeHours.AlwaysOpen(TimeZones.NewYork);
             var timeKeeper = new LocalTimeKeeper(_testTime.ConvertToUtc(TimeZones.NewYork), TimeZones.NewYork);
@@ -97,7 +102,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_AddPair_InitializesGridCollections()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
 
             // Act
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -113,7 +118,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GridPosition_CanBeAddedManually()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
             var levelPair = CreateTestLevelPair(-0.02m, 0.01m);
 
@@ -175,7 +180,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         public void Test_GridPosition_InitializesEmpty()
         {
             // Arrange
-            var manager = new TradingPairManager(_securities, _mockTransactions.Object);
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
             var levelPair = CreateTestLevelPair(-0.02m, 0.01m);
 

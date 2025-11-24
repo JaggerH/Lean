@@ -128,12 +128,12 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         }
 
         /// <summary>
-        /// Creates the brokerage(s) as specified by the multi-account configuration
+        /// Creates the multi-brokerage manager as specified by the multi-account configuration
         /// </summary>
         /// <param name="algorithmNodePacket">Job packet</param>
         /// <param name="uninitializedAlgorithm">The algorithm instance before Initialize has been called</param>
         /// <param name="factory">The brokerage factory</param>
-        /// <returns>The brokerage instance (MultiBrokerageManager or single brokerage)</returns>
+        /// <returns>The MultiBrokerageManager instance</returns>
         public IBrokerage CreateBrokerage(AlgorithmNodePacket algorithmNodePacket, IAlgorithm uninitializedAlgorithm, out IBrokerageFactory factory)
         {
             var liveJob = algorithmNodePacket as LiveNodePacket;
@@ -142,7 +142,7 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 throw new ArgumentException("Multi-account BrokerageSetupHandler requires a LiveNodePacket");
             }
 
-            Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-account mode with brokerage '{liveJob.Brokerage}'");
+            Log.Trace($"BrokerageSetupHandler.CreateBrokerage(): Multi-brokerage multi-account mode");
 
             // Parse configuration using ConfigurationService
             var configString = Config.Get("multi-account-config");
@@ -153,24 +153,7 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
 
             var configToken = Newtonsoft.Json.Linq.JObject.Parse(configString);
 
-            // Check if this is multi-brokerage mode (accounts have "brokerage" field)
-            var accountsNode = configToken["accounts"] as Newtonsoft.Json.Linq.JObject;
-            Newtonsoft.Json.Linq.JObject firstAccount = null;
-            if (accountsNode != null && accountsNode.Count > 0)
-            {
-                var firstProperty = accountsNode.Properties().First();
-                firstAccount = firstProperty.Value as Newtonsoft.Json.Linq.JObject;
-            }
-            var isMultiBrokerageMode = firstAccount?["brokerage"] != null;
-
-            if (isMultiBrokerageMode)
-            {
-                return CreateMultiBrokerageBrokerage(liveJob, uninitializedAlgorithm, configToken, out factory);
-            }
-            else
-            {
-                return CreateSingleBrokerageMultiAccount(liveJob, uninitializedAlgorithm, configToken, out factory);
-            }
+            return CreateMultiBrokerageBrokerage(liveJob, uninitializedAlgorithm, configToken, out factory);
         }
 
         /// <summary>
@@ -252,41 +235,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             return multiBrokerageManager;
         }
 
-        /// <summary>
-        /// Creates single brokerage with multiple accounts
-        /// </summary>
-        private IBrokerage CreateSingleBrokerageMultiAccount(
-            LiveNodePacket liveJob,
-            IAlgorithm uninitializedAlgorithm,
-            Newtonsoft.Json.Linq.JObject configToken,
-            out IBrokerageFactory factory)
-        {
-            Log.Trace("BrokerageSetupHandler.CreateSingleBrokerageMultiAccount(): Single brokerage, multiple accounts");
-
-            // Get brokerage factory
-            var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
-                bf => bf.BrokerageType.MatchesTypeName(liveJob.Brokerage));
-
-            // Parse configuration
-            var multiConfig = _configService.ParseSingleBrokerageConfig(configToken, brokerageFactory, uninitializedAlgorithm);
-            _configService.ValidateConfiguration(multiConfig);
-
-            // Create portfolio
-            _portfolioFactory.CreateAndAttach(
-                uninitializedAlgorithm,
-                multiConfig.AccountInitialCash,
-                multiConfig.AccountCurrencies,
-                multiConfig.Router);
-
-            _factory = brokerageFactory;
-            factory = brokerageFactory;
-
-            // Preload data queue handler
-            PreloadDataQueueHandler(liveJob, uninitializedAlgorithm, factory);
-
-            // Create the brokerage
-            return brokerageFactory.CreateBrokerage(liveJob, uninitializedAlgorithm);
-        }
 
         /// <summary>
         /// Primary entry point to setup a new algorithm
@@ -490,6 +438,13 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                     return false;
                 }
 
+                // Load historical execution records for trading pair management
+                // Uses TradingPairManager convention-based detection
+                if (!LoadExecutionHistory(brokerage, algorithm, parameters))
+                {
+                    return false;
+                }
+
                 // PostInitialize must run after holdings/orders loaded but before currency conversion setup
                 // This ensures subscriptions are created before SetupCurrencyConversions tries to use them
                 algorithm.PostInitialize();
@@ -573,27 +528,21 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         }
 
         /// <summary>
-        /// Loads cash balance from brokerage into multi-account portfolio
+        /// Loads cash balance from multi-brokerage manager into multi-account portfolio
         /// </summary>
         private bool LoadCashBalance(IBrokerage brokerage, IAlgorithm algorithm)
         {
-            Log.Trace("BrokerageSetupHandler.LoadCashBalance(): Fetching cash balance from brokerage...");
+            Log.Trace("BrokerageSetupHandler.LoadCashBalance(): Fetching cash balance from multi-brokerage...");
             try
             {
                 var multiPortfolio = (MultiSecurityPortfolioManager)algorithm.Portfolio;
+                var multiBrokerage = (MultiBrokerageManager)brokerage;
 
-                // Multi-brokerage mode
-                if (brokerage is MultiBrokerageManager multiBrokerage)
+                foreach (var accountName in multiBrokerage.GetAccountNames())
                 {
-                    LoadCashForMultiBrokerage(multiBrokerage, multiPortfolio);
-                }
-                else
-                {
-                    // Single brokerage mode - brokerage must implement account-specific GetCashBalance
-                    // For now, load to first account (this should be customized based on brokerage implementation)
-                    var cashBalance = brokerage.GetCashBalance();
-                    var firstAccountName = multiPortfolio.SubAccounts.Keys.First();
-                    var subAccount = multiPortfolio.GetAccount(firstAccountName);
+                    var accountBrokerage = multiBrokerage.GetBrokerage(accountName);
+                    var cashBalance = accountBrokerage.GetCashBalance();
+                    var subAccount = multiPortfolio.GetAccount(accountName);
 
                     foreach (var cash in cashBalance)
                     {
@@ -607,11 +556,11 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                             subAccount.CashBook[cash.Currency].CurrencyConversion =
                                 QuantConnect.Securities.CurrencyConversion.ConstantCurrencyConversion.Identity(cash.Currency, accountCurrency);
 
-                            Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Set {cash.Currency} as stablecoin for '{firstAccountName}'");
+                            Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Set {cash.Currency} as stablecoin for '{accountName}'");
                         }
                     }
 
-                    Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Loaded cash to account '{firstAccountName}'");
+                    Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Loaded cash to account '{accountName}'");
                 }
             }
             catch (Exception err)
@@ -621,39 +570,6 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 return false;
             }
             return true;
-        }
-
-        /// <summary>
-        /// Loads cash for multi-brokerage mode
-        /// </summary>
-        private void LoadCashForMultiBrokerage(MultiBrokerageManager multiBrokerage, MultiSecurityPortfolioManager multiPortfolio)
-        {
-            // Load real balances from each brokerage to its corresponding sub-account
-            // Note: CashBook zeroing is now handled in Setup() before LoadCashBalance()
-            foreach (var accountName in multiBrokerage.GetAccountNames())
-            {
-                var accountBrokerage = multiBrokerage.GetBrokerage(accountName);
-                var cashBalance = accountBrokerage.GetCashBalance();
-                var subAccount = multiPortfolio.GetAccount(accountName);
-
-                foreach (var cash in cashBalance)
-                {
-                    var conversionRate = UsdPeggedStablecoinRegistry.GetUsdConversionRate(cash.Currency);
-                    subAccount.SetCash(cash.Currency, cash.Amount, conversionRate);
-
-                    // Set Identity conversion for stablecoins
-                    if (UsdPeggedStablecoinRegistry.IsUsdPegged(cash.Currency))
-                    {
-                        var accountCurrency = subAccount.CashBook.AccountCurrency;
-                        subAccount.CashBook[cash.Currency].CurrencyConversion =
-                            QuantConnect.Securities.CurrencyConversion.ConstantCurrencyConversion.Identity(cash.Currency, accountCurrency);
-
-                        Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Set {cash.Currency} as stablecoin for '{accountName}'");
-                    }
-                }
-
-                Log.Trace($"BrokerageSetupHandler.LoadCashBalance(): Loaded cash to account '{accountName}'");
-            }
         }
 
         /// <summary>
@@ -855,6 +771,63 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                     // open connection for subscriptions
                     _dataQueueHandlerBrokerage.Connect();
                 }
+            }
+        }
+
+        /// <summary>
+        /// Triggers reconciliation for TradingPairManager if present in algorithm.
+        /// TradingPairManager handles its own execution history querying and processing.
+        /// </summary>
+        /// <param name="brokerage">The brokerage instance</param>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="parameters">Setup handler parameters</param>
+        /// <returns>True if successful or not supported; false if error occurred</returns>
+        private bool LoadExecutionHistory(IBrokerage brokerage, IAlgorithm algorithm, SetupHandlerParameters parameters)
+        {
+            Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Checking for TradingPairManager...");
+
+            // Check if algorithm has a TradingPairManager property (convention-based approach)
+            var tradingPairManagerProperty = algorithm.GetType()
+                .GetProperty("TradingPairManager", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+            if (tradingPairManagerProperty == null)
+            {
+                Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Algorithm does not have a TradingPairManager property, skipping");
+                return true;
+            }
+
+            var tradingPairManager = tradingPairManagerProperty.GetValue(algorithm);
+            if (tradingPairManager == null)
+            {
+                Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): TradingPairManager property is null, skipping");
+                return true;
+            }
+
+            Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Found TradingPairManager, triggering reconciliation...");
+
+            try
+            {
+                // Trigger reconciliation - TradingPairManager handles everything internally
+                var reconciliationMethod = tradingPairManager.GetType().GetMethod("Reconciliation");
+
+                if (reconciliationMethod != null)
+                {
+                    reconciliationMethod.Invoke(tradingPairManager, null);
+                    Log.Trace("BrokerageSetupHandler.LoadExecutionHistory(): Reconciliation completed successfully");
+                }
+                else
+                {
+                    Log.Error("BrokerageSetupHandler.LoadExecutionHistory(): TradingPairManager does not have Reconciliation() method");
+                }
+
+                return true;
+            }
+            catch (Exception err)
+            {
+                Log.Error(err, "BrokerageSetupHandler.LoadExecutionHistory(): Error during reconciliation");
+                // Don't fail setup - reconciliation is optional enhancement
+                AddInitializationError($"Warning: Failed to perform reconciliation: {err.Message}");
+                return true;  // Return true to continue setup
             }
         }
 
