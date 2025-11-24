@@ -158,8 +158,9 @@ class SpotFutureArbitrage(QCAlgorithm):
         self.strategy.on_data(data)
 
         # 处理 TradingPair 更新（监控和策略通知）
-        if hasattr(data, 'TradingPairs') and data.TradingPairs is not None:
-            for pair in data.TradingPairs.Values:
+        # Note: TradingPairs are accessed from algorithm, not from slice
+        if hasattr(self, 'TradingPairs') and self.TradingPairs is not None:
+            for pair in self.TradingPairs:
                 if pair.HasValidPrices:
                     # 监控记录
                     if self.strategy.monitoring_context:

@@ -16,7 +16,7 @@ The arbitrage architecture has been refactored to leverage LEAN's native Trading
 | **Subscription** | `SpreadManager.subscribe_trading_pair()` | `SubscriptionHelper.subscribe_pair()` |
 | **Pair Registration** | Manual observer pattern | `TradingPairs.CollectionChanged` event |
 | **Spread Calculation** | Python `calculate_spread_pct()` | C# `TradingPair.Update()` (automatic) |
-| **Spread Access** | `spread_manager.on_data()` + observers | `slice.TradingPairs` in OnData |
+| **Spread Access** | `spread_manager.on_data()` + observers | `self.TradingPairs` in OnData |
 | **State Management** | Python dicts (`pair_mappings`) | `algorithm.TradingPairs` collection |
 
 ### Key Improvements
@@ -119,13 +119,13 @@ def on_data(self, data: Slice):
 def on_data(self, data: Slice):
     """
     TradingPairManager.UpdateAll() is automatically called by AlgorithmManager
-    Access spread data directly from slice.TradingPairs
+    Access spread data directly from self.TradingPairs
     """
     self.strategy.on_data(data)
 
-    # Access TradingPairs directly from Slice
-    if hasattr(data, 'TradingPairs') and data.TradingPairs is not None:
-        for pair in data.TradingPairs.Values:
+    # Access TradingPairs directly from algorithm
+    if hasattr(self, 'TradingPairs') and self.TradingPairs is not None:
+        for pair in self.TradingPairs:
             if pair.HasValidPrices:
                 # Monitoring
                 if self.strategy.monitoring_context:
@@ -284,7 +284,7 @@ crypto_sec, stock_sec = self.subscription_helper.subscribe_pair(
 
 ### 4. No Manual spread_manager.on_data() Call
 **OLD:** Must call `spread_manager.on_data(data)` in OnData
-**NEW:** Spread updates automatic, access via `slice.TradingPairs`
+**NEW:** Spread updates automatic, access via `self.TradingPairs`
 
 ## Testing Strategy
 

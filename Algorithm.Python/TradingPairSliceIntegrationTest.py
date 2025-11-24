@@ -16,8 +16,12 @@ from QuantConnect.TradingPairs import MarketState
 
 class TradingPairSliceIntegrationTest(QCAlgorithm):
     '''
-    Test algorithm to verify TradingPair functionality with Slice integration.
-    Tests accessing TradingPairs through the slice object in OnData.
+    Test algorithm to verify TradingPair functionality with algorithm-level access.
+    Tests accessing TradingPairs through self.TradingPairs in OnData.
+
+    NOTE: TradingPairs are accessed via algorithm.TradingPairs, not slice.TradingPairs.
+    This aligns with the arbitrage framework refactor where TradingPairs are
+    algorithm-managed state rather than time-series market data.
     '''
 
     def Initialize(self):
@@ -40,105 +44,107 @@ class TradingPairSliceIntegrationTest(QCAlgorithm):
         self.Log(f"Created {self.TradingPairs.Count} trading pairs")
 
         # Track data for validation
-        self.slice_access_count = 0
-        self.pairs_in_slice_count = []
-        self.crossed_detected_via_slice = 0
-        self.inverted_detected_via_slice = 0
+        self.algorithm_access_count = 0
+        self.pairs_count_history = []
+        self.crossed_detected = 0
+        self.inverted_detected = 0
 
         # Schedule periodic status reports
         self.Schedule.On(
             self.DateRules.EveryDay(self.spy),
             self.TimeRules.Every(timedelta(hours=2)),
-            self.LogSliceStatus
+            self.LogTradingPairStatus
         )
 
     def OnData(self, slice):
-        '''Process data and test slice.TradingPairs access'''
+        '''Process data and test algorithm.TradingPairs access'''
 
         if self.IsWarmingUp:
             return
 
-        # Test 1: Access TradingPairs through slice
-        if hasattr(slice, 'TradingPairs') and slice.TradingPairs is not None:
-            self.slice_access_count += 1
-            self.pairs_in_slice_count.append(len(slice.TradingPairs))
+        # Test 1: Access TradingPairs through algorithm (not slice)
+        if hasattr(self, 'TradingPairs') and self.TradingPairs is not None:
+            self.algorithm_access_count += 1
+            self.pairs_count_history.append(self.TradingPairs.Count)
 
-            # Test 2: Iterate through pairs in slice
-            for pair in slice.TradingPairs:
+            # Test 2: Iterate through pairs
+            for pair in self.TradingPairs:
                 if pair.HasValidPrices:
-                    # Test 3: Check market states via slice
+                    # Test 3: Check market states
                     if pair.MarketState == MarketState.Crossed:
-                        self.crossed_detected_via_slice += 1
-                        self.Log(f"[SLICE] Crossed market detected: {pair.Key}")
+                        self.crossed_detected += 1
+                        self.Log(f"[ALGORITHM] Crossed market detected: {pair.Key}")
                         self.Log(f"  Spread: {pair.Spread:.4f}")
                         self.Log(f"  Direction: {pair.Direction}")
                     elif pair.MarketState == MarketState.Inverted:
-                        self.inverted_detected_via_slice += 1
+                        self.inverted_detected += 1
 
-            # Test 4: Access specific pair via slice using tuple key
-            if slice.TradingPairs.ContainsKey((self.spy, self.qqq)):
-                spy_qqq = slice.TradingPairs[(self.spy, self.qqq)]
-                if self.slice_access_count <= 5:  # Log first few accesses
-                    self.Debug(f"Accessed SPY-QQQ pair via slice:")
-                    self.Debug(f"  HasValidPrices: {spy_qqq.HasValidPrices}")
-                    if spy_qqq.HasValidPrices:
-                        self.Debug(f"  Theoretical Spread: {spy_qqq.TheoreticalSpread:.4f}")
-                        self.Debug(f"  Market State: {spy_qqq.MarketState}")
+            # Test 4: Access specific pair using TryGetPair
+            spy_qqq_pair = self.TradingPairs.TryGetPair(self.spy, self.qqq)
+            if spy_qqq_pair is not None:
+                if self.algorithm_access_count <= 5:  # Log first few accesses
+                    self.Debug(f"Accessed SPY-QQQ pair via algorithm:")
+                    self.Debug(f"  HasValidPrices: {spy_qqq_pair.HasValidPrices}")
+                    if spy_qqq_pair.HasValidPrices:
+                        self.Debug(f"  Theoretical Spread: {spy_qqq_pair.TheoreticalSpread:.4f}")
+                        self.Debug(f"  Market State: {spy_qqq_pair.MarketState}")
 
-            # Test 5: Use GetCrossedPairs from slice
+            # Test 5: Use GetCrossedPairs
             if self.Time.minute == 30:  # Check every half hour
-                crossed = list(slice.TradingPairs.GetCrossedPairs())
+                crossed = list(self.TradingPairs.GetCrossedPairs())
                 if len(crossed) > 0:
-                    self.Log(f"[SLICE] Found {len(crossed)} crossed pairs at {self.Time}")
+                    self.Log(f"[ALGORITHM] Found {len(crossed)} crossed pairs at {self.Time}")
 
-            # Test 6: Use GetByState from slice
+            # Test 6: Use GetByState
             if self.Time.minute == 0 and self.Time.hour % 3 == 0:  # Every 3 hours
-                normal = list(slice.TradingPairs.GetByState(MarketState.Normal))
-                inverted = list(slice.TradingPairs.GetByState(MarketState.Inverted))
-                self.Log(f"[SLICE] State counts - Normal: {len(normal)}, Inverted: {len(inverted)}")
+                normal = list(self.TradingPairs.GetByState(MarketState.Normal))
+                inverted = list(self.TradingPairs.GetByState(MarketState.Inverted))
+                self.Log(f"[ALGORITHM] State counts - Normal: {len(normal)}, Inverted: {len(inverted)}")
         else:
-            # This shouldn't happen if integration is correct
-            self.Error("TradingPairs not available in slice!")
+            # This shouldn't happen
+            self.Error("TradingPairs not available in algorithm!")
 
-    def LogSliceStatus(self):
-        '''Log the status of TradingPairs accessed via slice'''
+    def LogTradingPairStatus(self):
+        '''Log the status of TradingPairs accessed via algorithm'''
 
-        self.Log(f"=== Slice Integration Status at {self.Time} ===")
-        self.Log(f"Slice access count: {self.slice_access_count}")
+        self.Log(f"=== TradingPair Status at {self.Time} ===")
+        self.Log(f"Algorithm access count: {self.algorithm_access_count}")
 
-        if len(self.pairs_in_slice_count) > 0:
-            avg_pairs = sum(self.pairs_in_slice_count) / len(self.pairs_in_slice_count)
-            self.Log(f"Average pairs in slice: {avg_pairs:.1f}")
-            self.Log(f"Max pairs in slice: {max(self.pairs_in_slice_count)}")
-            self.Log(f"Min pairs in slice: {min(self.pairs_in_slice_count)}")
+        if len(self.pairs_count_history) > 0:
+            avg_pairs = sum(self.pairs_count_history) / len(self.pairs_count_history)
+            self.Log(f"Average pair count: {avg_pairs:.1f}")
+            self.Log(f"Current pair count: {self.TradingPairs.Count}")
 
-        self.Log(f"Crossed markets via slice: {self.crossed_detected_via_slice}")
-        self.Log(f"Inverted markets via slice: {self.inverted_detected_via_slice}")
+        self.Log(f"Crossed markets detected: {self.crossed_detected}")
+        self.Log(f"Inverted markets detected: {self.inverted_detected}")
 
     def OnEndOfAlgorithm(self):
-        '''Final validation of slice integration'''
+        '''Final validation of TradingPair integration'''
 
-        self.Log("=== Slice Integration Test Complete ===")
-        self.Log(f"Total slice accesses: {self.slice_access_count}")
+        self.Log("=== TradingPair Integration Test Complete ===")
+        self.Log(f"Total algorithm accesses: {self.algorithm_access_count}")
 
-        # Verify we actually accessed TradingPairs via slice
-        if self.slice_access_count == 0:
-            self.Error("FAILED: Never accessed TradingPairs via slice!")
+        # Verify we actually accessed TradingPairs
+        if self.algorithm_access_count == 0:
+            self.Error("FAILED: Never accessed TradingPairs via algorithm!")
         else:
-            self.Log("SUCCESS: TradingPairs accessed via slice")
+            self.Log("SUCCESS: TradingPairs accessed via algorithm")
 
         # Verify consistent pair count
-        if len(self.pairs_in_slice_count) > 0:
-            if all(count == 3 for count in self.pairs_in_slice_count):
-                self.Log("SUCCESS: Consistent pair count in all slices")
+        if len(self.pairs_count_history) > 0:
+            if all(count == 3 for count in self.pairs_count_history):
+                self.Log("SUCCESS: Consistent pair count throughout")
             else:
-                self.Error(f"WARNING: Inconsistent pair counts: {set(self.pairs_in_slice_count)}")
+                self.Error(f"WARNING: Inconsistent pair counts: {set(self.pairs_count_history)}")
 
         # Log detection statistics
-        self.Log(f"Crossed markets detected via slice: {self.crossed_detected_via_slice}")
-        self.Log(f"Inverted markets detected via slice: {self.inverted_detected_via_slice}")
+        self.Log(f"Crossed markets detected: {self.crossed_detected}")
+        self.Log(f"Inverted markets detected: {self.inverted_detected}")
 
-        # Final comparison: slice vs manager
-        self.Log(f"Manager pair count: {self.TradingPairs.Count}")
-        if len(self.pairs_in_slice_count) > 0:
-            self.Log(f"Last slice pair count: {self.pairs_in_slice_count[-1]}")
+        # Final validation
+        self.Log(f"Final pair count: {self.TradingPairs.Count}")
+        expected_pairs = 3
+        if self.TradingPairs.Count == expected_pairs:
+            self.Log(f"SUCCESS: Expected {expected_pairs} pairs, got {self.TradingPairs.Count}")
+        else:
+            self.Error(f"FAILED: Expected {expected_pairs} pairs, got {self.TradingPairs.Count}")

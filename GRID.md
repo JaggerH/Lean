@@ -395,7 +395,8 @@ pair.GridLevels.Add(GridLevelPair(
 ))
 
 # Algorithm.OnData()
-for pair in slice.TradingPairs:
+# Note: TradingPairs accessed from algorithm, not slice
+for pair in self.TradingPairs:
     # Entry 触发
     for level_pair in pair.GridLevels:
         if should_enter(pair, level_pair.Entry):

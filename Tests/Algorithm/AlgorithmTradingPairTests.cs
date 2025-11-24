@@ -192,12 +192,9 @@ namespace QuantConnect.Tests.Algorithm
             var aapl = _algorithm.AddEquity("AAPL", Resolution.Minute).Symbol;
             _algorithm.AddTradingPair(spy, aapl);
 
-            // Create a slice with TradingPairs
-            var tradingPairs = new QuantConnect.Data.Market.TradingPairs(DateTime.UtcNow);
-            var slice = CreateSlice(tradingPairs);
-
-            // Act & Assert
-            Assert.IsNotNull(slice.TradingPairs);
+            // Act & Assert - TradingPairs accessed from algorithm, not slice
+            Assert.IsNotNull(_algorithm.TradingPairs);
+            Assert.AreEqual(1, _algorithm.TradingPairs.Count);
         }
 
         [Test]
@@ -218,13 +215,8 @@ namespace QuantConnect.Tests.Algorithm
             // Update trading pairs
             testAlgo.TradingPairs.UpdateAll();
 
-            // Create slice with trading pairs
-            var tradingPairs = new QuantConnect.Data.Market.TradingPairs(DateTime.UtcNow);
-            foreach (var pair in testAlgo.TradingPairs)
-            {
-                tradingPairs.Add(pair);
-            }
-            var slice = CreateSlice(tradingPairs);
+            // Create slice (TradingPairs no longer passed to slice)
+            var slice = CreateSlice(null);
 
             // Act
             testAlgo.OnData(slice);
@@ -248,13 +240,8 @@ namespace QuantConnect.Tests.Algorithm
             testAlgo.AddTradingPair(spy, aapl);
             testAlgo.AddTradingPair(spy, qqq);
 
-            // Create slice with trading pairs
-            var tradingPairs = new QuantConnect.Data.Market.TradingPairs(DateTime.UtcNow);
-            foreach (var pair in testAlgo.TradingPairs)
-            {
-                tradingPairs.Add(pair);
-            }
-            var slice = CreateSlice(tradingPairs);
+            // Create slice (TradingPairs no longer passed to slice)
+            var slice = CreateSlice(null);
 
             // Act
             testAlgo.OnData(slice);
@@ -285,13 +272,8 @@ namespace QuantConnect.Tests.Algorithm
             // Update trading pairs
             testAlgo.TradingPairs.UpdateAll();
 
-            // Create slice with trading pairs
-            var tradingPairs = new QuantConnect.Data.Market.TradingPairs(DateTime.UtcNow);
-            foreach (var pair in testAlgo.TradingPairs)
-            {
-                tradingPairs.Add(pair);
-            }
-            var slice = CreateSlice(tradingPairs);
+            // Create slice (TradingPairs no longer passed to slice)
+            var slice = CreateSlice(null);
 
             // Act
             testAlgo.OnData(slice);
@@ -318,13 +300,8 @@ namespace QuantConnect.Tests.Algorithm
             // Update trading pairs
             testAlgo.TradingPairs.UpdateAll();
 
-            // Create slice with trading pairs
-            var tradingPairs = new QuantConnect.Data.Market.TradingPairs(DateTime.UtcNow);
-            foreach (var pair in testAlgo.TradingPairs)
-            {
-                tradingPairs.Add(pair);
-            }
-            var slice = CreateSlice(tradingPairs);
+            // Create slice (TradingPairs no longer passed to slice)
+            var slice = CreateSlice(null);
 
             // Act
             testAlgo.OnData(slice);
@@ -355,6 +332,7 @@ namespace QuantConnect.Tests.Algorithm
         private Slice CreateSlice(QuantConnect.Data.Market.TradingPairs tradingPairs)
         {
             var time = DateTime.UtcNow;
+            // Note: TradingPairs removed from Slice constructor
             return new Slice(
                 time,
                 new List<BaseData>(),
@@ -369,7 +347,6 @@ namespace QuantConnect.Tests.Algorithm
                 new Delistings(),
                 new SymbolChangedEvents(),
                 new MarginInterestRates(),
-                tradingPairs,
                 time
             );
         }
@@ -385,10 +362,11 @@ namespace QuantConnect.Tests.Algorithm
 
             public override void OnData(Slice slice)
             {
-                if (slice.TradingPairs != null)
+                // Note: TradingPairs accessed from algorithm, not slice
+                if (TradingPairs != null)
                 {
                     TradingPairsAccessed = true;
-                    PairsCount = slice.TradingPairs.Count;
+                    PairsCount = TradingPairs.Count;
                 }
             }
         }
@@ -399,9 +377,10 @@ namespace QuantConnect.Tests.Algorithm
 
             public override void OnData(Slice slice)
             {
-                if (slice.TradingPairs != null)
+                // Note: TradingPairs accessed from algorithm, not slice
+                if (TradingPairs != null)
                 {
-                    foreach (var pair in slice.TradingPairs)
+                    foreach (var pair in TradingPairs)
                     {
                         IteratedPairsCount++;
                     }
@@ -415,9 +394,10 @@ namespace QuantConnect.Tests.Algorithm
 
             public override void OnData(Slice slice)
             {
-                if (slice.TradingPairs != null)
+                // Note: TradingPairs accessed from algorithm, not slice
+                if (TradingPairs != null)
                 {
-                    CrossedPairsCount = slice.TradingPairs.GetCrossedPairs().Count();
+                    CrossedPairsCount = TradingPairs.GetCrossedPairs().Count();
                 }
             }
         }
@@ -430,9 +410,10 @@ namespace QuantConnect.Tests.Algorithm
 
             public override void OnData(Slice slice)
             {
-                if (slice.TradingPairs != null && slice.TradingPairs.Count > 0)
+                // Note: TradingPairs accessed from algorithm, not slice
+                if (TradingPairs != null && TradingPairs.Count > 0)
                 {
-                    foreach (var pair in slice.TradingPairs)
+                    foreach (var pair in TradingPairs)
                     {
                         PropertiesRead = true;
                         HasValidPrices = pair.HasValidPrices;

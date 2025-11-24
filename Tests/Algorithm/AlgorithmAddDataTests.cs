@@ -746,7 +746,7 @@ namespace QuantConnect.Tests.Algorithm
                                     new Ticks(), null, new OptionChains(),
                                     new FuturesChains(), new Splits(),
                                     new Dividends(now), new Delistings(),
-                                    new SymbolChangedEvents(), new MarginInterestRates(), null, now);
+                                    new SymbolChangedEvents(), new MarginInterestRates(), now);
                 var tradeBar1_2 = new TradeBar(now, underlyingSymbol, 2, 2, 2, 2, 2, TimeSpan.FromDays(1));
                 #pragma warning restore CS0618
                 var slice2 = new Slice(now, new List<BaseData> { tradeBar1_2 },
@@ -754,7 +754,7 @@ namespace QuantConnect.Tests.Algorithm
                     new Ticks(), null, new OptionChains(),
                     new FuturesChains(), new Splits(),
                     new Dividends(now), new Delistings(),
-                    new SymbolChangedEvents(), new MarginInterestRates(), null, now);
+                    new SymbolChangedEvents(), new MarginInterestRates(), now);
                 return new[] { slice1, slice2 };
             }
         }
