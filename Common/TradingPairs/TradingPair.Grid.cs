@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using QuantConnect.Algorithm.Framework.Alphas;
 using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.TradingPairs
@@ -31,6 +32,49 @@ namespace QuantConnect.TradingPairs
         /// Each GridLevelPair defines an entry and exit trigger.
         /// </summary>
         public List<GridLevelPair> LevelPairs { get; }
+
+        /// <summary>
+        /// Adds a grid level pair configuration to this trading pair.
+        /// </summary>
+        /// <param name="levelPair">The grid level pair to add</param>
+        public void AddLevelPair(GridLevelPair levelPair)
+        {
+            if (levelPair == null)
+            {
+                throw new ArgumentNullException(nameof(levelPair));
+            }
+
+            LevelPairs.Add(levelPair);
+        }
+
+        /// <summary>
+        /// Adds a grid level pair with entry/exit spread thresholds.
+        /// </summary>
+        /// <param name="entrySpread">Entry spread threshold (e.g., -0.01 for -1%)</param>
+        /// <param name="exitSpread">Exit spread threshold (e.g., 0.02 for 2%)</param>
+        /// <param name="direction">Spread direction (LongSpread, ShortSpread, or FlatSpread)</param>
+        /// <param name="positionSizePct">Position size as percentage of portfolio (e.g., 0.5 for 50%)</param>
+        /// <returns>The created GridLevelPair</returns>
+        public GridLevelPair AddLevelPair(
+            decimal entrySpread,
+            decimal exitSpread,
+            SpreadDirection direction,
+            decimal positionSizePct = 0.5m)
+        {
+            // Convert SpreadDirection enum to string for GridLevelPair constructor
+            string directionString = direction == SpreadDirection.LongSpread ? "LONG_SPREAD" : "SHORT_SPREAD";
+
+            var levelPair = new GridLevelPair(
+                entrySpread,
+                exitSpread,
+                directionString,
+                positionSizePct,
+                (Leg1Symbol, Leg2Symbol)  // Pass trading pair symbols for validation
+            );
+
+            LevelPairs.Add(levelPair);
+            return levelPair;
+        }
 
         /// <summary>
         /// Active grid positions indexed by Tag (encoded grid configuration).

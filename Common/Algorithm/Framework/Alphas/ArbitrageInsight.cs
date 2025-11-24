@@ -47,12 +47,12 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <summary>
         /// UTC time when this insight was generated (set by framework)
         /// </summary>
-        public DateTime GeneratedTimeUtc { get; internal set; }
+        public DateTime GeneratedTimeUtc { get; set; }
 
         /// <summary>
         /// UTC time when this insight expires (set by framework based on Period)
         /// </summary>
-        public DateTime CloseTimeUtc { get; internal set; }
+        public DateTime CloseTimeUtc { get; set; }
 
         /// <summary>
         /// How long this insight is valid for

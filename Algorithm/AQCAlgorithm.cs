@@ -1,3 +1,4 @@
+using QuantConnect.Data;
 using QuantConnect.Interfaces;
 
 namespace QuantConnect.Algorithm
@@ -14,6 +15,8 @@ namespace QuantConnect.Algorithm
     /// By implementing AIAlgorithm interface, this class provides:
     /// - ExecutionHistoryProvider for accessing brokerage execution records
     /// - ExecutionHistory() methods for querying historical executions
+    /// - TradingPairs manager for spread trading strategies
+    /// - Framework integration for Alpha models, Portfolio Construction, and Execution
     /// - All standard QCAlgorithm functionality (inherited)
     ///
     /// The ExecutionHistoryProvider can be set by the Engine layer or manually injected
@@ -42,6 +45,21 @@ namespace QuantConnect.Algorithm
         {
             // Initialize TradingPairs manager for arbitrage strategies
             TradingPairs = new TradingPairs.TradingPairManager(this);
+
+            // Initialize Framework components (Alpha, Insights, etc.)
+            InitializeFramework();
+        }
+
+        /// <summary>
+        /// Event handler for data updates. Calls framework models and user custom logic.
+        /// </summary>
+        /// <param name="data">The data slice containing all market data</param>
+        public override void OnData(Slice data)
+        {
+            // Call framework to update alpha model and process insights
+            OnFrameworkData(data);
+
+            // User custom logic can be added here in derived classes
         }
 
         /// <summary>
