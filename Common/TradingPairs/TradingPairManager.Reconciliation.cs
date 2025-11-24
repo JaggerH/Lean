@@ -27,11 +27,31 @@ namespace QuantConnect.TradingPairs
 {
     public partial class TradingPairManager
     {
+        /// <summary>
+        /// Lightweight execution snapshot for deduplication and time-based filtering.
+        /// Serializable for potential persistence needs.
+        /// </summary>
+        [Serializable]
+        private class ExecutionSnapshot
+        {
+            /// <summary>
+            /// Brokerage-provided execution ID
+            /// </summary>
+            public string ExecutionId { get; set; }
+
+            /// <summary>
+            /// Execution timestamp (UTC)
+            /// </summary>
+            public DateTime TimeUtc { get; set; }
+
+            /// <summary>
+            /// Market identifier (Symbol.ID.Market)
+            /// </summary>
+            public string Market { get; set; }
+        }
+
         // Baseline账本: Symbol → 认可的差异数量 (LP - GP)
         private readonly Dictionary<Symbol, decimal> _baseline = new();
-
-        // 每个市场的最新OrderEvent时间（用于确定回放时间窗口）
-        private readonly Dictionary<string, DateTime> _lastOrderEventTime = new();
 
         /// <summary>
         /// 初始化 Baseline 账本
@@ -39,7 +59,7 @@ namespace QuantConnect.TradingPairs
         /// <param name="portfolio">Portfolio 管理器</param>
         public void InitializeBaseline(SecurityPortfolioManager portfolio)
         {
-            if (_lastOrderEventTime.Count == 0)
+            if (_lastFillTimeByMarket.Count == 0)
             {
                 _baseline.Clear();
                 var calculated = CalculateBaseline(portfolio);
@@ -120,78 +140,108 @@ namespace QuantConnect.TradingPairs
             {
                 Reconciliation();
             }
+            else
+            {
+                // Consistency confirmed - safe to cleanup old execution records
+                CleanupProcessedExecutions();
+            }
         }
 
         /// <summary>
         /// Performs reconciliation by querying execution history from brokerage and processing records.
         /// This is a self-contained method that determines the time range and queries executions automatically.
+        /// Uses min(_lastFillTimeByMarket) - 5 minutes as query start time for comprehensive coverage.
         /// </summary>
         public void Reconciliation()
         {
-            // Determine query time range
-            var earliestTime = DateTime.UtcNow.AddMinutes(-30); // Default to last 30 minutes
-            if (_lastOrderEventTime.Any())
+            lock(_lock)
             {
-                var minTime = _lastOrderEventTime.Values.Min();
-                if (minTime < earliestTime)
+                // 1. Determine query time range (use min - 5 minutes for buffer)
+                var earliestTime = DateTime.UtcNow.AddMinutes(-30); // Default fallback
+                if (_lastFillTimeByMarket.Any())
                 {
-                    earliestTime = minTime;
-                }
-            }
-
-            var endTime = DateTime.UtcNow;
-
-            Log.Trace($"TradingPairManager.Reconciliation: Querying executions from {earliestTime:yyyy-MM-dd HH:mm:ss} to {endTime:yyyy-MM-dd HH:mm:ss}");
-
-            try
-            {
-                // Use ExecutionHistoryProvider from AIAlgorithm interface (type-safe, no reflection)
-                if (_algorithm.ExecutionHistoryProvider == null)
-                {
-                    Log.Trace("TradingPairManager.Reconciliation: ExecutionHistoryProvider not set on algorithm");
-                    return;
+                    earliestTime = _lastFillTimeByMarket.Values.Min().AddMinutes(-5);
                 }
 
-                var executions = _algorithm.ExecutionHistoryProvider.GetExecutionHistory(earliestTime, endTime);
+                var endTime = DateTime.UtcNow;
 
-                if (executions == null || executions.Count == 0)
+                Log.Trace($"TradingPairManager.Reconciliation: Querying executions from {earliestTime:yyyy-MM-dd HH:mm:ss} to {endTime:yyyy-MM-dd HH:mm:ss}");
+
+                try
                 {
-                    Log.Trace("TradingPairManager.Reconciliation: No executions found");
-                    return;
-                }
-
-                Log.Trace($"TradingPairManager.Reconciliation: Processing {executions.Count} execution records");
-
-                // Sort by time
-                var sortedExecutions = executions.OrderBy(e => e.TimeUtc).ToList();
-
-                // Process each execution
-                foreach (var execution in sortedExecutions)
-                {
-                    try
+                    // Use ExecutionHistoryProvider from AIAlgorithm interface (type-safe, no reflection)
+                    if (_algorithm.ExecutionHistoryProvider == null)
                     {
-                        var orderEvent = ConvertToOrderEvent(execution);
-                        ProcessGridOrderEvent(orderEvent);
+                        Log.Trace("TradingPairManager.Reconciliation: ExecutionHistoryProvider not available");
+                        return;
+                    }
 
-                        // Update last order event time for this market
-                        var market = execution.Symbol.ID.Market;
-                        if (!_lastOrderEventTime.ContainsKey(market) || _lastOrderEventTime[market] < execution.TimeUtc)
+                    var executions = _algorithm.ExecutionHistoryProvider.GetExecutionHistory(earliestTime, endTime);
+
+                    if (executions == null || executions.Count == 0)
+                    {
+                        Log.Trace("TradingPairManager.Reconciliation: No executions found");
+                        return;
+                    }
+
+                    // 2. Time filtering + ExecutionId deduplication
+                    var filteredExecutions = executions
+                        .Where(e => ShouldProcessExecution(e))
+                        .OrderBy(e => e.TimeUtc)
+                        .ToList();
+
+                    Log.Trace($"TradingPairManager.Reconciliation: Processing {filteredExecutions.Count}/{executions.Count} executions after filtering");
+
+                    // 3. Process filtered executions
+                    foreach (var execution in filteredExecutions)
+                    {
+                        try
                         {
-                            _lastOrderEventTime[market] = execution.TimeUtc;
+                            var orderEvent = ConvertToOrderEvent(execution);
+                            ProcessGridOrderEvent(orderEvent); // Includes deduplication logic
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"TradingPairManager.Reconciliation: Error processing execution {execution.ExecutionId}: {ex.Message}");
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"TradingPairManager.Reconciliation: Error processing execution {execution.ExecutionId}: {ex.Message}");
-                    }
-                }
 
-                Log.Trace($"TradingPairManager.Reconciliation: Successfully processed {executions.Count} executions");
+                    Log.Trace($"TradingPairManager.Reconciliation: Successfully processed {filteredExecutions.Count} executions");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"TradingPairManager.Reconciliation: Error querying executions: {ex.Message}");
+                }
             }
-            catch (Exception ex)
+        }
+
+        /// <summary>
+        /// Determines if an execution should be processed based on time filtering and ExecutionId deduplication.
+        /// </summary>
+        /// <param name="execution">The execution record to check</param>
+        /// <returns>True if execution should be processed, false otherwise</returns>
+        private bool ShouldProcessExecution(ExecutionRecord execution)
+        {
+            var market = execution.Symbol.ID.Market;
+
+            // 1. ExecutionId deduplication (first layer)
+            if (_processedExecutions.ContainsKey(execution.ExecutionId))
             {
-                Log.Error($"TradingPairManager.Reconciliation: Error querying executions: {ex.Message}");
+                return false;
             }
+
+            // 2. Time filtering (second layer)
+            if (_lastFillTimeByMarket.TryGetValue(market, out var lastFillTime))
+            {
+                // execution.TimeUtc < lastFillTime: discard
+                // execution.TimeUtc >= lastFillTime: keep (including time-equal cases, rely on ExecutionId dedup)
+                if (execution.TimeUtc < lastFillTime)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -224,10 +274,11 @@ namespace QuantConnect.TradingPairs
                 execution.Price,
                 execution.Quantity,
                 new OrderFee(new CashAmount(execution.Fee, execution.FeeCurrency)),
-                $"Replayed from execution {execution.ExecutionId}"
+                "Replayed from brokerage history"
             )
             {
-                Ticket = ticket
+                Ticket = ticket,
+                ExecutionId = execution.ExecutionId
             };
 
             return orderEvent;
@@ -238,6 +289,45 @@ namespace QuantConnect.TradingPairs
         private static int GetNextVirtualOrderId()
         {
             return System.Threading.Interlocked.Decrement(ref _virtualOrderId);
+        }
+
+        /// <summary>
+        /// Cleans up old execution records from the processed executions cache.
+        /// Removes executions with TimeUtc < _lastFillTime[market], keeping time-equal ones.
+        /// Only called after CompareBaseline confirms consistency.
+        /// </summary>
+        private void CleanupProcessedExecutions()
+        {
+            lock(_lock)
+            {
+                var toRemove = new List<string>();
+
+                foreach (var kvp in _processedExecutions)
+                {
+                    var snapshot = kvp.Value;
+                    var market = snapshot.Market;
+
+                    if (_lastFillTimeByMarket.TryGetValue(market, out var lastFillTime))
+                    {
+                        // Remove executions with TimeUtc < lastFillTime
+                        // Keep time-equal ones (may have concurrent orders not yet processed)
+                        if (snapshot.TimeUtc < lastFillTime)
+                        {
+                            toRemove.Add(kvp.Key);
+                        }
+                    }
+                }
+
+                foreach (var executionId in toRemove)
+                {
+                    _processedExecutions.Remove(executionId);
+                }
+
+                if (toRemove.Count > 0)
+                {
+                    Log.Trace($"CleanupProcessedExecutions: Removed {toRemove.Count} old executions, remaining: {_processedExecutions.Count}");
+                }
+            }
         }
     }
 }

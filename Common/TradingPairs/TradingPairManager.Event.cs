@@ -82,37 +82,66 @@ namespace QuantConnect.TradingPairs
         /// 3. Canceled/Invalid: Clean up position if empty
         ///
         /// Note: GridPosition is automatically created when ParseOrderContext is called.
+        /// All updates are atomic under lock to ensure thread-safety with reconciliation.
         /// </summary>
         /// <param name="orderEvent">The order event to process</param>
         public void ProcessGridOrderEvent(OrderEvent orderEvent)
         {
-            // 记录该市场的最新OrderEvent时间
-            var market = orderEvent.Symbol.ID.Market;
-            _lastOrderEventTime[market] = orderEvent.UtcTime;
-
-            // Parse order context once (avoids redundant Tag parsing)
-            // This also creates GridPosition if it doesn't exist
-            var context = ParseOrderContext(orderEvent);
-            if (context == null)
-                return; // Not a grid order or parsing failed
-
-            // Dispatch based on order status
-            switch (orderEvent.Status)
+            lock(_lock)
             {
-                case OrderStatus.PartiallyFilled:
-                    HandleOrderFilled(orderEvent, context);
-                    break;
+                var executionId = orderEvent.ExecutionId;
 
-                case OrderStatus.Filled:
-                    // Update position first, then clean up
-                    HandleOrderFilled(orderEvent, context);
-                    HandleOrderCompleted(orderEvent, context);
-                    break;
+                // 1. ExecutionId deduplication check (simplified to single if)
+                if (!string.IsNullOrEmpty(executionId) &&
+                    _processedExecutions.ContainsKey(executionId))
+                {
+                    return; // Already processed, skip
+                }
 
-                // OrderStatus.None, OrderStatus.New, OrderStatus.Submitted, OrderStatus.UpdateSubmitted
-                // are not actionable for grid positions
-                default:
-                    break;
+                // 2. Parse order context once (avoids redundant Tag parsing)
+                // This also creates GridPosition if it doesn't exist
+                var context = ParseOrderContext(orderEvent);
+                if (context == null)
+                    return; // Not a grid order or parsing failed
+
+                // 3. Update GridPosition based on order status
+                switch (orderEvent.Status)
+                {
+                    case OrderStatus.PartiallyFilled:
+                        HandleOrderFilled(orderEvent, context);
+                        break;
+
+                    case OrderStatus.Filled:
+                        // Update position first, then clean up
+                        HandleOrderFilled(orderEvent, context);
+                        HandleOrderCompleted(orderEvent, context);
+                        break;
+
+                    // OrderStatus.None, OrderStatus.New, OrderStatus.Submitted, OrderStatus.UpdateSubmitted
+                    // are not actionable for grid positions
+                    default:
+                        break;
+                }
+
+                // 4. Record execution info atomically (no repeated ExecutionId check)
+                var market = orderEvent.Symbol.ID.Market;
+
+                if (!string.IsNullOrEmpty(executionId))
+                {
+                    _processedExecutions[executionId] = new ExecutionSnapshot
+                    {
+                        ExecutionId = executionId,
+                        TimeUtc = orderEvent.UtcTime,
+                        Market = market
+                    };
+                }
+
+                // 5. Update last fill time for this market
+                if (!_lastFillTimeByMarket.ContainsKey(market) ||
+                    _lastFillTimeByMarket[market] < orderEvent.UtcTime)
+                {
+                    _lastFillTimeByMarket[market] = orderEvent.UtcTime;
+                }
             }
         }
 

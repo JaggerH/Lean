@@ -37,6 +37,15 @@ namespace QuantConnect.TradingPairs
         private readonly IOrderProvider _transactions;
         private readonly Dictionary<(Symbol, Symbol), TradingPair> _pairs;
 
+        // Per-market last fill time tracking (key: Symbol.ID.Market)
+        private readonly Dictionary<string, DateTime> _lastFillTimeByMarket = new Dictionary<string, DateTime>();
+
+        // Processed executions cache for deduplication and time-based cleanup
+        private readonly Dictionary<string, ExecutionSnapshot> _processedExecutions = new Dictionary<string, ExecutionSnapshot>();
+
+        // Thread-safety lock for atomic updates
+        private readonly object _lock = new object();
+
         /// <summary>
         /// Gets the number of trading pairs in the manager
         /// </summary>
