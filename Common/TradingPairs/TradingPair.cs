@@ -55,7 +55,7 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// Gets the string key representation of this trading pair (for display and logging only)
         /// </summary>
-        public string Key => $"{Leg1Symbol}-{Leg2Symbol}";
+        public string Key => $"{Leg1Symbol}|{Leg2Symbol}";
 
         // Dynamic properties that read from Security.Cache
         /// <summary>
