@@ -71,6 +71,33 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
+        /// 获取 Portfolio 中指定 Symbol 的真实持仓量
+        /// - 对于 Crypto/Forex (IBaseCurrencySymbol)，从 CashBook 读取 BaseCurrency 数量
+        /// - 对于其他证券类型，从 Securities.Holding 读取数量
+        /// </summary>
+        private decimal GetPortfolioQuantity(SecurityPortfolioManager portfolio, Symbol symbol)
+        {
+            if (!portfolio.Securities.TryGetValue(symbol, out var security))
+            {
+                return 0m;
+            }
+
+            // Crypto/Forex: 从 CashBook 读取（真实资产所在地）
+            if (security is IBaseCurrencySymbol baseCurrency)
+            {
+                var currencySymbol = baseCurrency.BaseCurrency.Symbol;
+                if (portfolio.CashBook.TryGetValue(currencySymbol, out var cash))
+                {
+                    return cash.Amount;
+                }
+                return 0m;
+            }
+
+            // Equity/Futures/Options: 从 Security.Holdings 读取
+            return portfolio[symbol].Quantity;
+        }
+
+        /// <summary>
         /// 计算 Baseline (LP - GP)
         /// </summary>
         private Dictionary<Symbol, decimal> CalculateBaseline(SecurityPortfolioManager portfolio)
@@ -81,7 +108,7 @@ namespace QuantConnect.TradingPairs
                 .Select(symbol => new
                 {
                     Symbol = symbol,
-                    Diff = (portfolio.TryGetValue(symbol, out var holding) ? holding.Quantity : 0m) -
+                    Diff = GetPortfolioQuantity(portfolio, symbol) -
                            LinqExtensions.GetValueOrDefault(gp, symbol, 0m)
                 })
                 .Where(x => x.Diff != 0m)
@@ -140,11 +167,9 @@ namespace QuantConnect.TradingPairs
             {
                 Reconciliation();
             }
-            else
-            {
-                // Consistency confirmed - safe to cleanup old execution records
-                CleanupProcessedExecutions();
-            }
+            
+            // Consistency confirmed - safe to cleanup old execution records
+            CleanupProcessedExecutions();
             PersistState();
         }
 
@@ -377,6 +402,13 @@ namespace QuantConnect.TradingPairs
                             time_utc = kvp.Value.TimeUtc,
                             market = kvp.Value.Market
                         }
+                    }),
+
+                    // Component 4: Baseline (LP - GP differences)
+                    baseline = _baseline.Select(kvp => new
+                    {
+                        symbol_id = kvp.Key.ID.ToString(),  // Use Symbol ID (SID) for proper serialization
+                        quantity = kvp.Value
                     })
                 };
 
@@ -391,7 +423,8 @@ namespace QuantConnect.TradingPairs
                 _algorithm.ObjectStore.Save(backupPath, json);
 
                 Log.Trace($"Persisted TradingPairManager state: {allGridPositions.Count} positions, " +
-                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions at {timestamp}");
+                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions, " +
+                         $"{_baseline.Count} baseline entries at {timestamp}");
             }
             catch (Exception ex)
             {
@@ -466,9 +499,24 @@ namespace QuantConnect.TradingPairs
                     _processedExecutions[executionId] = snapshot;
                 }
 
+                // Restore Component 4: _baseline
+                _baseline.Clear();
+                if (stateData.baseline != null)
+                {
+                    foreach (var baselineData in stateData.baseline)
+                    {
+                        string symbolId = baselineData.symbol_id;
+                        decimal quantity = baselineData.quantity;
+                        var sid = SecurityIdentifier.Parse(symbolId);
+                        var symbol = new Symbol(sid, sid.Symbol);
+                        _baseline[symbol] = quantity;
+                    }
+                }
+
                 var totalPositions = GetAll().Sum(p => p.GridPositions.Count);
                 Log.Trace($"Restored TradingPairManager state: {totalPositions} positions, " +
-                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions from {timestamp}");
+                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions, " +
+                         $"{_baseline.Count} baseline entries from {timestamp}");
             }
             catch (Exception ex)
             {

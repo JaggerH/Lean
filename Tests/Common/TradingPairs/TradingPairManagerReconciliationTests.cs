@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using Moq;
 using NUnit.Framework;
 using QuantConnect.Data;
@@ -96,15 +97,36 @@ namespace QuantConnect.Tests.Common.TradingPairs
                 symbol.Value
             );
 
-            var security = new Security(
-                exchangeHours,
-                config,
-                new Cash(Currencies.USD, 0, 1m),
-                symbolProperties,
-                ErrorCurrencyConverter.Instance,
-                RegisteredSecurityDataTypesProvider.Null,
-                new SecurityCache()
-            );
+            Security security;
+
+            // Create Crypto security for crypto symbols (implements IBaseCurrencySymbol)
+            if (symbol.SecurityType == SecurityType.Crypto)
+            {
+                var quoteCurrency = new Cash(Currencies.USD, 0, 1m);
+                var baseCurrency = new Cash(symbol.Value.Substring(0, symbol.Value.IndexOf("USDT")), 0, 1m);
+
+                security = new QuantConnect.Securities.Crypto.Crypto(
+                    exchangeHours,
+                    quoteCurrency,
+                    baseCurrency,
+                    config,
+                    symbolProperties,
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null
+                );
+            }
+            else
+            {
+                security = new Security(
+                    exchangeHours,
+                    config,
+                    new Cash(Currencies.USD, 0, 1m),
+                    symbolProperties,
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null,
+                    new SecurityCache()
+                );
+            }
 
             security.SetLocalTimeKeeper(timeKeeper);
             return security;
@@ -112,8 +134,25 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
         private void SetPortfolioHolding(Symbol symbol, decimal quantity)
         {
+            // For Crypto/Forex (IBaseCurrencySymbol): ONLY set CashBook
+            if (_portfolio.Securities.TryGetValue(symbol, out var security) &&
+                security is IBaseCurrencySymbol baseCurrency)
+            {
+                var currencySymbol = baseCurrency.BaseCurrency.Symbol;
+                if (!_portfolio.CashBook.ContainsKey(currencySymbol))
+                {
+                    _portfolio.CashBook.Add(currencySymbol, quantity, 1m);
+                }
+                else
+                {
+                    _portfolio.CashBook[currencySymbol].SetAmount(quantity);
+                }
+                // Note: portfolio[symbol].Quantity remains 0 (uses CashBuyingPowerModel)
+                return;
+            }
+
+            // For Equity/Futures/Options: set Security.Quantity
             var holdings = _portfolio[symbol];
-            // Use reflection to set the quantity
             var quantityProperty = holdings.GetType().GetProperty("Quantity");
             quantityProperty.SetValue(holdings, quantity);
         }
@@ -488,6 +527,56 @@ namespace QuantConnect.Tests.Common.TradingPairs
             Assert.AreEqual(50m, result[_mstrSecurity.Symbol]);
         }
 
+        [Test]
+        public void Test_CalculateBaseline_Crypto_UsesCashBook()
+        {
+            // Arrange: Create BTCUSDT trading pair
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            // GridPosition records 1.5 BTC
+            var position = CreateGridPosition(pair, 1.5m, -100m);
+            var gridPositions = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair);
+            gridPositions["pos1"] = position;
+
+            // Portfolio simulation: BTC in CashBook (matches LEAN actual behavior)
+            _portfolio.CashBook.Add("BTC", 1.5m, 50000m);
+            // Note: For Crypto, Portfolio[BTCUSDT].Quantity would remain 0
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+
+            // Act
+            var result = InvokeCalculateBaseline(manager, _portfolio);
+
+            // Assert: No discrepancy - correctly read BTC from CashBook
+            Assert.AreEqual(0, result.Count, "CashBook BTC should match GridPosition");
+        }
+
+        [Test]
+        public void Test_CalculateBaseline_Crypto_DetectsDiscrepancy()
+        {
+            // Arrange: GridPosition has 1.5 BTC, but CashBook only has 1.0 BTC
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            var position = CreateGridPosition(pair, 1.5m, -100m);
+            var gridPositions = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair);
+            gridPositions["pos1"] = position;
+
+            // Discrepancy: CashBook has 1.0 BTC vs GridPosition 1.5 BTC
+            _portfolio.CashBook.Add("BTC", 1.0m, 50000m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+
+            // Act
+            var result = InvokeCalculateBaseline(manager, _portfolio);
+
+            // Assert: Should detect -0.5 BTC discrepancy (1.0 - 1.5)
+            Assert.AreEqual(1, result.Count);
+            Assert.IsTrue(result.ContainsKey(_btcSecurity.Symbol));
+            Assert.AreEqual(-0.5m, result[_btcSecurity.Symbol]);
+        }
+
         #endregion
 
         #region CompareBaseline Tests
@@ -838,6 +927,12 @@ namespace QuantConnect.Tests.Common.TradingPairs
             _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
             _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);
 
+            // Setup in-memory ObjectStore for PersistState/RestoreState tests
+            var objectStoreData = new Dictionary<string, string>();
+            var inMemoryObjectStore = new InMemoryObjectStore(objectStoreData);
+            var objectStoreWrapper = new QuantConnect.Storage.ObjectStore(inMemoryObjectStore);
+            _mockAlgorithm.Setup(a => a.ObjectStore).Returns(objectStoreWrapper);
+
             // Create test securities
             var exchangeHours = SecurityExchangeHours.AlwaysOpen(TimeZones.NewYork);
             var dateTime = new DateTime(2024, 1, 1, 9, 30, 0);
@@ -888,15 +983,36 @@ namespace QuantConnect.Tests.Common.TradingPairs
                 symbol.Value
             );
 
-            var security = new Security(
-                exchangeHours,
-                config,
-                new Cash(Currencies.USD, 0, 1m),
-                symbolProperties,
-                ErrorCurrencyConverter.Instance,
-                RegisteredSecurityDataTypesProvider.Null,
-                new SecurityCache()
-            );
+            Security security;
+
+            // Create Crypto security for crypto symbols (implements IBaseCurrencySymbol)
+            if (symbol.SecurityType == SecurityType.Crypto)
+            {
+                var quoteCurrency = new Cash(Currencies.USD, 0, 1m);
+                var baseCurrency = new Cash(symbol.Value.Substring(0, symbol.Value.IndexOf("USDT")), 0, 1m);
+
+                security = new QuantConnect.Securities.Crypto.Crypto(
+                    exchangeHours,
+                    quoteCurrency,
+                    baseCurrency,
+                    config,
+                    symbolProperties,
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null
+                );
+            }
+            else
+            {
+                security = new Security(
+                    exchangeHours,
+                    config,
+                    new Cash(Currencies.USD, 0, 1m),
+                    symbolProperties,
+                    ErrorCurrencyConverter.Instance,
+                    RegisteredSecurityDataTypesProvider.Null,
+                    new SecurityCache()
+                );
+            }
 
             security.SetLocalTimeKeeper(timeKeeper);
             return security;
@@ -904,6 +1020,24 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
         private void SetPortfolioHolding(Symbol symbol, decimal quantity)
         {
+            // For Crypto/Forex (IBaseCurrencySymbol): ONLY set CashBook
+            if (_portfolio.Securities.TryGetValue(symbol, out var security) &&
+                security is IBaseCurrencySymbol baseCurrency)
+            {
+                var currencySymbol = baseCurrency.BaseCurrency.Symbol;
+                if (!_portfolio.CashBook.ContainsKey(currencySymbol))
+                {
+                    _portfolio.CashBook.Add(currencySymbol, quantity, 1m);
+                }
+                else
+                {
+                    _portfolio.CashBook[currencySymbol].SetAmount(quantity);
+                }
+                // Note: portfolio[symbol].Quantity remains 0 (uses CashBuyingPowerModel)
+                return;
+            }
+
+            // For Equity/Futures/Options: set Security.Quantity
             var holdings = _portfolio[symbol];
             var quantityProperty = holdings.GetType().GetProperty("Quantity");
             quantityProperty.SetValue(holdings, quantity);
@@ -1078,6 +1212,14 @@ namespace QuantConnect.Tests.Common.TradingPairs
             return (Dictionary<Symbol, decimal>)method.Invoke(manager, new object[] { portfolio });
         }
 
+        // Access _baseline field
+        private Dictionary<Symbol, decimal> GetBaselineField(TradingPairManager manager)
+        {
+            var field = typeof(TradingPairManager).GetField("_baseline",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            return (Dictionary<Symbol, decimal>)field.GetValue(manager);
+        }
+
         // Helper to verify LP == GP
         private void AssertPortfolioMatchesGridPositions(TradingPairManager manager,
             SecurityPortfolioManager portfolio)
@@ -1241,7 +1383,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             // Assert
             var lastFillTimes = GetLastFillTimeByMarket(manager);
-            // BTC (coinbase) should NOT be updated by older T2
+            // BTC (gate) should NOT be updated by older T2
             AssertLastFillTime(lastFillTimes, "gate", T2);
             // MSTR (usa) should be updated by newer T3
             AssertLastFillTime(lastFillTimes, "usa", T3);
@@ -1428,7 +1570,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0.AddMinutes(5) }
+                { "gate", T0.AddMinutes(5) }
             });
 
             var oldExec = CreateExecutionRecord(_btcSecurity.Symbol, 0.5m, 50000m, T0.AddMinutes(2), "old_exec");
@@ -1449,7 +1591,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0 }
+                { "gate", T0 }
             });
 
             var timeEqualExec = CreateExecutionRecord(_btcSecurity.Symbol, 0.5m, 50000m, T0, "time_equal");
@@ -1470,7 +1612,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0 }
+                { "gate", T0 }
                 // No "usa" entry
             });
 
@@ -1496,7 +1638,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0.AddMinutes(5) },
+                { "gate", T0.AddMinutes(5) },
                 { "usa", T0.AddMinutes(3) }
             });
 
@@ -1505,12 +1647,12 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var oldBtc = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(oldBtc, "old_btc");
             snapshotType.GetProperty("TimeUtc").SetValue(oldBtc, T0.AddMinutes(2));
-            snapshotType.GetProperty("Market").SetValue(oldBtc, "coinbase");
+            snapshotType.GetProperty("Market").SetValue(oldBtc, "gate");
 
             var recentBtc = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(recentBtc, "recent_btc");
             snapshotType.GetProperty("TimeUtc").SetValue(recentBtc, T0.AddMinutes(5));
-            snapshotType.GetProperty("Market").SetValue(recentBtc, "coinbase");
+            snapshotType.GetProperty("Market").SetValue(recentBtc, "gate");
 
             var oldMstr = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(oldMstr, "old_mstr");
@@ -1551,7 +1693,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0 }
+                { "gate", T0 }
                 // No "usa" entry
             });
 
@@ -1560,7 +1702,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var btcExec = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(btcExec, "btc_exec");
             snapshotType.GetProperty("TimeUtc").SetValue(btcExec, T0.AddMinutes(-1));
-            snapshotType.GetProperty("Market").SetValue(btcExec, "coinbase");
+            snapshotType.GetProperty("Market").SetValue(btcExec, "gate");
 
             var mstrExec = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(mstrExec, "mstr_exec");
@@ -1598,6 +1740,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
+            manager.InitializeBaseline(_portfolio); // empty
             // Simulate reconnection: LP has brokerage positions
             SetPortfolioHolding(_btcSecurity.Symbol, 0.7m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
@@ -1615,7 +1758,6 @@ namespace QuantConnect.Tests.Common.TradingPairs
             _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
 
             // Act
-            manager.InitializeBaseline(_portfolio); // Won't set baseline (_lastFillTimeByMarket is empty)
             manager.CompareBaseline(_portfolio); // Should trigger reconciliation
 
             // Assert
@@ -1626,7 +1768,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             Assert.AreEqual(-100m, gpAggregation[_mstrSecurity.Symbol]);
 
             var processedExecs = GetProcessedExecutions(manager);
-            Assert.AreEqual(3, processedExecs.Count);
+            Assert.AreEqual(2, processedExecs.Count);
 
             var lastFillTimes = GetLastFillTimeByMarket(manager);
             AssertLastFillTime(lastFillTimes, "gate", T0.AddMinutes(2));
@@ -1645,7 +1787,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetLastFillTimeByMarket(manager, new Dictionary<string, DateTime>
             {
-                { "coinbase", T0.AddMinutes(10) },
+                { "gate", T0.AddMinutes(10) },
                 { "usa", T0.AddMinutes(5) }
             });
 
@@ -1738,7 +1880,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var oldExec = Activator.CreateInstance(snapshotType);
             snapshotType.GetProperty("ExecutionId").SetValue(oldExec, "old_exec");
             snapshotType.GetProperty("TimeUtc").SetValue(oldExec, T0);
-            snapshotType.GetProperty("Market").SetValue(oldExec, "coinbase");
+            snapshotType.GetProperty("Market").SetValue(oldExec, Market.Gate);
 
             var processedExecs = GetProcessedExecutions(manager);
             processedExecs["old_exec"] = (TradingPairManager.ExecutionSnapshot)oldExec;
@@ -1746,13 +1888,266 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Act
             manager.CompareBaseline(_portfolio);
 
-            // Assert - Cleanup should have been triggered
+            // Assert - Cleanup should not been triggered
             processedExecs = GetProcessedExecutions(manager);
-            Assert.AreEqual(2, processedExecs.Count);
+            Assert.AreEqual(3, processedExecs.Count);
             Assert.IsTrue(processedExecs.ContainsKey("exec_2")); // T0+5min, equal to lastFillTime, kept
-            Assert.IsFalse(processedExecs.ContainsKey("exec_1")); // T0 < T0+5min, removed
+            Assert.IsTrue(processedExecs.ContainsKey("exec_1")); // old_exec T0 = exec_1 T0, kept
         }
 
         #endregion
+
+        #region PersistState and RestoreState Tests
+
+        [Test]
+        public void Test_PersistState_SavesAllComponents()
+        {
+            // Arrange
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var position = CreateGridPosition(pair, 0.5m, -100m);
+
+            var gridPositions = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair);
+            gridPositions["pos1"] = position;
+
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+            manager.InitializeBaseline(_portfolio);
+
+            var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var orderEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            manager.ProcessGridOrderEvent(orderEvent);
+
+            // Act - Persist state via reflection
+            var persistMethod = typeof(TradingPairManager).GetMethod("PersistState",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            persistMethod.Invoke(manager, null);
+
+            // Assert - Check that state was saved
+            var statePath = "trade_data/trading_pair_manager/state";
+            Assert.IsTrue(_mockAlgorithm.Object.ObjectStore.ContainsKey(statePath),
+                "State file should exist in ObjectStore");
+
+            var json = _mockAlgorithm.Object.ObjectStore.Read(statePath);
+            Assert.IsNotNull(json);
+            Assert.IsTrue(json.Contains("grid_positions"));
+            Assert.IsTrue(json.Contains("last_fill_time_by_market"));
+            Assert.IsTrue(json.Contains("processed_executions"));
+            Assert.IsTrue(json.Contains("baseline"));
+        }
+
+        [Test]
+        public void Test_RestoreState_LoadsAllComponents()
+        {
+            // Arrange - Create a manager with GridPositions via ProcessGridOrderEvent only
+            var manager1 = CreateManager();
+            var pair1 = CreateTradingPair(manager1, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+            manager1.InitializeBaseline(_portfolio);
+
+            var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var orderEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            manager1.ProcessGridOrderEvent(orderEvent);
+
+            var persistMethod = typeof(TradingPairManager).GetMethod("PersistState",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            persistMethod.Invoke(manager1, null);
+
+            // Act - Create new manager and restore
+            var manager2 = CreateManager();
+            manager2.RestoreState();
+
+            // Assert - Verify all components were restored
+            var gpAggregation = InvokeAggregateGridPositions(manager2);
+            Assert.AreEqual(0.5m, gpAggregation[_btcSecurity.Symbol]);
+            Assert.AreEqual(0m, gpAggregation.GetValueOrDefault(_mstrSecurity.Symbol, 0m)); // No MSTR position from this order
+
+            var lastFillTimes = GetLastFillTimeByMarket(manager2);
+            Assert.AreEqual(1, lastFillTimes.Count);
+            Assert.IsTrue(lastFillTimes.ContainsKey("gate"));
+
+            var processedExecs = GetProcessedExecutions(manager2);
+            Assert.AreEqual(1, processedExecs.Count);
+            Assert.IsTrue(processedExecs.ContainsKey("exec_1"));
+
+            var baseline = GetBaselineField(manager2);
+            // Debug: Print what's in baseline
+            Console.WriteLine($"Baseline count: {baseline.Count}");
+            foreach (var kvp in baseline)
+            {
+                Console.WriteLine($"  {kvp.Key}: {kvp.Value}");
+            }
+
+            // Baseline should contain BTC with the difference
+            Assert.IsTrue(baseline.ContainsKey(_btcSecurity.Symbol),
+                $"Baseline should contain {_btcSecurity.Symbol}, but contains: {string.Join(", ", baseline.Keys)}");
+            Assert.AreEqual(0.5m, baseline[_btcSecurity.Symbol]); // 1 - 0.5
+        }
+
+        [Test]
+        public void Test_PersistAndRestore_PreservesStateAccurately()
+        {
+            // Arrange - Create complex state with multiple pairs and orders
+            var manager1 = CreateManager();
+            var pair1 = CreateTradingPair(manager1, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var pair2 = CreateTradingPair(manager1, _ethSecurity.Symbol, _mstrSecurity.Symbol);
+
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);
+            SetPortfolioHolding(_ethSecurity.Symbol, 3m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -200m);
+            manager1.InitializeBaseline(_portfolio);
+
+            var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var orderEvent1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair1, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            manager1.ProcessGridOrderEvent(orderEvent1);
+
+            var levelPair2 = new GridLevelPair(-0.03m, 0.02m, "LONG_SPREAD", 0.30m, (_ethSecurity.Symbol, _mstrSecurity.Symbol));
+            var orderEvent2 = CreateOrderEvent(_ethSecurity.Symbol, 2m, 3000m, T0.AddMinutes(1), "exec_2", levelPair2, _ethSecurity.Symbol, _mstrSecurity.Symbol);
+            manager1.ProcessGridOrderEvent(orderEvent2);
+
+            // Persist
+            var persistMethod = typeof(TradingPairManager).GetMethod("PersistState",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            persistMethod.Invoke(manager1, null);
+
+            // Act - Restore in new manager
+            var manager2 = CreateManager();
+            manager2.RestoreState();
+
+            // Assert - Complete state verification
+            var gpAggregation1 = InvokeAggregateGridPositions(manager1);
+            var gpAggregation2 = InvokeAggregateGridPositions(manager2);
+
+            Assert.AreEqual(gpAggregation1.Count, gpAggregation2.Count);
+            foreach (var kvp in gpAggregation1)
+            {
+                Assert.IsTrue(gpAggregation2.ContainsKey(kvp.Key));
+                Assert.AreEqual(kvp.Value, gpAggregation2[kvp.Key]);
+            }
+
+            var baseline1 = GetBaselineField(manager2);
+            var baseline2 = GetBaselineField(manager2);
+            Assert.AreEqual(baseline1.Count, baseline2.Count);
+            foreach (var kvp in baseline1)
+            {
+                Assert.IsTrue(baseline2.ContainsKey(kvp.Key));
+                Assert.AreEqual(kvp.Value, baseline2[kvp.Key]);
+            }
+
+            var lastFillTimes1 = GetLastFillTimeByMarket(manager1);
+            var lastFillTimes2 = GetLastFillTimeByMarket(manager2);
+            Assert.AreEqual(lastFillTimes1.Count, lastFillTimes2.Count);
+
+            var processedExecs1 = GetProcessedExecutions(manager1);
+            var processedExecs2 = GetProcessedExecutions(manager2);
+            Assert.AreEqual(processedExecs1.Count, processedExecs2.Count);
+        }
+
+        [Test]
+        public void Test_RestoreState_NoSavedState_HandlesGracefully()
+        {
+            // Arrange - Clean ObjectStore
+            var manager = CreateManager();
+
+            // Act & Assert - Should not throw
+            Assert.DoesNotThrow(() => manager.RestoreState(),
+                "RestoreState should handle missing state file gracefully");
+        }
+
+        [Test]
+        public void Test_PersistState_EmptyManager_SavesEmptyState()
+        {
+            // Arrange
+            var manager = CreateManager();
+
+            // Act
+            var persistMethod = typeof(TradingPairManager).GetMethod("PersistState",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            persistMethod.Invoke(manager, null);
+
+            // Assert
+            var statePath = "trade_data/trading_pair_manager/state";
+            Assert.IsTrue(_mockAlgorithm.Object.ObjectStore.ContainsKey(statePath));
+
+            var json = _mockAlgorithm.Object.ObjectStore.Read(statePath);
+            Assert.IsTrue(json.Contains("\"grid_positions\": []"));
+        }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// Simple in-memory ObjectStore implementation for testing
+    /// </summary>
+    internal class InMemoryObjectStore : QuantConnect.Interfaces.IObjectStore
+    {
+        private readonly Dictionary<string, string> _storage;
+
+        public event EventHandler<ObjectStoreErrorRaisedEventArgs> ErrorRaised;
+
+        public InMemoryObjectStore(Dictionary<string, string> storage)
+        {
+            _storage = storage;
+        }
+
+        public void Initialize(int userId, int projectId, string userToken, QuantConnect.Packets.Controls controls)
+        {
+            // No-op for testing
+        }
+
+        public bool ContainsKey(string path)
+        {
+            return _storage.ContainsKey(path);
+        }
+
+        public byte[] ReadBytes(string path)
+        {
+            if (!_storage.ContainsKey(path)) return null;
+            return Encoding.UTF8.GetBytes(_storage[path]);
+        }
+
+        public bool SaveBytes(string path, byte[] contents)
+        {
+            _storage[path] = Encoding.UTF8.GetString(contents);
+            return true;
+        }
+
+        public bool Delete(string path)
+        {
+            return _storage.Remove(path);
+        }
+
+        public string GetFilePath(string path)
+        {
+            return path;
+        }
+
+        public ICollection<string> Keys => _storage.Keys;
+
+        public void Clear()
+        {
+            _storage.Clear();
+        }
+
+        public void Dispose()
+        {
+            // No-op for testing
+        }
+
+        public IEnumerator<KeyValuePair<string, byte[]>> GetEnumerator()
+        {
+            return _storage.Select(kvp => new KeyValuePair<string, byte[]>(kvp.Key, Encoding.UTF8.GetBytes(kvp.Value))).GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
     }
 }
