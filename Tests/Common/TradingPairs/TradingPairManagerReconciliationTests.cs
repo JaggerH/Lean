@@ -1268,8 +1268,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             var processedExecs = GetProcessedExecutions(manager);
             Assert.AreEqual(2, processedExecs.Count);
-            Assert.IsTrue(processedExecs.ContainsKey("exec_1"));
-            Assert.IsTrue(processedExecs.ContainsKey("exec_2"));
+            Assert.IsTrue(processedExecs.ContainsKey("exec_1_gate"));
+            Assert.IsTrue(processedExecs.ContainsKey("exec_2_usa"));
         }
 
         [Test]
@@ -1398,8 +1398,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // After cleanup, should only have 2 executions (btc_2 and mstr_2)
             processedExecs = GetProcessedExecutions(manager);
             Assert.AreEqual(2, processedExecs.Count);
-            Assert.IsTrue(processedExecs.ContainsKey("btc_2"));
-            Assert.IsTrue(processedExecs.ContainsKey("mstr_2"));
+            Assert.IsTrue(processedExecs.ContainsKey("btc_2_gate"));
+            Assert.IsTrue(processedExecs.ContainsKey("mstr_2_usa"));
         }
 
         [Test]
@@ -1883,7 +1883,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             snapshotType.GetProperty("Market").SetValue(oldExec, Market.Gate);
 
             var processedExecs = GetProcessedExecutions(manager);
-            processedExecs["old_exec"] = (TradingPairManager.ExecutionSnapshot)oldExec;
+            processedExecs["old_exec_gate"] = (TradingPairManager.ExecutionSnapshot)oldExec;
 
             // Act
             manager.CompareBaseline(_portfolio);
@@ -1891,8 +1891,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Assert - Cleanup should not been triggered
             processedExecs = GetProcessedExecutions(manager);
             Assert.AreEqual(3, processedExecs.Count);
-            Assert.IsTrue(processedExecs.ContainsKey("exec_2")); // T0+5min, equal to lastFillTime, kept
-            Assert.IsTrue(processedExecs.ContainsKey("exec_1")); // old_exec T0 = exec_1 T0, kept
+            Assert.IsTrue(processedExecs.ContainsKey("exec_2_usa")); // T0+5min, equal to lastFillTime, kept
+            Assert.IsTrue(processedExecs.ContainsKey("exec_1_gate")); // old_exec T0 = exec_1 T0, kept
         }
 
         #endregion
@@ -1973,7 +1973,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             var processedExecs = GetProcessedExecutions(manager2);
             Assert.AreEqual(1, processedExecs.Count);
-            Assert.IsTrue(processedExecs.ContainsKey("exec_1"));
+            Assert.IsTrue(processedExecs.ContainsKey("exec_1_gate"));
 
             var baseline = GetBaselineField(manager2);
             // Debug: Print what's in baseline
