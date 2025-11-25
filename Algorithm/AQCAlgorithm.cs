@@ -1,5 +1,6 @@
 using QuantConnect.Data;
 using QuantConnect.Interfaces;
+using QuantConnect.Logging;
 
 namespace QuantConnect.Algorithm
 {
@@ -75,7 +76,7 @@ namespace QuantConnect.Algorithm
                 // CompareBaseline 是一个安全操作，对比正确不会触发对账，对账不会重复计算订单，很安全
                 TradingPairs.CompareBaseline();
 
-                Log.Trace("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
+                Logging.Log.Trace("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
 
                 // Setup periodic reconciliation if ExecutionHistoryProvider is available
                 if (ExecutionHistoryProvider != null)
@@ -92,11 +93,11 @@ namespace QuantConnect.Algorithm
                             }
                         }
                     );
-                    Log.Trace("AQCAlgorithm: Scheduled periodic reconciliation every 5 minutes");
+                    Logging.Log.Trace("AQCAlgorithm: Scheduled periodic reconciliation every 5 minutes");
                 }
                 else
                 {
-                    Log.Trace("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
+                    Logging.Log.Trace("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
                 }
             }
         }
@@ -111,7 +112,7 @@ namespace QuantConnect.Algorithm
 
             if (TradingPairs != null && ExecutionHistoryProvider != null && !IsWarmingUp)
             {
-                Log.Trace("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
+                Logging.Log.Trace("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
                 TradingPairs.CompareBaseline();
             }
         }
