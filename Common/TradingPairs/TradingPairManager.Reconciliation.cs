@@ -32,7 +32,7 @@ namespace QuantConnect.TradingPairs
         /// Serializable for potential persistence needs.
         /// </summary>
         [Serializable]
-        private class ExecutionSnapshot
+        internal class ExecutionSnapshot
         {
             /// <summary>
             /// Brokerage-provided execution ID
@@ -145,6 +145,7 @@ namespace QuantConnect.TradingPairs
                 // Consistency confirmed - safe to cleanup old execution records
                 CleanupProcessedExecutions();
             }
+            PersistState();
         }
 
         /// <summary>
@@ -293,7 +294,7 @@ namespace QuantConnect.TradingPairs
 
         /// <summary>
         /// Cleans up old execution records from the processed executions cache.
-        /// Removes executions with TimeUtc < _lastFillTime[market], keeping time-equal ones.
+        /// Removes executions with TimeUtc less than lastFillTime for each market, keeping time-equal ones.
         /// Only called after CompareBaseline confirms consistency.
         /// </summary>
         private void CleanupProcessedExecutions()
@@ -327,6 +328,151 @@ namespace QuantConnect.TradingPairs
                 {
                     Log.Trace($"CleanupProcessedExecutions: Removed {toRemove.Count} old executions, remaining: {_processedExecutions.Count}");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Persists complete TradingPairManager state to ObjectStore with versioning.
+        /// Saves 3 critical components: GridPositions, _lastFillTimeByMarket, _processedExecutions.
+        /// </summary>
+        private void PersistState()
+        {
+            try
+            {
+                var timestamp = DateTime.UtcNow;
+
+                // 1. 扁平化收集所有 GridPositions（直接添加对象，无额外包装）
+                var allGridPositions = new List<Grid.GridPosition>();
+                foreach (var pair in GetAll())
+                {
+                    foreach (var position in pair.GridPositions.Values)
+                    {
+                        allGridPositions.Add(position);
+                    }
+                }
+
+                // 2. 构建状态对象
+                var stateData = new
+                {
+                    timestamp = timestamp,
+                    version = "1.0",
+
+                    // Component 1: 扁平化的 GridPositions 数组（GridPosition 已有完整 JsonProperty）
+                    grid_positions = allGridPositions,
+
+                    // Component 2: Last fill time by market
+                    last_fill_time_by_market = _lastFillTimeByMarket.Select(kvp => new
+                    {
+                        market = kvp.Key,
+                        last_fill_time = kvp.Value
+                    }),
+
+                    // Component 3: Processed executions (ExecutionId deduplication cache)
+                    processed_executions = _processedExecutions.Select(kvp => new
+                    {
+                        execution_id = kvp.Key,
+                        snapshot = new
+                        {
+                            execution_id = kvp.Value.ExecutionId,
+                            time_utc = kvp.Value.TimeUtc,
+                            market = kvp.Value.Market
+                        }
+                    })
+                };
+
+                var json = Newtonsoft.Json.JsonConvert.SerializeObject(stateData, Newtonsoft.Json.Formatting.Indented);
+
+                // Save latest version
+                var latestPath = "trade_data/trading_pair_manager/state";
+                _algorithm.ObjectStore.Save(latestPath, json);
+
+                // Save timestamped backup (for version history)
+                var backupPath = $"trade_data/trading_pair_manager/backups/{timestamp:yyyyMMdd_HHmmss}";
+                _algorithm.ObjectStore.Save(backupPath, json);
+
+                Log.Trace($"Persisted TradingPairManager state: {allGridPositions.Count} positions, " +
+                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions at {timestamp}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Failed to persist TradingPairManager state: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Restores complete TradingPairManager state from ObjectStore on algorithm startup.
+        /// Restores 3 critical components: GridPositions, _lastFillTimeByMarket, _processedExecutions.
+        /// </summary>
+        public void RestoreState()
+        {
+            try
+            {
+                var path = "trade_data/trading_pair_manager/state";
+
+                if (!_algorithm.ObjectStore.ContainsKey(path))
+                {
+                    Log.Trace("No saved state found for TradingPairManager - starting fresh");
+                    return;
+                }
+
+                var json = _algorithm.ObjectStore.Read(path);
+                var stateData = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(json);
+
+                var timestamp = stateData.timestamp;
+                Log.Trace($"Restoring TradingPairManager state from {timestamp}");
+
+                // Restore Component 1: GridPositions
+                // Use AddPair + EncodeGridTag to rebuild structure from flat array
+                foreach (var posData in stateData.grid_positions)
+                {
+                    // 1. Deserialize GridPosition directly (GridPosition has JsonConstructor)
+                    var position = Newtonsoft.Json.JsonConvert.DeserializeObject<Grid.GridPosition>(
+                        posData.ToString()
+                    );
+
+                    // 2. Ensure TradingPair exists (AddPair is idempotent, handles duplicates)
+                    var pair = AddPair(position.Leg1Symbol, position.Leg2Symbol);
+
+                    // 3. Get position tag using Tag property
+                    var tag = position.Tag;
+
+                    // 4. Restore parent reference (GridPosition needs TradingPair for Invested property)
+                    position.SetTradingPair(pair);
+
+                    // 5. Add to pair's GridPositions dictionary
+                    pair.GridPositions[tag] = position;
+                }
+
+                // Restore Component 2: _lastFillTimeByMarket
+                _lastFillTimeByMarket.Clear();
+                foreach (var marketData in stateData.last_fill_time_by_market)
+                {
+                    string market = marketData.market;
+                    DateTime lastFillTime = marketData.last_fill_time;
+                    _lastFillTimeByMarket[market] = lastFillTime;
+                }
+
+                // Restore Component 3: _processedExecutions
+                _processedExecutions.Clear();
+                foreach (var execData in stateData.processed_executions)
+                {
+                    string executionId = execData.execution_id;
+                    var snapshot = new ExecutionSnapshot
+                    {
+                        ExecutionId = execData.snapshot.execution_id,
+                        TimeUtc = execData.snapshot.time_utc,
+                        Market = execData.snapshot.market
+                    };
+                    _processedExecutions[executionId] = snapshot;
+                }
+
+                var totalPositions = GetAll().Sum(p => p.GridPositions.Count);
+                Log.Trace($"Restored TradingPairManager state: {totalPositions} positions, " +
+                         $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions from {timestamp}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Failed to restore TradingPairManager state: {ex.Message}");
             }
         }
     }

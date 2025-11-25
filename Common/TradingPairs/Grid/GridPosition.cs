@@ -58,12 +58,6 @@ namespace QuantConnect.TradingPairs.Grid
         public Symbol Leg2Symbol { get; private set; }
 
         /// <summary>
-        /// Pair key computed from symbols
-        /// </summary>
-        [JsonIgnore]
-        public string PairKey => $"{Leg1Symbol.Value}-{Leg2Symbol.Value}";
-
-        /// <summary>
         /// Leg 1 (crypto) quantity
         /// </summary>
         [JsonProperty("leg1_quantity")]
@@ -92,6 +86,13 @@ namespace QuantConnect.TradingPairs.Grid
         /// </summary>
         [JsonProperty("level_pair")]
         private readonly GridLevelPair _levelPair;
+
+        /// <summary>
+        /// Gets the position tag by encoding the grid level configuration.
+        /// Used as dictionary key for GridPositions collection.
+        /// </summary>
+        [JsonIgnore]
+        public string Tag => TradingPairManager.EncodeGridTag(Leg1Symbol, Leg2Symbol, _levelPair);
 
         /// <summary>
         /// Creates a new grid position
@@ -222,7 +223,7 @@ namespace QuantConnect.TradingPairs.Grid
         public override string ToString()
         {
             string spreadStr = $"{_levelPair.Exit.SpreadPct * 100:+0.0;-0.0;0.0}%";
-            return $"GridPosition({PairKey}, Leg1: {Leg1Quantity:F4} @ {Leg1AverageCost:F2}, " +
+            return $"GridPosition({Tag}, Leg1: {Leg1Quantity:F4} @ {Leg1AverageCost:F2}, " +
                    $"Leg2: {Leg2Quantity:F4} @ {Leg2AverageCost:F2}, Exit: {spreadStr})";
         }
     }
