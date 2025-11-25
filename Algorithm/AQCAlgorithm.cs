@@ -67,6 +67,10 @@ namespace QuantConnect.Algorithm
             // Only setup reconciliation in live mode
             if (LiveMode && TradingPairs != null)
             {
+                // Restore TradingPairManager state from ObjectStore if available
+                TradingPairs.RestoreState();
+                Debug("AQCAlgorithm: Restored TradingPairs state from ObjectStore");
+
                 // Initialize baseline for trading pairs reconciliation
                 TradingPairs.InitializeBaseline(Portfolio);
                 Debug("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
@@ -74,10 +78,10 @@ namespace QuantConnect.Algorithm
                 // Setup periodic reconciliation if ExecutionHistoryProvider is available
                 if (ExecutionHistoryProvider != null)
                 {
-                    // Schedule reconciliation every 15 minutes
+                    // Schedule reconciliation every 5 minutes
                     Schedule.On(
                         DateRules.EveryDay(),
-                        TimeRules.Every(System.TimeSpan.FromMinutes(15)),
+                        TimeRules.Every(System.TimeSpan.FromMinutes(5)),
                         () =>
                         {
                             if (!IsWarmingUp)
@@ -86,12 +90,27 @@ namespace QuantConnect.Algorithm
                             }
                         }
                     );
-                    Debug("AQCAlgorithm: Scheduled periodic reconciliation every 15 minutes");
+                    Debug("AQCAlgorithm: Scheduled periodic reconciliation every 5 minutes");
                 }
                 else
                 {
                     Debug("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Called when the brokerage connection is restored after being lost.
+        /// Triggers immediate reconciliation to detect any discrepancies during disconnection.
+        /// </summary>
+        public override void OnBrokerageReconnect()
+        {
+            base.OnBrokerageReconnect();
+
+            if (TradingPairs != null && ExecutionHistoryProvider != null && !IsWarmingUp)
+            {
+                Debug("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
+                TradingPairs.CompareBaseline(Portfolio);
             }
         }
 
