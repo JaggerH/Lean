@@ -67,13 +67,15 @@ namespace QuantConnect.Algorithm
             // Only setup reconciliation in live mode
             if (LiveMode && TradingPairs != null)
             {
-                // Restore TradingPairManager state from ObjectStore if available
+                // 以下三个操作是安全操作
+                // RestoreState 是必须的
                 TradingPairs.RestoreState();
-                Debug("AQCAlgorithm: Restored TradingPairs state from ObjectStore");
+                // InitializeBaseline 在 lastFillTime 不为空的情况下会跳过
+                TradingPairs.InitializeBaseline();
+                // CompareBaseline 是一个安全操作，对比正确不会触发对账，对账不会重复计算订单，很安全
+                TradingPairs.CompareBaseline();
 
-                // Initialize baseline for trading pairs reconciliation
-                TradingPairs.InitializeBaseline(Portfolio);
-                Debug("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
+                Log.Trace("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
 
                 // Setup periodic reconciliation if ExecutionHistoryProvider is available
                 if (ExecutionHistoryProvider != null)
@@ -86,15 +88,15 @@ namespace QuantConnect.Algorithm
                         {
                             if (!IsWarmingUp)
                             {
-                                TradingPairs.CompareBaseline(Portfolio);
+                                TradingPairs.CompareBaseline();
                             }
                         }
                     );
-                    Debug("AQCAlgorithm: Scheduled periodic reconciliation every 5 minutes");
+                    Log.Trace("AQCAlgorithm: Scheduled periodic reconciliation every 5 minutes");
                 }
                 else
                 {
-                    Debug("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
+                    Log.Trace("AQCAlgorithm: Warning - ExecutionHistoryProvider not set. Reconciliation features disabled.");
                 }
             }
         }
@@ -109,8 +111,8 @@ namespace QuantConnect.Algorithm
 
             if (TradingPairs != null && ExecutionHistoryProvider != null && !IsWarmingUp)
             {
-                Debug("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
-                TradingPairs.CompareBaseline(Portfolio);
+                Log.Trace("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
+                TradingPairs.CompareBaseline();
             }
         }
 

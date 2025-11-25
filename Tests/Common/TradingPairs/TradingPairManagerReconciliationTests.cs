@@ -71,6 +71,9 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Create transaction manager and portfolio
             _transactions = new SecurityTransactionManager(null, _securities);
             _portfolio = new SecurityPortfolioManager(_securities, _transactions, new AlgorithmSettings());
+
+            // Setup mock algorithm to return the portfolio
+            _mockAlgorithm.Setup(a => a.Portfolio).Returns(_portfolio);
         }
 
         private Security CreateSecurity(Symbol symbol, SecurityExchangeHours exchangeHours, LocalTimeKeeper timeKeeper)
@@ -194,11 +197,11 @@ namespace QuantConnect.Tests.Common.TradingPairs
             return (Dictionary<Symbol, decimal>)method.Invoke(manager, null);
         }
 
-        private Dictionary<Symbol, decimal> InvokeCalculateBaseline(TradingPairManager manager, SecurityPortfolioManager portfolio)
+        private Dictionary<Symbol, decimal> InvokeCalculateBaseline(TradingPairManager manager)
         {
             var method = typeof(TradingPairManager).GetMethod("CalculateBaseline",
                 BindingFlags.NonPublic | BindingFlags.Instance);
-            return (Dictionary<Symbol, decimal>)method.Invoke(manager, new object[] { portfolio });
+            return (Dictionary<Symbol, decimal>)method.Invoke(manager, null);
         }
 
         private Dictionary<Symbol, decimal> GetBaselineField(TradingPairManager manager)
@@ -383,7 +386,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.IsNotNull(result);
@@ -400,7 +403,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, 200m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(2, result.Count);
@@ -423,7 +426,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Portfolio is empty (default)
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(2, result.Count);
@@ -447,7 +450,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -50m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(2, result.Count);
@@ -471,7 +474,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -150m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(2, result.Count);
@@ -496,7 +499,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_ethSecurity.Symbol, 5m); // ETH only in portfolio
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -519,7 +522,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -50m); // Doesn't match, diff = 50
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -546,7 +549,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert: No discrepancy - correctly read BTC from CashBook
             Assert.AreEqual(0, result.Count, "CashBook BTC should match GridPosition");
@@ -569,7 +572,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
 
             // Act
-            var result = InvokeCalculateBaseline(manager, _portfolio);
+            var result = InvokeCalculateBaseline(manager);
 
             // Assert: Should detect -0.5 BTC discrepancy (1.0 - 1.5)
             Assert.AreEqual(1, result.Count);
@@ -603,10 +606,10 @@ namespace QuantConnect.Tests.Common.TradingPairs
             gridPositions["pos1"] = position;
 
             // Initialize baseline
-            manager.InitializeBaseline(_portfolio);
+            manager.InitializeBaseline();
 
             // Act - portfolio hasn't changed, so baseline should match
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.AreEqual(0, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -626,13 +629,13 @@ namespace QuantConnect.Tests.Common.TradingPairs
             gridPositions["pos1"] = position;
 
             // Initialize baseline with empty portfolio
-            manager.InitializeBaseline(_portfolio);
+            manager.InitializeBaseline();
 
             // Change portfolio
             SetPortfolioHolding(_btcSecurity.Symbol, 1m); // Was 0, GP is 0.5, baseline was -0.5, now current is 0.5
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.AreEqual(1, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -658,14 +661,14 @@ namespace QuantConnect.Tests.Common.TradingPairs
             gridPositions["pos1"] = position;
 
             // Initialize baseline
-            manager.InitializeBaseline(_portfolio);
+            manager.InitializeBaseline();
 
             // Change portfolio for both symbols
             SetPortfolioHolding(_btcSecurity.Symbol, 2m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -50m);
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.AreEqual(2, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -691,7 +694,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // So current diff should be empty, meaning baseline value becomes 0 in comparison
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.AreEqual(1, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -721,7 +724,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Current will have differences (portfolio=0, GP has values)
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.Greater(manager.LoggedDiscrepancies.Count, 0); // Removed in refactoring
@@ -738,7 +741,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetBaselineField(manager, new Dictionary<Symbol, decimal>());
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert
             // Assert.AreEqual(0, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -953,6 +956,9 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Create transaction manager and portfolio
             _transactions = new SecurityTransactionManager(null, _securities);
             _portfolio = new SecurityPortfolioManager(_securities, _transactions, new AlgorithmSettings());
+
+            // Setup mock algorithm to return the portfolio
+            _mockAlgorithm.Setup(a => a.Portfolio).Returns(_portfolio);
 
             _nextOrderId = 1; // Reset order ID counter
         }
@@ -1205,11 +1211,11 @@ namespace QuantConnect.Tests.Common.TradingPairs
             return (Dictionary<Symbol, decimal>)method.Invoke(manager, null);
         }
 
-        private Dictionary<Symbol, decimal> InvokeCalculateBaseline(TradingPairManager manager, SecurityPortfolioManager portfolio)
+        private Dictionary<Symbol, decimal> InvokeCalculateBaseline(TradingPairManager manager)
         {
             var method = typeof(TradingPairManager).GetMethod("CalculateBaseline",
                 BindingFlags.NonPublic | BindingFlags.Instance);
-            return (Dictionary<Symbol, decimal>)method.Invoke(manager, new object[] { portfolio });
+            return (Dictionary<Symbol, decimal>)method.Invoke(manager, null);
         }
 
         // Access _baseline field
@@ -1224,7 +1230,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         private void AssertPortfolioMatchesGridPositions(TradingPairManager manager,
             SecurityPortfolioManager portfolio)
         {
-            var baseline = InvokeCalculateBaseline(manager, portfolio);
+            var baseline = InvokeCalculateBaseline(manager);
             Assert.AreEqual(0, baseline.Count,
                 $"Portfolio and GridPositions mismatch: {string.Join(", ", baseline.Select(kvp => $"{kvp.Key}: {kvp.Value}"))}");
         }
@@ -1280,7 +1286,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_btcSecurity.Symbol, 0.5m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
 
-            manager.InitializeBaseline(_portfolio);
+            manager.InitializeBaseline();
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
@@ -1740,7 +1746,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
-            manager.InitializeBaseline(_portfolio); // empty
+            manager.InitializeBaseline(); // empty
             // Simulate reconnection: LP has brokerage positions
             SetPortfolioHolding(_btcSecurity.Symbol, 0.7m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
@@ -1758,7 +1764,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
 
             // Act
-            manager.CompareBaseline(_portfolio); // Should trigger reconciliation
+            manager.CompareBaseline(); // Should trigger reconciliation
 
             // Assert
             mockProvider.Verify(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()), Times.Once);
@@ -1886,7 +1892,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             processedExecs["old_exec_gate"] = (TradingPairManager.ExecutionSnapshot)oldExec;
 
             // Act
-            manager.CompareBaseline(_portfolio);
+            manager.CompareBaseline();
 
             // Assert - Cleanup should not been triggered
             processedExecs = GetProcessedExecutions(manager);
@@ -1913,7 +1919,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetPortfolioHolding(_btcSecurity.Symbol, 1m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
-            manager.InitializeBaseline(_portfolio);
+            manager.InitializeBaseline();
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
@@ -1947,7 +1953,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetPortfolioHolding(_btcSecurity.Symbol, 1m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
-            manager1.InitializeBaseline(_portfolio); // baseline = 1 BTC, -100 MSTR
+            manager1.InitializeBaseline(); // baseline = 1 BTC, -100 MSTR
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
@@ -2000,7 +2006,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_btcSecurity.Symbol, 1m);
             SetPortfolioHolding(_ethSecurity.Symbol, 3m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -200m);
-            manager1.InitializeBaseline(_portfolio);
+            manager1.InitializeBaseline();
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
             var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));

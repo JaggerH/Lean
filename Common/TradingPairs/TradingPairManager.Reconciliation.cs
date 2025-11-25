@@ -56,13 +56,12 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// 初始化 Baseline 账本
         /// </summary>
-        /// <param name="portfolio">Portfolio 管理器</param>
-        public void InitializeBaseline(SecurityPortfolioManager portfolio)
+        public void InitializeBaseline()
         {
             if (_lastFillTimeByMarket.Count == 0)
             {
                 _baseline.Clear();
-                var calculated = CalculateBaseline(portfolio);
+                var calculated = CalculateBaseline();
                 foreach (var kvp in calculated)
                 {
                     _baseline[kvp.Key] = kvp.Value;
@@ -75,8 +74,9 @@ namespace QuantConnect.TradingPairs
         /// - 对于 Crypto/Forex (IBaseCurrencySymbol)，从 CashBook 读取 BaseCurrency 数量
         /// - 对于其他证券类型，从 Securities.Holding 读取数量
         /// </summary>
-        private decimal GetPortfolioQuantity(SecurityPortfolioManager portfolio, Symbol symbol)
+        private decimal GetPortfolioQuantity(Symbol symbol)
         {
+            var portfolio = _algorithm.Portfolio;
             if (!portfolio.Securities.TryGetValue(symbol, out var security))
             {
                 return 0m;
@@ -100,15 +100,16 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// 计算 Baseline (LP - GP)
         /// </summary>
-        private Dictionary<Symbol, decimal> CalculateBaseline(SecurityPortfolioManager portfolio)
+        private Dictionary<Symbol, decimal> CalculateBaseline()
         {
+            var portfolio = _algorithm.Portfolio;
             var gp = AggregateGridPositions();
 
             return portfolio.Keys.Union(gp.Keys)
                 .Select(symbol => new
                 {
                     Symbol = symbol,
-                    Diff = GetPortfolioQuantity(portfolio, symbol) -
+                    Diff = GetPortfolioQuantity(symbol) -
                            LinqExtensions.GetValueOrDefault(gp, symbol, 0m)
                 })
                 .Where(x => x.Diff != 0m)
@@ -142,10 +143,9 @@ namespace QuantConnect.TradingPairs
         /// <summary>
         /// 对比 Baseline 与当前差异，发现不一致时触发对账
         /// </summary>
-        /// <param name="portfolio">Portfolio 管理器</param>
-        public void CompareBaseline(SecurityPortfolioManager portfolio)
+        public void CompareBaseline()
         {
-            var currentDiff = CalculateBaseline(portfolio);
+            var currentDiff = CalculateBaseline();
             var allSymbols = _baseline.Keys.Union(currentDiff.Keys);
             var hasDiscrepancies = false;
 
@@ -167,7 +167,7 @@ namespace QuantConnect.TradingPairs
             {
                 Reconciliation();
             }
-            
+
             // Consistency confirmed - safe to cleanup old execution records
             CleanupProcessedExecutions();
             PersistState();
