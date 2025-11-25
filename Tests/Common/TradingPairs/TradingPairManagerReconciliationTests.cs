@@ -1947,12 +1947,12 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             SetPortfolioHolding(_btcSecurity.Symbol, 1m);
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
-            manager1.InitializeBaseline(_portfolio);
+            manager1.InitializeBaseline(_portfolio); // baseline = 1 BTC, -100 MSTR
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
             var orderEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
-            manager1.ProcessGridOrderEvent(orderEvent);
+            manager1.ProcessGridOrderEvent(orderEvent); // baseline = 1 BTC, -100 MSTR
 
             var persistMethod = typeof(TradingPairManager).GetMethod("PersistState",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -1986,7 +1986,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Baseline should contain BTC with the difference
             Assert.IsTrue(baseline.ContainsKey(_btcSecurity.Symbol),
                 $"Baseline should contain {_btcSecurity.Symbol}, but contains: {string.Join(", ", baseline.Keys)}");
-            Assert.AreEqual(0.5m, baseline[_btcSecurity.Symbol]); // 1 - 0.5
+            Assert.AreEqual(1m, baseline[_btcSecurity.Symbol]); // 这里仅仅是恢复状态，没有对账，还是 1 BTC, -100 MSTR
         }
 
         [Test]

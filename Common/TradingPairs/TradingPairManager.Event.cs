@@ -91,11 +91,14 @@ namespace QuantConnect.TradingPairs
             {
                 var executionId = orderEvent.ExecutionId;
 
-                // 1. ExecutionId deduplication check (simplified to single if)
-                if (!string.IsNullOrEmpty(executionId) &&
-                    _processedExecutions.ContainsKey(executionId))
+                // 1. ExecutionId deduplication check - per market
+                if (!string.IsNullOrEmpty(executionId))
                 {
-                    return; // Already processed, skip
+                    var executionKey = $"{executionId}_{orderEvent.Symbol.ID.Market}";
+                    if (_processedExecutions.ContainsKey(executionKey))
+                    {
+                        return; // Already processed for this market, skip
+                    }
                 }
 
                 // 2. Parse order context once (avoids redundant Tag parsing)
@@ -128,7 +131,8 @@ namespace QuantConnect.TradingPairs
 
                 if (!string.IsNullOrEmpty(executionId))
                 {
-                    _processedExecutions[executionId] = new ExecutionSnapshot
+                    var executionKey = $"{executionId}_{market}";
+                    _processedExecutions[executionKey] = new ExecutionSnapshot
                     {
                         ExecutionId = executionId,
                         TimeUtc = orderEvent.UtcTime,
