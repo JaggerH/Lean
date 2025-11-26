@@ -60,13 +60,44 @@ namespace QuantConnect.TradingPairs
         {
             if (_lastFillTimeByMarket.Count == 0)
             {
-                _baseline.Clear();
-                var calculated = CalculateBaseline();
-                foreach (var kvp in calculated)
-                {
-                    _baseline[kvp.Key] = kvp.Value;
-                }
+                UpdateBaseline();
             }
+        }
+
+        /// <summary>
+        /// Updates baseline to reflect current state after reconciliation.
+        /// Called when post-reconciliation comparison detects new discrepancies
+        /// (e.g., user placed orders during reconciliation).
+        /// </summary>
+        private void UpdateBaseline()
+        {
+            var newBaseline = CalculateBaseline();
+
+            _baseline.Clear();
+            foreach (var kvp in newBaseline)
+            {
+                _baseline[kvp.Key] = kvp.Value;
+            }
+        }
+
+
+        /// <summary>
+        /// 计算 Baseline (LP - GP)
+        /// </summary>
+        private Dictionary<Symbol, decimal> CalculateBaseline()
+        {
+            var portfolio = _algorithm.Portfolio;
+            var gp = AggregateGridPositions();
+
+            return portfolio.Keys.Union(gp.Keys)
+                .Select(symbol => new
+                {
+                    Symbol = symbol,
+                    Diff = GetPortfolioQuantity(symbol) -
+                           LinqExtensions.GetValueOrDefault(gp, symbol, 0m)
+                })
+                .Where(x => x.Diff != 0m)
+                .ToDictionary(x => x.Symbol, x => x.Diff);
         }
 
         /// <summary>
@@ -98,25 +129,6 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
-        /// 计算 Baseline (LP - GP)
-        /// </summary>
-        private Dictionary<Symbol, decimal> CalculateBaseline()
-        {
-            var portfolio = _algorithm.Portfolio;
-            var gp = AggregateGridPositions();
-
-            return portfolio.Keys.Union(gp.Keys)
-                .Select(symbol => new
-                {
-                    Symbol = symbol,
-                    Diff = GetPortfolioQuantity(symbol) -
-                           LinqExtensions.GetValueOrDefault(gp, symbol, 0m)
-                })
-                .Where(x => x.Diff != 0m)
-                .ToDictionary(x => x.Symbol, x => x.Diff);
-        }
-
-        /// <summary>
         /// 聚合所有 GridPosition 的持仓
         /// </summary>
         private Dictionary<Symbol, decimal> AggregateGridPositions()
@@ -141,9 +153,38 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
-        /// 对比 Baseline 与当前差异，发现不一致时触发对账
+        /// Performs reconciliation by comparing baseline with current state.
+        /// If discrepancies found, queries execution history to rebuild GridPositions.
+        /// After reconciliation, updates baseline to reflect new state (if changed).
         /// </summary>
-        public void CompareBaseline()
+        public void PerformReconciliation()
+        {
+            lock(_lock)
+            {
+                var hasDiscrepancies = CompareBaseline();
+
+                if (hasDiscrepancies)
+                {
+                    Reconciliation();
+
+                    hasDiscrepancies = CompareBaseline();
+                    if (hasDiscrepancies)
+                    {
+                        UpdateBaseline();
+                    }
+                }
+
+                CleanupProcessedExecutions();
+                PersistState();
+            }
+        }
+
+        /// <summary>
+        /// Compares current baseline with actual state (Portfolio - GridPositions).
+        /// Logs any discrepancies found.
+        /// </summary>
+        /// <returns>True if discrepancies exist, false otherwise</returns>
+        private bool CompareBaseline()
         {
             var currentDiff = CalculateBaseline();
             var allSymbols = _baseline.Keys.Union(currentDiff.Keys);
@@ -163,15 +204,9 @@ namespace QuantConnect.TradingPairs
                 }
             }
 
-            if (hasDiscrepancies)
-            {
-                Reconciliation();
-            }
-
-            // Consistency confirmed - safe to cleanup old execution records
-            CleanupProcessedExecutions();
-            PersistState();
+            return hasDiscrepancies;
         }
+
 
         /// <summary>
         /// Performs reconciliation by querying execution history from brokerage and processing records.

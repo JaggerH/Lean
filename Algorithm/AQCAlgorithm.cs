@@ -73,8 +73,8 @@ namespace QuantConnect.Algorithm
                 TradingPairs.RestoreState();
                 // InitializeBaseline 在 lastFillTime 不为空的情况下会跳过
                 TradingPairs.InitializeBaseline();
-                // CompareBaseline 是一个安全操作，对比正确不会触发对账，对账不会重复计算订单，很安全
-                TradingPairs.CompareBaseline();
+                // PerformReconciliation 是一个安全操作，对比正确不会触发对账，对账不会重复计算订单，很安全
+                TradingPairs.PerformReconciliation();
 
                 Logging.Log.Trace("AQCAlgorithm: Initialized TradingPairs baseline for reconciliation");
 
@@ -89,7 +89,7 @@ namespace QuantConnect.Algorithm
                         {
                             if (!IsWarmingUp)
                             {
-                                TradingPairs.CompareBaseline();
+                                TradingPairs.PerformReconciliation();
                             }
                         }
                     );
@@ -113,7 +113,7 @@ namespace QuantConnect.Algorithm
             if (TradingPairs != null && ExecutionHistoryProvider != null && !IsWarmingUp)
             {
                 Logging.Log.Trace("AQCAlgorithm: Brokerage reconnected - triggering reconciliation");
-                TradingPairs.CompareBaseline();
+                TradingPairs.PerformReconciliation();
             }
         }
 

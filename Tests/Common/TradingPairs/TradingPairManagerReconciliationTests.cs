@@ -615,7 +615,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             manager.InitializeBaseline();
 
             // Act - portfolio hasn't changed, so baseline should match
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.AreEqual(0, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -641,7 +641,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_btcSecurity.Symbol, 1m); // Was 0, GP is 0.5, baseline was -0.5, now current is 0.5
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.AreEqual(1, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -674,7 +674,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -50m);
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.AreEqual(2, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -700,7 +700,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // So current diff should be empty, meaning baseline value becomes 0 in comparison
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.AreEqual(1, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -730,7 +730,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Current will have differences (portfolio=0, GP has values)
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.Greater(manager.LoggedDiscrepancies.Count, 0); // Removed in refactoring
@@ -747,7 +747,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetBaselineField(manager, new Dictionary<Symbol, decimal>());
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert
             // Assert.AreEqual(0, manager.LoggedDiscrepancies.Count); // Removed in refactoring
@@ -1019,6 +1019,186 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var field = typeof(GridPosition).GetField($"<{propertyName}>k__BackingField",
                 BindingFlags.NonPublic | BindingFlags.Instance);
             field.SetValue(position, value);
+        }
+
+        private ExecutionRecord CreateExecutionRecord(Symbol symbol, decimal quantity,
+            decimal price, DateTime timeUtc, string executionId, string tag = null)
+        {
+            return new ExecutionRecord
+            {
+                Symbol = symbol,
+                Quantity = quantity,
+                Price = price,
+                TimeUtc = timeUtc,
+                ExecutionId = executionId,
+                Tag = tag,
+                Fee = 0.01m,
+                FeeCurrency = Currencies.USD
+            };
+        }
+
+        #endregion
+
+        #region PerformReconciliation and UpdateBaseline Tests
+
+        [Test]
+        public void Test_PerformReconciliation_NoDiscrepancies_NoReconciliationTriggered()
+        {
+            // Arrange
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var position = CreateGridPosition(pair, 0.5m, -100m);
+
+            var gridPositions = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair);
+            gridPositions["pos1"] = position;
+
+            SetPortfolioHolding(_btcSecurity.Symbol, 0.5m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+            manager.InitializeBaseline();
+
+            var baselineBefore = GetBaselineField(manager);
+
+            // Act - No discrepancies, so reconciliation should not be triggered
+            manager.PerformReconciliation();
+
+            // Assert - Baseline should remain unchanged
+            var baselineAfter = GetBaselineField(manager);
+            Assert.AreEqual(0, baselineBefore.Count, "Baseline should be empty when portfolio matches grid positions");
+            Assert.AreEqual(0, baselineAfter.Count, "Baseline should remain empty after reconciliation");
+        }
+
+        [Test]
+        public void Test_PerformReconciliation_DiscrepanciesResolved_NoBaselineUpdate()
+        {
+            // Arrange
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            // Start with empty grid positions
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+            manager.InitializeBaseline(); // Baseline: BTC=1, MSTR=-100
+
+            // Mock ExecutionHistoryProvider to return executions that will rebuild grid positions
+            var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
+
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            var executions = new List<ExecutionRecord>
+            {
+                CreateExecutionRecord(_btcSecurity.Symbol, 1m, 50000m, T0, "exec_1", tag),
+                CreateExecutionRecord(_mstrSecurity.Symbol, -100m, 200m, T0, "exec_2", tag)
+            };
+            mockProvider.Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(executions);
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+
+            var baselineBefore = new Dictionary<Symbol, decimal>(GetBaselineField(manager));
+
+            // Act - Reconciliation should process executions and resolve discrepancy
+            manager.PerformReconciliation();
+
+            // Assert - Baseline should remain unchanged (discrepancy fully resolved)
+            var baselineAfter = GetBaselineField(manager);
+            Assert.AreEqual(baselineBefore.Count, baselineAfter.Count);
+            foreach (var kvp in baselineBefore)
+            {
+                Assert.IsTrue(baselineAfter.ContainsKey(kvp.Key));
+                Assert.AreEqual(kvp.Value, baselineAfter[kvp.Key],
+                    $"Baseline for {kvp.Key} should remain unchanged when discrepancy is fully resolved");
+            }
+        }
+
+        [Test]
+        public void Test_PerformReconciliation_NewDiscrepanciesAfterReconciliation_UpdateBaseline()
+        {
+            // Arrange
+            var manager = CreateManager();
+            var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            // Start with empty baseline (skip InitializeBaseline to allow first reconciliation to trigger)
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
+
+            // Mock ExecutionHistoryProvider to return partial executions
+            // This simulates: reconciliation processes some fills, but discrepancies remain due to user trades
+            var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
+
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            var executions = new List<ExecutionRecord>
+            {
+                CreateExecutionRecord(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", tag) // Only partial fill
+            };
+            mockProvider.Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(executions);
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+
+            var baselineBefore = GetBaselineField(manager);
+            Assert.AreEqual(0, baselineBefore.Count, "Baseline should be empty initially");
+
+            // Act - Reconciliation processes partial fills, leaving discrepancy
+            manager.PerformReconciliation();
+
+            // Assert - Baseline should be updated to reflect new state
+            var baselineAfter = GetBaselineField(manager);
+
+            // After reconciliation: GP has BTC=0.5, Portfolio has BTC=1, so new baseline should be BTC=0.5
+            Assert.IsTrue(baselineAfter.ContainsKey(_btcSecurity.Symbol),
+                "Baseline should contain BTC after partial reconciliation");
+            Assert.AreEqual(0.5m, baselineAfter[_btcSecurity.Symbol],
+                "Baseline should be updated to current discrepancy (Portfolio 1 - GridPosition 0.5)");
+        }
+
+        [Test]
+        public void Test_UpdateBaseline_UpdatesAllSymbolsCorrectly()
+        {
+            // Arrange
+            var manager = CreateManager();
+            var pair1 = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var pair2 = CreateTradingPair(manager, _ethSecurity.Symbol, _mstrSecurity.Symbol);
+
+            var position1 = CreateGridPosition(pair1, 0.5m, -50m);
+            var position2 = CreateGridPosition(pair2, 2m, -80m);
+
+            var gridPositions1 = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair1);
+            gridPositions1["pos1"] = position1;
+
+            var gridPositions2 = (Dictionary<string, GridPosition>)typeof(TradingPair)
+                .GetProperty("GridPositions").GetValue(pair2);
+            gridPositions2["pos2"] = position2;
+
+            // Set portfolio different from grid positions
+            SetPortfolioHolding(_btcSecurity.Symbol, 1m);    // GP=0.5, diff=0.5
+            SetPortfolioHolding(_ethSecurity.Symbol, 3m);    // GP=2, diff=1
+            SetPortfolioHolding(_mstrSecurity.Symbol, -100m); // GP=-130, diff=30
+
+            manager.InitializeBaseline(); // Baseline: BTC=0.5, ETH=1, MSTR=30
+
+            // Create discrepancy by changing portfolio
+            SetPortfolioHolding(_btcSecurity.Symbol, 2m);    // New diff: 1.5
+            SetPortfolioHolding(_ethSecurity.Symbol, 5m);    // New diff: 3
+
+            // Mock empty reconciliation (simulating user placed orders during reconciliation)
+            var mockProvider = new Mock<IExecutionHistoryProvider>();
+            mockProvider.Setup(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()))
+                .Returns(new List<ExecutionRecord>());
+            _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
+
+            // Act - Trigger reconciliation which should update baseline
+            manager.PerformReconciliation();
+
+            // Assert - Baseline should be updated to new discrepancies
+            var baselineAfter = GetBaselineField(manager);
+
+            Assert.AreEqual(3, baselineAfter.Count, "Baseline should contain 3 symbols");
+            Assert.AreEqual(1.5m, baselineAfter[_btcSecurity.Symbol], "BTC baseline should be updated");
+            Assert.AreEqual(3m, baselineAfter[_ethSecurity.Symbol], "ETH baseline should be updated");
+            Assert.AreEqual(30m, baselineAfter[_mstrSecurity.Symbol], "MSTR baseline should remain (unchanged discrepancy)");
         }
 
         #endregion
@@ -1883,7 +2063,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             _mockAlgorithm.Setup(a => a.ExecutionHistoryProvider).Returns(mockProvider.Object);
 
             // Act
-            manager.CompareBaseline(); // Should trigger reconciliation
+            manager.PerformReconciliation(); // Should trigger reconciliation
 
             // Assert
             mockProvider.Verify(p => p.GetExecutionHistory(It.IsAny<DateTime>(), It.IsAny<DateTime>()), Times.Once);
@@ -2011,7 +2191,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             processedExecs["old_exec_gate"] = (TradingPairManager.ExecutionSnapshot)oldExec;
 
             // Act
-            manager.CompareBaseline();
+            manager.PerformReconciliation();
 
             // Assert - Cleanup should not been triggered
             processedExecs = GetProcessedExecutions(manager);
@@ -2205,6 +2385,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         }
 
         #endregion
+
     }
 
     /// <summary>
