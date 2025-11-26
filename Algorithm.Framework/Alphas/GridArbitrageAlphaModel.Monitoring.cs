@@ -55,11 +55,18 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <summary>
         /// Tracks Slice update statistics and logs a report every 5 minutes.
         /// This helps determine if optimizing Update() to only process changed symbols would be beneficial.
+        /// Only tracks statistics in Live mode.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="data">The current Slice data</param>
         private void TrackSliceUpdateStats(AIAlgorithm algorithm, Slice data)
         {
+            // Only track statistics in Live mode
+            if (!algorithm.LiveMode)
+            {
+                return;
+            }
+
             // Initialize on first call
             if (_lastStatsReport == DateTime.MinValue)
             {
