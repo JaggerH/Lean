@@ -20,6 +20,7 @@ using System.Collections.Specialized;
 using System.Linq;
 using QuantConnect.Interfaces;
 using QuantConnect.Securities;
+using QuantConnect.Storage;
 
 namespace QuantConnect.TradingPairs
 {
@@ -43,6 +44,9 @@ namespace QuantConnect.TradingPairs
         // Processed executions cache for deduplication and time-based cleanup
         private readonly Dictionary<string, ExecutionSnapshot> _processedExecutions = new Dictionary<string, ExecutionSnapshot>();
 
+        // Tiered backup manager for state persistence
+        private readonly TieredBackupManager _backupManager;
+
         // Thread-safety lock for atomic updates
         private readonly object _lock = new object();
 
@@ -61,6 +65,9 @@ namespace QuantConnect.TradingPairs
             _securities = algorithm.Securities;
             _transactions = algorithm.Transactions;
             _pairs = new Dictionary<(Symbol, Symbol), TradingPair>();
+
+            // Initialize tiered backup manager with default settings
+            _backupManager = TieredBackupManager.Create(algorithm);
         }
 
         /// <summary>
@@ -72,34 +79,42 @@ namespace QuantConnect.TradingPairs
         /// <returns>The created or existing trading pair</returns>
         public TradingPair AddPair(Symbol leg1, Symbol leg2, string pairType = "spread")
         {
-            var key = (leg1, leg2);
-
-            if (_pairs.TryGetValue(key, out var existingPair))
+            lock(_lock)
             {
-                return existingPair;
+                var key = (leg1, leg2);
+
+                if (_pairs.TryGetValue(key, out var existingPair))
+                {
+                    // If pair was pending removal, clear the flag (resume trading)
+                    if (existingPair.IsPendingRemoval)
+                    {
+                        existingPair.IsPendingRemoval = false;
+                    }
+                    return existingPair;
+                }
+
+                // Ensure both securities exist
+                if (!_securities.ContainsKey(leg1))
+                {
+                    throw new ArgumentException($"Security for symbol {leg1} not found in SecurityManager");
+                }
+                if (!_securities.ContainsKey(leg2))
+                {
+                    throw new ArgumentException($"Security for symbol {leg2} not found in SecurityManager");
+                }
+
+                var pair = new TradingPair(
+                    leg1, leg2,
+                    pairType,
+                    _securities[leg1],
+                    _securities[leg2]
+                );
+
+                _pairs[key] = pair;
+                OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, pair));
+
+                return pair;
             }
-
-            // Ensure both securities exist
-            if (!_securities.ContainsKey(leg1))
-            {
-                throw new ArgumentException($"Security for symbol {leg1} not found in SecurityManager");
-            }
-            if (!_securities.ContainsKey(leg2))
-            {
-                throw new ArgumentException($"Security for symbol {leg2} not found in SecurityManager");
-            }
-
-            var pair = new TradingPair(
-                leg1, leg2,
-                pairType,
-                _securities[leg1],
-                _securities[leg2]
-            );
-
-            _pairs[key] = pair;
-            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, pair));
-
-            return pair;
         }
 
         /// <summary>
@@ -128,21 +143,38 @@ namespace QuantConnect.TradingPairs
         }
 
         /// <summary>
-        /// Removes a trading pair
+        /// Removes a trading pair, or marks it for pending removal if it has active positions.
+        /// If the pair has active positions, it is marked as pending removal - no new entries
+        /// allowed, but exit signals continue for graceful closure.
+        /// Once all positions close, the pair is automatically removed.
         /// </summary>
         /// <param name="leg1">The first leg symbol</param>
         /// <param name="leg2">The second leg symbol</param>
-        /// <returns>True if the pair was removed, false if not found</returns>
+        /// <returns>True if removed or marked for pending removal, false if not found</returns>
         public bool RemovePair(Symbol leg1, Symbol leg2)
         {
-            var key = (leg1, leg2);
-            if (_pairs.TryGetValue(key, out var pair))
+            lock(_lock)
             {
+                var key = (leg1, leg2);
+                if (!_pairs.TryGetValue(key, out var pair))
+                {
+                    return false;
+                }
+
+                // Check if pair has active positions
+                if (pair.HasActivePositions)
+                {
+                    // Mark for pending removal instead of immediate removal
+                    pair.IsPendingRemoval = true;
+                    return true;
+                }
+
+                // No active positions - safe to remove immediately
                 _pairs.Remove(key);
-                OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, pair));
+                OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+                    NotifyCollectionChangedAction.Remove, pair));
                 return true;
             }
-            return false;
         }
 
         /// <summary>
@@ -178,6 +210,31 @@ namespace QuantConnect.TradingPairs
         public IEnumerable<TradingPair> GetCrossedPairs()
         {
             return GetByState(MarketState.Crossed);
+        }
+
+        /// <summary>
+        /// Gets all trading pairs that are pending removal
+        /// </summary>
+        public IEnumerable<TradingPair> GetPendingRemovalPairs()
+        {
+            return _pairs.Values.Where(p => p.IsPendingRemoval);
+        }
+
+        /// <summary>
+        /// Gets the count of trading pairs pending removal
+        /// </summary>
+        public int PendingRemovalCount => _pairs.Values.Count(p => p.IsPendingRemoval);
+
+        /// <summary>
+        /// Checks if a specific trading pair is pending removal
+        /// </summary>
+        /// <param name="leg1">The first leg symbol</param>
+        /// <param name="leg2">The second leg symbol</param>
+        /// <returns>True if pair exists and is pending removal</returns>
+        public bool IsPendingRemoval(Symbol leg1, Symbol leg2)
+        {
+            var key = (leg1, leg2);
+            return _pairs.TryGetValue(key, out var pair) && pair.IsPendingRemoval;
         }
 
         /// <summary>

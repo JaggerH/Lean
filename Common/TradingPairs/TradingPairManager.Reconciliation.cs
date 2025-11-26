@@ -418,9 +418,8 @@ namespace QuantConnect.TradingPairs
                 var latestPath = "trade_data/trading_pair_manager/state";
                 _algorithm.ObjectStore.Save(latestPath, json);
 
-                // Save timestamped backup (for version history)
-                var backupPath = $"trade_data/trading_pair_manager/backups/{timestamp:yyyyMMdd_HHmmss}";
-                _algorithm.ObjectStore.Save(backupPath, json);
+                // Save tiered backup (automatic tier selection and cleanup)
+                _backupManager.SaveBackup(json);
 
                 Log.Trace($"Persisted TradingPairManager state: {allGridPositions.Count} positions, " +
                          $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions, " +
@@ -441,14 +440,26 @@ namespace QuantConnect.TradingPairs
             try
             {
                 var path = "trade_data/trading_pair_manager/state";
+                string json = null;
 
-                if (!_algorithm.ObjectStore.ContainsKey(path))
+                // Try primary state first
+                if (_algorithm.ObjectStore.ContainsKey(path))
                 {
-                    Log.Trace("No saved state found for TradingPairManager - starting fresh");
-                    return;
+                    json = _algorithm.ObjectStore.Read(path);
+                    Log.Trace("Restoring TradingPairManager from primary state");
+                }
+                else
+                {
+                    // Fallback to latest backup
+                    json = _backupManager.RestoreLatest();
+                    if (json == null)
+                    {
+                        Log.Trace("No saved state found for TradingPairManager - starting fresh");
+                        return;
+                    }
+                    Log.Trace("Restored TradingPairManager from backup");
                 }
 
-                var json = _algorithm.ObjectStore.Read(path);
                 var stateData = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(json);
 
                 var timestamp = stateData.timestamp;
@@ -463,16 +474,24 @@ namespace QuantConnect.TradingPairs
                         posData.ToString()
                     );
 
-                    // 2. Ensure TradingPair exists (AddPair is idempotent, handles duplicates)
+                    // 2. Track if this creates a new pair (restoration-created vs user-created)
+                    bool isRestorationCreated = !_pairs.ContainsKey((position.Leg1Symbol, position.Leg2Symbol));
+
+                    // 3. Ensure TradingPair exists (AddPair is idempotent, handles duplicates)
                     var pair = AddPair(position.Leg1Symbol, position.Leg2Symbol);
 
-                    // 3. Get position tag using Tag property
-                    var tag = position.Tag;
+                    // 4. Mark restoration-created pairs as pending removal
+                    // User can clear this by calling AddPair() in their Initialize()
+                    if (isRestorationCreated)
+                    {
+                        pair.IsPendingRemoval = true;
+                    }
 
-                    // 4. Restore parent reference (GridPosition needs TradingPair for Invested property)
+                    // 5. Restore parent reference (GridPosition needs TradingPair for Invested property)
                     position.SetTradingPair(pair);
 
-                    // 5. Add to pair's GridPositions dictionary
+                    // 6. Add to pair's GridPositions dictionary
+                    var tag = position.Tag;
                     pair.GridPositions[tag] = position;
                 }
 
@@ -514,9 +533,10 @@ namespace QuantConnect.TradingPairs
                 }
 
                 var totalPositions = GetAll().Sum(p => p.GridPositions.Count);
+                var pendingRemovalCount = GetAll().Count(p => p.IsPendingRemoval);
                 Log.Trace($"Restored TradingPairManager state: {totalPositions} positions, " +
                          $"{_lastFillTimeByMarket.Count} markets, {_processedExecutions.Count} executions, " +
-                         $"{_baseline.Count} baseline entries from {timestamp}");
+                         $"{_baseline.Count} baseline entries, {pendingRemovalCount} pairs pending removal from {timestamp}");
             }
             catch (Exception ex)
             {
