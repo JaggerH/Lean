@@ -57,6 +57,7 @@ namespace QuantConnect.TradingPairs.Grid
         /// <param name="direction">Trade direction (LONG_SPREAD or SHORT_SPREAD)</param>
         /// <param name="type">Level type (ENTRY or EXIT)</param>
         /// <param name="positionSizePct">Position size percentage</param>
+        [JsonConstructor]
         public GridLevel(
             decimal spreadPct,
             string direction,

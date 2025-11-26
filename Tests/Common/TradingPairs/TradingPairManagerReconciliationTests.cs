@@ -51,6 +51,12 @@ namespace QuantConnect.Tests.Common.TradingPairs
             _mockAlgorithm.Setup(a => a.Securities).Returns(_securities);
             _mockAlgorithm.Setup(a => a.Transactions).Returns(_transactions);
 
+            // Setup in-memory ObjectStore for PersistState/RestoreState tests
+            var objectStoreData = new Dictionary<string, string>();
+            var inMemoryObjectStore = new InMemoryObjectStore(objectStoreData);
+            var objectStoreWrapper = new QuantConnect.Storage.ObjectStore(inMemoryObjectStore);
+            _mockAlgorithm.Setup(a => a.ObjectStore).Returns(objectStoreWrapper);
+
             // Create test securities
             var exchangeHours = SecurityExchangeHours.AlwaysOpen(TimeZones.NewYork);
             var dateTime = new DateTime(2024, 1, 1, 9, 30, 0);
@@ -900,6 +906,119 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var timeDiff = capturedEndTime.Value - capturedStartTime.Value;
             Assert.LessOrEqual(timeDiff, TimeSpan.FromMinutes(31),
                 "Default time range should be approximately 30 minutes");
+        }
+
+        #endregion
+
+        #region RestoreState Pending Removal Tests
+
+        [Test]
+        public void Test_RestoreState_MarksRestorationCreatedPairsAsPending()
+        {
+            // Arrange - Create manager and add pair with position
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var position = CreateGridPosition(pair, 1.0m, -100m, levelPair);
+            var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
+            pair.GridPositions[tag] = position;
+
+            // Persist state
+            InvokePersistState(manager);
+
+            // Create new manager (simulating restart) - Don't add pair
+            var newManager = new TradingPairManager(_mockAlgorithm.Object);
+
+            // Act - Restore state
+            newManager.RestoreState();
+
+            // Assert - Restored pair should be pending removal
+            Assert.AreEqual(1, newManager.Count);
+            var restoredPair = newManager.GetAll().First();
+            Assert.IsTrue(restoredPair.IsPendingRemoval);
+            Assert.AreEqual(1, restoredPair.GridPositions.Count);
+        }
+
+        [Test]
+        public void Test_RestoreState_ThenAddPair_ClearsPendingRemoval()
+        {
+            // Arrange - Persist state with position
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var position = CreateGridPosition(pair, 1.0m, -100m, levelPair);
+            var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
+            pair.GridPositions[tag] = position;
+
+            InvokePersistState(manager);
+
+            // Create new manager and restore
+            var newManager = new TradingPairManager(_mockAlgorithm.Object);
+            newManager.RestoreState();
+            var restoredPair = newManager.GetAll().First();
+            Assert.IsTrue(restoredPair.IsPendingRemoval);
+
+            // Act - User calls AddPair in Initialize()
+            var readdedPair = newManager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+
+            // Assert - Pending removal should be cleared
+            Assert.AreSame(restoredPair, readdedPair);
+            Assert.IsFalse(restoredPair.IsPendingRemoval);
+        }
+
+        [Test]
+        public void Test_RestoreState_Logging_IncludesPendingRemovalCount()
+        {
+            // Arrange - Create multiple pairs, some with positions
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair1 = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var pair2 = manager.AddPair(_btcSecurity.Symbol, _ethSecurity.Symbol);
+
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                               (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var position1 = CreateGridPosition(pair1, 1.0m, -100m, levelPair1);
+            var tag1 = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair1);
+            pair1.GridPositions[tag1] = position1;
+
+            // pair2 has no positions
+
+            InvokePersistState(manager);
+
+            // Create new manager and restore
+            var newManager = new TradingPairManager(_mockAlgorithm.Object);
+
+            // Act - Restore state (should log pending removal count)
+            newManager.RestoreState();
+
+            // Assert - Should have 1 pair pending removal (pair1)
+            Assert.AreEqual(1, newManager.PendingRemovalCount);
+        }
+
+        // Helper methods
+        private void InvokePersistState(TradingPairManager manager)
+        {
+            var method = typeof(TradingPairManager).GetMethod("PersistState",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            method.Invoke(manager, null);
+        }
+
+        private GridPosition CreateGridPosition(TradingPair pair, decimal leg1Qty, decimal leg2Qty, GridLevelPair levelPair)
+        {
+            var position = new GridPosition(pair, levelPair);
+            SetPositionQuantity(position, "Leg1Quantity", leg1Qty);
+            SetPositionQuantity(position, "Leg2Quantity", leg2Qty);
+            return position;
+        }
+
+        private void SetPositionQuantity(GridPosition position, string propertyName, decimal value)
+        {
+            var field = typeof(GridPosition).GetField($"<{propertyName}>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            field.SetValue(position, value);
         }
 
         #endregion

@@ -137,6 +137,15 @@ namespace QuantConnect.TradingPairs
         public DateTime LastUpdateTime { get; private set; }
 
         /// <summary>
+        /// Gets or sets whether this trading pair is pending removal.
+        /// When true, the pair has active positions but user requested removal.
+        /// New entry signals are blocked, but exit signals continue for graceful closure.
+        /// Once all positions are closed, the pair will be automatically removed.
+        /// Similar to Security's internal subscription mechanism.
+        /// </summary>
+        public bool IsPendingRemoval { get; internal set; }
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="TradingPair"/> class
         /// </summary>
         public TradingPair(Symbol leg1Symbol, Symbol leg2Symbol, string pairType, Security leg1Security, Security leg2Security)

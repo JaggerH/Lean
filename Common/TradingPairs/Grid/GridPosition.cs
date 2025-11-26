@@ -82,17 +82,19 @@ namespace QuantConnect.TradingPairs.Grid
         public decimal Leg2AverageCost { get; private set; }
 
         /// <summary>
-        /// Grid level pair (entry and exit configuration)
+        /// Gets the grid level pair (entry and exit configuration) for this position.
+        /// Used for exit checking independent of TradingPair.LevelPairs configuration.
+        /// Defensive against configuration changes or restored positions.
         /// </summary>
         [JsonProperty("level_pair")]
-        private readonly GridLevelPair _levelPair;
+        public GridLevelPair LevelPair { get; private set; }
 
         /// <summary>
         /// Gets the position tag by encoding the grid level configuration.
         /// Used as dictionary key for GridPositions collection.
         /// </summary>
         [JsonIgnore]
-        public string Tag => TradingPairManager.EncodeGridTag(Leg1Symbol, Leg2Symbol, _levelPair);
+        public string Tag => TradingPairManager.EncodeGridTag(Leg1Symbol, Leg2Symbol, LevelPair);
 
         /// <summary>
         /// Creates a new grid position
@@ -104,7 +106,7 @@ namespace QuantConnect.TradingPairs.Grid
             TradingPair = tradingPair ?? throw new ArgumentNullException(nameof(tradingPair));
             Leg1Symbol = tradingPair.Leg1Symbol;
             Leg2Symbol = tradingPair.Leg2Symbol;
-            _levelPair = levelPair ?? throw new ArgumentNullException(nameof(levelPair));
+            LevelPair = levelPair ?? throw new ArgumentNullException(nameof(levelPair));
 
             Leg1Quantity = 0m;
             Leg2Quantity = 0m;
@@ -133,7 +135,7 @@ namespace QuantConnect.TradingPairs.Grid
             Leg2Quantity = leg2Quantity;
             Leg1AverageCost = leg1AverageCost;
             Leg2AverageCost = leg2AverageCost;
-            _levelPair = levelPair;
+            LevelPair = levelPair;
         }
 
         /// <summary>
@@ -180,15 +182,15 @@ namespace QuantConnect.TradingPairs.Grid
                 return false;  // No position to exit
             }
 
-            if (_levelPair.Exit.Direction == "LONG_SPREAD")
+            if (LevelPair.Exit.Direction == "LONG_SPREAD")
             {
                 // Long spread exit: close when spread rises above exit level
-                return currentSpread >= _levelPair.Exit.SpreadPct;
+                return currentSpread >= LevelPair.Exit.SpreadPct;
             }
             else  // SHORT_SPREAD
             {
                 // Short spread exit: close when spread falls below exit level
-                return currentSpread <= _levelPair.Exit.SpreadPct;
+                return currentSpread <= LevelPair.Exit.SpreadPct;
             }
         }
 
@@ -222,7 +224,7 @@ namespace QuantConnect.TradingPairs.Grid
         /// </summary>
         public override string ToString()
         {
-            string spreadStr = $"{_levelPair.Exit.SpreadPct * 100:+0.0;-0.0;0.0}%";
+            string spreadStr = $"{LevelPair.Exit.SpreadPct * 100:+0.0;-0.0;0.0}%";
             return $"GridPosition({Tag}, Leg1: {Leg1Quantity:F4} @ {Leg1AverageCost:F2}, " +
                    $"Leg2: {Leg2Quantity:F4} @ {Leg2AverageCost:F2}, Exit: {spreadStr})";
         }

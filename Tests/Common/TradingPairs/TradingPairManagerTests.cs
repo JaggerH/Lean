@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Moq;
 using NUnit.Framework;
 using QuantConnect.Data;
@@ -23,6 +24,7 @@ using QuantConnect.Data.Market;
 using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 using QuantConnect.TradingPairs;
+using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.Tests.Common.TradingPairs
 {
@@ -205,11 +207,11 @@ namespace QuantConnect.Tests.Common.TradingPairs
         #region RemovePair Tests
 
         [Test]
-        public void Test_RemovePair_RemovesExistingPair()
+        public void Test_RemovePair_WithoutActivePositions_RemovesImmediately()
         {
             // Arrange
             var manager = new TradingPairManager(_mockAlgorithm.Object);
-            manager.AddPair(Symbols.SPY, Symbols.AAPL);
+            var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Act
             var removed = manager.RemovePair(Symbols.SPY, Symbols.AAPL);
@@ -217,6 +219,36 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Assert
             Assert.IsTrue(removed);
             Assert.AreEqual(0, manager.Count);
+            Assert.IsFalse(pair.IsPendingRemoval);
+        }
+
+        [Test]
+        public void Test_RemovePair_WithActivePositions_MarksPendingRemoval()
+        {
+            // Arrange
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
+
+            // Create a grid level pair and position
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (Symbols.SPY, Symbols.AAPL));
+            var position = new GridPosition(pair, levelPair);
+
+            // Set position quantities using reflection
+            SetPositionQuantity(position, "Leg1Quantity", 1.0m);
+            SetPositionQuantity(position, "Leg2Quantity", -100m);
+
+            // Add position to pair
+            var tag = TradingPairManager.EncodeGridTag(Symbols.SPY, Symbols.AAPL, levelPair);
+            pair.GridPositions[tag] = position;
+
+            // Act
+            var removed = manager.RemovePair(Symbols.SPY, Symbols.AAPL);
+
+            // Assert
+            Assert.IsTrue(removed);
+            Assert.AreEqual(1, manager.Count); // Still exists
+            Assert.IsTrue(pair.IsPendingRemoval);
+            Assert.IsTrue(pair.HasActivePositions);
         }
 
         [Test]
@@ -246,6 +278,14 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             // Assert
             Assert.AreEqual(1, manager.Count);
+        }
+
+        // Helper method for setting GridPosition quantities
+        private void SetPositionQuantity(GridPosition position, string propertyName, decimal value)
+        {
+            var field = typeof(GridPosition).GetField($"<{propertyName}>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            field.SetValue(position, value);
         }
 
         #endregion

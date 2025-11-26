@@ -15,6 +15,7 @@
 
 using System;
 using Moq;
+using Newtonsoft.Json;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
@@ -338,6 +339,43 @@ namespace QuantConnect.Tests.Common.TradingPairs
             Assert.AreEqual(originalSymbol.Value, symbolFromStr.Value, "Symbol.Value (ticker) should match");
             Assert.AreEqual(originalSymbol.ID.SecurityType, symbolFromStr.ID.SecurityType, "SecurityType should match");
             Assert.AreEqual(originalSymbol.ID.Market, symbolFromStr.ID.Market, "Market should match");
+        }
+
+        [Test]
+        public void Test_GridPosition_LevelPair_IsAccessible()
+        {
+            // Arrange
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+
+            // Act
+            var position = new GridPosition(pair, levelPair);
+
+            // Assert
+            Assert.IsNotNull(position.LevelPair);
+            Assert.AreEqual(-0.02m, position.LevelPair.Entry.SpreadPct);
+            Assert.AreEqual(0.01m, position.LevelPair.Exit.SpreadPct);
+            Assert.AreEqual("LONG_SPREAD", position.LevelPair.Entry.Direction);
+        }
+
+        [Test]
+        public void Test_GridPosition_LevelPair_PreservedAfterSerialization()
+        {
+            // Arrange
+            var manager = new TradingPairManager(_mockAlgorithm.Object);
+            var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var position = new GridPosition(pair, levelPair);
+
+            // Act - Serialize and deserialize
+            var json = JsonConvert.SerializeObject(position);
+            var deserialized = JsonConvert.DeserializeObject<GridPosition>(json);
+
+            // Assert
+            Assert.IsNotNull(deserialized.LevelPair);
+            Assert.AreEqual(-0.02m, deserialized.LevelPair.Entry.SpreadPct);
+            Assert.AreEqual(0.01m, deserialized.LevelPair.Exit.SpreadPct);
         }
 
         #endregion

@@ -722,7 +722,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             Assert.AreEqual(99m, pair.Leg2AskPrice);
             Assert.AreEqual(98.5m, pair.Leg2MidPrice);
             Assert.IsTrue(pair.HasValidPrices);
-            var expectedKey = $"{_leg1Security.Symbol}-{_leg2Security.Symbol}";
+            var expectedKey = $"{_leg1Security.Symbol}|{_leg2Security.Symbol}";
             Assert.AreEqual(expectedKey, pair.Key);
             Assert.AreEqual(_leg1Security.Symbol, pair.Leg1Symbol);
             Assert.AreEqual(_leg2Security.Symbol, pair.Leg2Symbol);
@@ -745,9 +745,33 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = new TradingPair(_leg1Security.Symbol, _leg2Security.Symbol, "spread", _leg1Security, _leg2Security);
 
             // Assert
-            // Key should be formatted as "Symbol1-Symbol2"
-            var expectedKey = $"{_leg1Security.Symbol}-{_leg2Security.Symbol}";
+            // Key should be formatted as "Symbol1|Symbol2"
+            var expectedKey = $"{_leg1Security.Symbol}|{_leg2Security.Symbol}";
             Assert.AreEqual(expectedKey, pair.Key);
+        }
+
+        [Test]
+        public void Test_IsPendingRemoval_DefaultValue_IsFalse()
+        {
+            // Arrange & Act
+            var pair = new TradingPair(_leg1Security.Symbol, _leg2Security.Symbol, "spread", _leg1Security, _leg2Security);
+
+            // Assert
+            Assert.IsFalse(pair.IsPendingRemoval);
+        }
+
+        [Test]
+        public void Test_IsPendingRemoval_CanBeSet_ReturnsCorrectValue()
+        {
+            // Arrange
+            var pair = new TradingPair(_leg1Security.Symbol, _leg2Security.Symbol, "spread", _leg1Security, _leg2Security);
+
+            // Act - Use reflection to set internal property
+            var property = typeof(TradingPair).GetProperty("IsPendingRemoval");
+            property.SetValue(pair, true);
+
+            // Assert
+            Assert.IsTrue(pair.IsPendingRemoval);
         }
 
         #endregion

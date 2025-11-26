@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections.Specialized;
 using QuantConnect.Orders;
 using QuantConnect.TradingPairs.Grid;
 
@@ -162,7 +163,7 @@ namespace QuantConnect.TradingPairs
 
         /// <summary>
         /// Handles order completion (Filled/Canceled/Invalid).
-        /// Removes empty positions to keep GridPositions dictionary clean.
+        /// Removes empty positions and completes pending removals if all positions closed.
         /// </summary>
         /// <param name="orderEvent">Order completion event</param>
         /// <param name="context">Parsed order context</param>
@@ -172,6 +173,29 @@ namespace QuantConnect.TradingPairs
             if (!context.Position.Invested)
             {
                 context.Pair.GridPositions.Remove(context.Tag);
+
+                // Check if pair is pending removal and all positions now closed
+                if (context.Pair.IsPendingRemoval && !context.Pair.HasActivePositions)
+                {
+                    CompletePendingRemoval(context.Pair);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Completes the removal of a trading pair that was pending removal.
+        /// Called after all GridPositions have been closed.
+        /// Thread-safe: caller must hold _lock (already held by ProcessGridOrderEvent).
+        /// </summary>
+        /// <param name="pair">The trading pair to remove</param>
+        private void CompletePendingRemoval(TradingPair pair)
+        {
+            var key = (pair.Leg1Symbol, pair.Leg2Symbol);
+
+            if (_pairs.Remove(key))
+            {
+                OnCollectionChanged(new NotifyCollectionChangedEventArgs(
+                    NotifyCollectionChangedAction.Remove, pair));
             }
         }
 
