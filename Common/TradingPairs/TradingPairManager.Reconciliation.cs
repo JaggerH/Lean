@@ -27,6 +27,8 @@ namespace QuantConnect.TradingPairs
 {
     public partial class TradingPairManager
     {
+        #region Data Structures
+
         /// <summary>
         /// Lightweight execution snapshot for deduplication and time-based filtering.
         /// Serializable for potential persistence needs.
@@ -53,6 +55,13 @@ namespace QuantConnect.TradingPairs
         // Baseline账本: Symbol → 认可的差异数量 (LP - GP)
         private readonly Dictionary<Symbol, decimal> _baseline = new();
 
+        // Thread-safe virtual order ID generator (negative IDs)
+        private static int _virtualOrderId = 0;
+
+        #endregion
+
+        #region Baseline Management
+
         /// <summary>
         /// 初始化 Baseline 账本
         /// </summary>
@@ -73,13 +82,30 @@ namespace QuantConnect.TradingPairs
         {
             var newBaseline = CalculateBaseline();
 
+            var oldCount = _baseline.Count;
+            var changes = new List<string>();
+
+            // Detect changes for logging
+            var allSymbols = _baseline.Keys.Union(newBaseline.Keys);
+            foreach (var symbol in allSymbols)
+            {
+                var oldValue = LinqExtensions.GetValueOrDefault(_baseline, symbol, 0m);
+                var newValue = LinqExtensions.GetValueOrDefault(newBaseline, symbol, 0m);
+                if (oldValue != newValue)
+                {
+                    changes.Add($"{symbol}: {oldValue} -> {newValue}");
+                }
+            }
+
             _baseline.Clear();
             foreach (var kvp in newBaseline)
             {
                 _baseline[kvp.Key] = kvp.Value;
             }
-        }
 
+            Log.Trace($"UpdateBaseline: Updated baseline ({oldCount} -> {_baseline.Count} entries)" +
+                     (changes.Any() ? $", changes: {string.Join(", ", changes)}" : ""));
+        }
 
         /// <summary>
         /// 计算 Baseline (LP - GP)
@@ -98,6 +124,34 @@ namespace QuantConnect.TradingPairs
                 })
                 .Where(x => x.Diff != 0m)
                 .ToDictionary(x => x.Symbol, x => x.Diff);
+        }
+
+        /// <summary>
+        /// Compares current baseline with actual state (Portfolio - GridPositions).
+        /// Logs any discrepancies found.
+        /// </summary>
+        /// <returns>True if discrepancies exist, false otherwise</returns>
+        private bool CompareBaseline()
+        {
+            var currentDiff = CalculateBaseline();
+            var allSymbols = _baseline.Keys.Union(currentDiff.Keys);
+            var hasDiscrepancies = false;
+
+            foreach (var symbol in allSymbols)
+            {
+                var baselineValue = LinqExtensions.GetValueOrDefault(_baseline, symbol, 0m);
+                var currentValue = LinqExtensions.GetValueOrDefault(currentDiff, symbol, 0m);
+
+                if (baselineValue != currentValue)
+                {
+                    Log.Trace($"Baseline discrepancy detected: {symbol}, " +
+                            $"Baseline={baselineValue}, Current={currentValue}, " +
+                            $"Diff={currentValue - baselineValue}");
+                    hasDiscrepancies = true;
+                }
+            }
+
+            return hasDiscrepancies;
         }
 
         /// <summary>
@@ -152,6 +206,10 @@ namespace QuantConnect.TradingPairs
             return result;
         }
 
+        #endregion
+
+        #region Core Reconciliation Flow
+
         /// <summary>
         /// Performs reconciliation by comparing baseline with current state.
         /// If discrepancies found, queries execution history to rebuild GridPositions.
@@ -178,35 +236,6 @@ namespace QuantConnect.TradingPairs
                 PersistState();
             }
         }
-
-        /// <summary>
-        /// Compares current baseline with actual state (Portfolio - GridPositions).
-        /// Logs any discrepancies found.
-        /// </summary>
-        /// <returns>True if discrepancies exist, false otherwise</returns>
-        private bool CompareBaseline()
-        {
-            var currentDiff = CalculateBaseline();
-            var allSymbols = _baseline.Keys.Union(currentDiff.Keys);
-            var hasDiscrepancies = false;
-
-            foreach (var symbol in allSymbols)
-            {
-                var baselineValue = LinqExtensions.GetValueOrDefault(_baseline, symbol, 0m);
-                var currentValue = LinqExtensions.GetValueOrDefault(currentDiff, symbol, 0m);
-
-                if (baselineValue != currentValue)
-                {
-                    Log.Trace($"Baseline discrepancy detected: {symbol}, " +
-                            $"Baseline={baselineValue}, Current={currentValue}, " +
-                            $"Diff={currentValue - baselineValue}");
-                    hasDiscrepancies = true;
-                }
-            }
-
-            return hasDiscrepancies;
-        }
-
 
         /// <summary>
         /// Performs reconciliation by querying execution history from brokerage and processing records.
@@ -275,6 +304,10 @@ namespace QuantConnect.TradingPairs
                 }
             }
         }
+
+        #endregion
+
+        #region Execution Processing
 
         /// <summary>
         /// Determines if an execution should be processed based on time filtering and ExecutionId deduplication.
@@ -345,12 +378,14 @@ namespace QuantConnect.TradingPairs
             return orderEvent;
         }
 
-        // Thread-safe virtual order ID generator (negative IDs)
-        private static int _virtualOrderId = 0;
         private static int GetNextVirtualOrderId()
         {
             return System.Threading.Interlocked.Decrement(ref _virtualOrderId);
         }
+
+        #endregion
+
+        #region Cache Cleanup
 
         /// <summary>
         /// Cleans up old execution records from the processed executions cache.
@@ -390,6 +425,10 @@ namespace QuantConnect.TradingPairs
                 }
             }
         }
+
+        #endregion
+
+        #region State Persistence
 
         /// <summary>
         /// Persists complete TradingPairManager state to ObjectStore with versioning.
@@ -578,5 +617,7 @@ namespace QuantConnect.TradingPairs
                 Log.Error($"Failed to restore TradingPairManager state: {ex.Message}");
             }
         }
+
+        #endregion
     }
 }
