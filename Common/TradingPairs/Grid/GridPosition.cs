@@ -185,12 +185,12 @@ namespace QuantConnect.TradingPairs.Grid
             if (LevelPair.Exit.Direction == "LONG_SPREAD")
             {
                 // Long spread exit: close when spread rises above exit level
-                return currentSpread >= LevelPair.Exit.SpreadPct;
+                return currentSpread <= LevelPair.Exit.SpreadPct;
             }
             else  // SHORT_SPREAD
             {
                 // Short spread exit: close when spread falls below exit level
-                return currentSpread <= LevelPair.Exit.SpreadPct;
+                return currentSpread >= LevelPair.Exit.SpreadPct;
             }
         }
 
