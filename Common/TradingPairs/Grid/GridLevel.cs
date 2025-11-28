@@ -24,7 +24,7 @@ namespace QuantConnect.TradingPairs.Grid
     /// Implemented as a struct (value type) for immutability and efficient copying.
     /// Does NOT store Symbol information - used within TradingPair context.
     /// </summary>
-    public struct GridLevel
+    public struct GridLevel : IEquatable<GridLevel>
     {
         /// <summary>
         /// Spread percentage trigger level (e.g., -0.02 for -2%)
@@ -114,6 +114,62 @@ namespace QuantConnect.TradingPairs.Grid
         {
             string arrow = Type == "ENTRY" ? "→" : "←";
             return $"GridLevel({arrow} {SpreadPct * 100:+0.0;-0.0}%, {Direction}, Size: {PositionSizePct:P0})";
+        }
+
+        /// <summary>
+        /// Determines whether the specified GridLevel is equal to the current GridLevel.
+        /// Two GridLevels are equal if all their properties match.
+        /// </summary>
+        /// <param name="other">The GridLevel to compare with the current GridLevel</param>
+        /// <returns>true if the specified GridLevel is equal to the current GridLevel; otherwise, false</returns>
+        public bool Equals(GridLevel other)
+        {
+            return SpreadPct == other.SpreadPct &&
+                   Direction == other.Direction &&
+                   Type == other.Type &&
+                   PositionSizePct == other.PositionSizePct;
+        }
+
+        /// <summary>
+        /// Determines whether the specified object is equal to the current GridLevel.
+        /// </summary>
+        /// <param name="obj">The object to compare with the current GridLevel</param>
+        /// <returns>true if the specified object is a GridLevel and is equal to the current GridLevel; otherwise, false</returns>
+        public override bool Equals(object obj)
+        {
+            return obj is GridLevel other && Equals(other);
+        }
+
+        /// <summary>
+        /// Returns the hash code for this GridLevel.
+        /// The hash code is calculated based on all properties to ensure that equal GridLevels have the same hash code.
+        /// </summary>
+        /// <returns>A hash code for the current GridLevel</returns>
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(SpreadPct, Direction, Type, PositionSizePct);
+        }
+
+        /// <summary>
+        /// Determines whether two GridLevel instances are equal.
+        /// </summary>
+        /// <param name="left">The first GridLevel to compare</param>
+        /// <param name="right">The second GridLevel to compare</param>
+        /// <returns>true if the GridLevels are equal; otherwise, false</returns>
+        public static bool operator ==(GridLevel left, GridLevel right)
+        {
+            return left.Equals(right);
+        }
+
+        /// <summary>
+        /// Determines whether two GridLevel instances are not equal.
+        /// </summary>
+        /// <param name="left">The first GridLevel to compare</param>
+        /// <param name="right">The second GridLevel to compare</param>
+        /// <returns>true if the GridLevels are not equal; otherwise, false</returns>
+        public static bool operator !=(GridLevel left, GridLevel right)
+        {
+            return !left.Equals(right);
         }
     }
 }
