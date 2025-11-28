@@ -52,9 +52,6 @@ namespace QuantConnect.Algorithm
         {
             // Initialize TradingPairs manager for arbitrage strategies
             TradingPairs = new TradingPairs.TradingPairManager(this);
-
-            // Initialize Framework components (Alpha, Insights, etc.)
-            InitializeFramework();
         }
 
         /// <summary>

@@ -46,7 +46,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// <summary>
         /// The algorithm instance
         /// </summary>
-        protected IAlgorithm Algorithm { get; private set; }
+        protected IAlgorithm Algorithm { get; set; }
 
         /// <summary>
         /// This is required due to a limitation in PythonNet to resolved overriden methods.

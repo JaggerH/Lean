@@ -125,7 +125,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
 
             // Log the report
             Log.Trace($"═══════════════════════════════════════════════════════════════");
-            Log.Trace($"GridArbitrageAlphaModel - Slice Update Statistics Report");
+            Log.Trace($"InsightGridArbitrageAlphaModel - Slice Update Statistics Report");
             Log.Trace($"═══════════════════════════════════════════════════════════════");
             Log.Trace($"Time Period: {_statsReportInterval.TotalMinutes:F0} minutes");
             Log.Trace($"Total Slice Updates: {_totalSliceUpdates:N0}");

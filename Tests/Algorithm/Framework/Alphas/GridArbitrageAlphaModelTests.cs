@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
@@ -21,7 +22,6 @@ using QuantConnect.Algorithm;
 using QuantConnect.Algorithm.Framework.Alphas;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
-using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 using QuantConnect.Tests.Engine.DataFeeds;
 using QuantConnect.TradingPairs;
@@ -29,6 +29,10 @@ using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 {
+    /// <summary>
+    /// Tests for refactored GridArbitrageAlphaModel (Tag-based pairing)
+    /// This model generates 1 Insight per signal (Leg1 only) with Tag containing pairing info
+    /// </summary>
     [TestFixture]
     public class GridArbitrageAlphaModelTests
     {
@@ -58,6 +62,12 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         [SetUp]
         public void Setup()
         {
+            // Clear trading pairs from previous tests
+            _algorithm?.TradingPairs?.Clear();
+
+            // Clear insights from previous tests to prevent test pollution
+            _algorithm?.Insights?.Clear(new[] { _btcSymbol, _mstrSymbol });
+
             _alphaModel = new GridArbitrageAlphaModel(
                 insightPeriod: TimeSpan.FromMinutes(5),
                 confidence: 1.0,
@@ -65,38 +75,34 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
                 requireValidPrices: true);
         }
 
-        #region Entry Signal Blocking for Pending Removal
+        #region Category 1: Single Insight Generation
 
         [Test]
-        public void Test_CheckEntrySignal_PendingRemovalPair_ReturnsNull()
+        public void Test_EntrySignal_GeneratesSingleInsight()
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
 
-            // Mark as pending removal
-            var position = AddActivePosition(pair, 1.0m, -100m);
-            _algorithm.TradingPairs.RemovePair(_btcSymbol, _mstrSymbol);
-
+            // Set prices to trigger LONG_SPREAD entry (spread <= -0.02)
             SetPrices(_btcSecurity, 40000m, 40100m);
-            SetPrices(_mstrSecurity, 40600m, 40700m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
             _algorithm.TradingPairs.UpdateAll();
 
             // Act
             var slice = CreateSlice();
             var insights = _alphaModel.Update(_algorithm, slice).ToList();
 
-            // Assert - No entry insights should be generated
-            var entryInsights = insights.Where(i => i.Type == SignalType.Entry);
-            Assert.IsEmpty(entryInsights);
+            // Assert - Must generate exactly 1 insight (Leg1 only, not 2)
+            Assert.AreEqual(1, insights.Count, "Must generate exactly 1 insight for entry signal");
+
+            // Verify it's for Leg1 (crypto)
+            var insight = insights[0];
+            Assert.AreEqual(pair.Leg1Symbol, insight.Symbol, "Insight must be for Leg1 (crypto)");
         }
 
-        #endregion
-
-        #region Exit Signal Generation for Pending Removal
-
         [Test]
-        public void Test_CheckExitSignal_PendingRemovalPair_GeneratesExit()
+        public void Test_ExitSignal_GeneratesSingleInsight()
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
@@ -104,54 +110,195 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
                                               (_btcSymbol, _mstrSymbol));
             pair.AddLevelPair(levelPair);
 
-            var position = new GridPosition(pair, levelPair);
-            SetPositionQuantity(position, "Leg1Quantity", 1.0m);
-            SetPositionQuantity(position, "Leg2Quantity", -100m);
+            // Create invested position
+            var position = CreateInvestedPosition(pair, levelPair, 1.0m, -100m);
 
-            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _mstrSymbol, levelPair);
-            pair.GridPositions[tag] = position;
-
-            // Mark as pending removal
-            _algorithm.TradingPairs.RemovePair(_btcSymbol, _mstrSymbol);
-
-            // Set prices to trigger exit (spread >= 0.01)
-            SetPrices(_btcSecurity, 41000m, 41100m);
-            SetPrices(_mstrSecurity, 40000m, 40100m);
+            // Set prices to trigger exit
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 39600m, 39700m);
             _algorithm.TradingPairs.UpdateAll();
 
             // Act
             var slice = CreateSlice();
             var insights = _alphaModel.Update(_algorithm, slice).ToList();
 
-            // Assert - Exit insight should be generated despite pending removal
-            var exitInsights = insights.Where(i => i.Type == SignalType.Exit);
-            Assert.AreEqual(1, exitInsights.Count());
+            // Assert - Must generate exactly 1 insight (Leg1 only, not 2)
+            Assert.AreEqual(1, insights.Count, "Must generate exactly 1 insight for exit signal");
+
+            // Verify it's for Leg1 (crypto)
+            var insight = insights[0];
+            Assert.AreEqual(pair.Leg1Symbol, insight.Symbol, "Insight must be for Leg1 (crypto)");
+        }
+
+        [Test]
+        public void Test_MultipleEntries_EachGeneratesSingleInsight()
+        {
+            // Arrange - Add 3 grid levels
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.03m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+            pair.AddLevelPair(-0.01m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            // Set prices to trigger all 3 levels
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41500m, 41600m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - Must generate 3 insights (NOT 6), one per level
+            Assert.AreEqual(3, insights.Count, "Must generate 3 insights (1 per level), not 6");
+
+            // Verify all are for Leg1Symbol
+            Assert.IsTrue(insights.All(i => i.Symbol == pair.Leg1Symbol),
+                "All insights must be for Leg1Symbol");
         }
 
         #endregion
 
-        #region CheckExitSignal Using Position.LevelPair
+        #region Category 2: Tag Encoding Validation
 
         [Test]
-        public void Test_CheckExitSignal_UsesPositionLevelPair()
+        public void Test_InsightTag_ContainsGridConfiguration()
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
+            pair.AddLevelPair(levelPair);
 
-            // Create position with specific LevelPair
-            var position = new GridPosition(pair, levelPair);
-            SetPositionQuantity(position, "Leg1Quantity", 1.0m);
-            SetPositionQuantity(position, "Leg2Quantity", -100m);
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
 
-            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _mstrSymbol, levelPair);
-            pair.GridPositions[tag] = position;
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
 
-            // Clear pair's LevelPairs to verify position uses its own
-            pair.LevelPairs.Clear();
+            // Assert
+            Assert.AreEqual(1, insights.Count);
+            var tag = insights[0].Tag;
 
-            // Set prices to trigger exit
+            // Tag should be encoded by TradingPairManager.EncodeGridTag()
+            Assert.IsNotNull(tag, "Tag must not be null");
+            Assert.IsNotEmpty(tag, "Tag must not be empty");
+
+            // Tag should match expected encoding
+            var expectedTag = TradingPairManager.EncodeGridTag(
+                pair.Leg1Symbol, pair.Leg2Symbol, levelPair);
+            Assert.AreEqual(expectedTag, tag, "Tag must match EncodeGridTag output");
+        }
+
+        [Test]
+        public void Test_TagEncodesSymbolIds()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert
+            var tag = insights[0].Tag;
+
+            // Tag should contain both symbol IDs
+            Assert.IsTrue(tag.Contains(_btcSymbol.ID.ToString()),
+                $"Tag must contain Leg1 symbol ID: {_btcSymbol.ID}");
+            Assert.IsTrue(tag.Contains(_mstrSymbol.ID.ToString()),
+                $"Tag must contain Leg2 symbol ID: {_mstrSymbol.ID}");
+        }
+
+        [Test]
+        public void Test_TagEncodesLevelConfig()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSymbol, _mstrSymbol));
+            pair.AddLevelPair(levelPair);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert
+            var tag = insights[0].Tag;
+
+            // Tag should encode entry/exit levels
+            Assert.IsTrue(tag.Contains("-0.02") || tag.Contains("-0.0200"),
+                "Tag must contain entry level");
+            Assert.IsTrue(tag.Contains("0.01") || tag.Contains("0.0100"),
+                "Tag must contain exit level");
+        }
+
+        [Test]
+        public void Test_MultipleInsights_UniqueTagsPerLevel()
+        {
+            // Arrange - 3 different grid levels
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.03m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+            pair.AddLevelPair(-0.01m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41500m, 41600m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - Each level should have unique Tag
+            Assert.AreEqual(3, insights.Count);
+            var tags = insights.Select(i => i.Tag).ToList();
+            Assert.AreEqual(3, tags.Distinct().Count(), "Each insight must have unique Tag");
+        }
+
+        #endregion
+
+        #region Category 3: Insight Direction Mapping
+
+        [Test]
+        public void Test_LongSpread_Entry_Leg1DirectionIsUp()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - LONG_SPREAD entry: Leg1 (crypto) Up (PCM will determine Leg2 Down)
+            Assert.AreEqual(1, insights.Count);
+            var insight = insights[0];
+            Assert.AreEqual(InsightDirection.Up, insight.Direction,
+                "LONG_SPREAD entry: Leg1 (crypto) must be Up");
+        }
+
+        [Test]
+        public void Test_ShortSpread_Entry_Leg1DirectionIsDown()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(0.02m, -0.01m, SpreadDirection.ShortSpread, 0.25m);
+
             SetPrices(_btcSecurity, 41000m, 41100m);
             SetPrices(_mstrSecurity, 40000m, 40100m);
             _algorithm.TradingPairs.UpdateAll();
@@ -160,55 +307,255 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             var slice = CreateSlice();
             var insights = _alphaModel.Update(_algorithm, slice).ToList();
 
-            // Assert - Exit should still be generated using position's LevelPair
-            var exitInsights = insights.Where(i => i.Type == SignalType.Exit);
-            Assert.AreEqual(1, exitInsights.Count());
-            Assert.AreEqual(0.01m, exitInsights.First().LevelPair.Exit.SpreadPct);
+            // Assert - SHORT_SPREAD entry: Leg1 (crypto) Down (PCM will determine Leg2 Up)
+            Assert.AreEqual(1, insights.Count);
+            var insight = insights[0];
+            Assert.AreEqual(InsightDirection.Down, insight.Direction,
+                "SHORT_SPREAD entry: Leg1 (crypto) must be Down");
         }
 
         [Test]
-        public void Test_CheckExitSignal_PositionLevelPairIndependentOfPairConfig()
+        public void Test_Exit_DirectionIsFlat()
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSymbol, _mstrSymbol));
+            pair.AddLevelPair(levelPair);
 
-            // Original level pair with 0.01m exit
-            var originalLevelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                                      (_btcSymbol, _mstrSymbol));
+            CreateInvestedPosition(pair, levelPair, 1.0m, -100m);
 
-            // Create position with original level pair
-            var position = new GridPosition(pair, originalLevelPair);
-            SetPositionQuantity(position, "Leg1Quantity", 1.0m);
-            SetPositionQuantity(position, "Leg2Quantity", -100m);
-
-            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _mstrSymbol, originalLevelPair);
-            pair.GridPositions[tag] = position;
-
-            // Modify pair's LevelPairs (simulating user changing config)
-            pair.LevelPairs.Clear();
-            var newLevelPair = new GridLevelPair(-0.02m, 0.02m, "LONG_SPREAD", 0.25m,
-                                                 (_btcSymbol, _mstrSymbol));
-            pair.AddLevelPair(newLevelPair);
-
-            // Set prices to trigger exit at 0.01 (original) but NOT at 0.02 (new)
-            SetPrices(_btcSecurity, 40500m, 40600m);
-            SetPrices(_mstrSecurity, 40000m, 40100m);
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 39600m, 39700m);
             _algorithm.TradingPairs.UpdateAll();
 
             // Act
             var slice = CreateSlice();
             var insights = _alphaModel.Update(_algorithm, slice).ToList();
 
-            // Assert - Exit should be generated using position's original LevelPair (0.01m exit)
-            var exitInsights = insights.Where(i => i.Type == SignalType.Exit);
-            Assert.AreEqual(1, exitInsights.Count());
-            Assert.AreEqual(0.01m, exitInsights.First().LevelPair.Exit.SpreadPct);
+            // Assert - Exit: Leg1 Flat (PCM will also make Leg2 Flat)
+            Assert.AreEqual(1, insights.Count);
+            var insight = insights[0];
+            Assert.AreEqual(InsightDirection.Flat, insight.Direction,
+                "Exit signal must have Flat direction");
+        }
+
+        #endregion
+
+        #region Category 4: Timestamp Validation
+
+        [Test]
+        public void Test_InsightTimestamps_SetCorrectly()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            var expectedTimeUtc = _algorithm.UtcTime;
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert
+            Assert.AreEqual(1, insights.Count);
+            var insight = insights[0];
+
+            Assert.AreEqual(expectedTimeUtc, insight.GeneratedTimeUtc,
+                "GeneratedTimeUtc must match algorithm.UtcTime");
+
+            var expectedCloseTime = expectedTimeUtc.Add(TimeSpan.FromMinutes(5));
+            Assert.AreEqual(expectedCloseTime, insight.CloseTimeUtc,
+                "CloseTimeUtc must equal GeneratedTimeUtc + insightPeriod");
+        }
+
+        #endregion
+
+        #region Category 5: Configuration Options
+
+        [Test]
+        public void Test_InsightPeriod_DefaultValue()
+        {
+            // Arrange
+            _alphaModel = new GridArbitrageAlphaModel(); // Use defaults
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - Default is 5 minutes
+            Assert.AreEqual(1, insights.Count);
+            Assert.AreEqual(TimeSpan.FromMinutes(5), insights[0].Period,
+                "Default insight period should be 5 minutes");
+        }
+
+        [Test]
+        public void Test_Confidence_CustomValue()
+        {
+            // Arrange
+            var customConfidence = 0.75;
+            _alphaModel = new GridArbitrageAlphaModel(confidence: customConfidence);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert
+            Assert.AreEqual(1, insights.Count);
+            Assert.AreEqual(customConfidence, insights[0].Confidence,
+                "Confidence should match custom value");
+        }
+
+        [Test]
+        public void Test_AllowMultipleEntriesPerLevel_False_BlocksDuplicate()
+        {
+            // Arrange - allowMultipleEntriesPerLevel = false (default)
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSymbol, _mstrSymbol));
+            pair.AddLevelPair(levelPair);
+
+            // Create existing invested position
+            CreateInvestedPosition(pair, levelPair, 1.0m, -100m);
+
+            // Trigger entry condition again
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - No new entry (already invested)
+            Assert.AreEqual(0, insights.Count, "Should not allow multiple entries per level");
+        }
+
+        #endregion
+
+        #region Category 6: Duplicate Detection
+
+        [Test]
+        public void Test_SameLevel_SecondCall_NoDuplicate()
+        {
+            // Arrange
+            _algorithm.SetAlpha(_alphaModel);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act - First call generates insight (via framework)
+            var slice1 = CreateSlice();
+            _algorithm.OnFrameworkData(slice1);
+            var insightsAfterFirst = _algorithm.Insights.Count;
+
+            // Act - Second call with same conditions
+            var slice2 = CreateSlice();
+            _algorithm.OnFrameworkData(slice2);
+            var insightsAfterSecond = _algorithm.Insights.Count;
+
+            // Assert - First call generates 1, second call generates 0 (no duplicates)
+            Assert.AreEqual(1, insightsAfterFirst, "First call should generate 1 insight");
+            Assert.AreEqual(1, insightsAfterSecond, "Second call should not generate duplicate");
+        }
+
+        #endregion
+
+        #region Category 7: Insight Properties
+
+        [Test]
+        public void Test_InsightProperties_SetCorrectly()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert
+            Assert.AreEqual(1, insights.Count);
+            var insight = insights[0];
+
+            Assert.AreEqual("GridArbitrageAlphaModel", insight.SourceModel,
+                "SourceModel must be GridArbitrageAlphaModel");
+            Assert.AreEqual(InsightType.Price, insight.Type,
+                "Insight type must be Price");
+            Assert.IsNotNull(insight.Id, "Insight Id must be set");
+            Assert.AreEqual(pair.Leg1Symbol, insight.Symbol, "Symbol must be Leg1Symbol");
+        }
+
+        #endregion
+
+        #region Category 8: Tag Decoding by PCM
+
+        [Test]
+        public void Test_TagCanBeDecodedByPCM()
+        {
+            // Arrange
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSymbol, _mstrSymbol));
+            pair.AddLevelPair(levelPair);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+
+            // Assert - Verify PCM can decode the Tag
+            Assert.AreEqual(1, insights.Count);
+            var tag = insights[0].Tag;
+
+            bool decoded = TradingPairManager.TryDecodeGridTag(
+                tag, out var leg1Symbol, out var leg2Symbol, out var decodedLevelPair);
+
+            Assert.IsTrue(decoded, "PCM must be able to decode Tag");
+            Assert.AreEqual(pair.Leg1Symbol, leg1Symbol, "Decoded Leg1Symbol must match");
+            Assert.AreEqual(pair.Leg2Symbol, leg2Symbol, "Decoded Leg2Symbol must match");
+            Assert.AreEqual(levelPair.Entry.SpreadPct, decodedLevelPair.Entry.SpreadPct,
+                "Decoded entry level must match");
+            Assert.AreEqual(levelPair.Exit.SpreadPct, decodedLevelPair.Exit.SpreadPct,
+                "Decoded exit level must match");
         }
 
         #endregion
 
         #region Helper Methods
 
+        /// <summary>
+        /// Sets bid/ask prices for a security using QuoteBar
+        /// </summary>
         private void SetPrices(Security security, decimal bid, decimal ask)
         {
             security.SetMarketPrice(new QuoteBar
@@ -220,16 +567,42 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             });
         }
 
+        /// <summary>
+        /// Creates a Slice with current security prices at algorithm.UtcTime
+        /// </summary>
         private Slice CreateSlice()
         {
-            var data = new BaseData[0];
+            var data = new List<BaseData>();
+
+            // Add current market data for all securities
+            if (_btcSecurity?.Cache?.GetData() != null)
+            {
+                data.Add(_btcSecurity.Cache.GetData());
+            }
+            if (_mstrSecurity?.Cache?.GetData() != null)
+            {
+                data.Add(_mstrSecurity.Cache.GetData());
+            }
+
             return new Slice(_algorithm.UtcTime, data, _algorithm.UtcTime);
         }
 
-        private GridPosition AddActivePosition(TradingPair pair, decimal leg1Qty, decimal leg2Qty)
+        /// <summary>
+        /// Uses reflection to set GridPosition private backing field
+        /// </summary>
+        private void SetPositionQuantity(GridPosition position, string propertyName, decimal value)
         {
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (pair.Leg1Symbol, pair.Leg2Symbol));
+            var field = typeof(GridPosition).GetField($"<{propertyName}>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            field.SetValue(position, value);
+        }
+
+        /// <summary>
+        /// Creates an invested position and adds it to the trading pair
+        /// </summary>
+        private GridPosition CreateInvestedPosition(TradingPair pair, GridLevelPair levelPair,
+            decimal leg1Qty, decimal leg2Qty)
+        {
             var position = new GridPosition(pair, levelPair);
             SetPositionQuantity(position, "Leg1Quantity", leg1Qty);
             SetPositionQuantity(position, "Leg2Quantity", leg2Qty);
@@ -238,13 +611,6 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             pair.GridPositions[tag] = position;
 
             return position;
-        }
-
-        private void SetPositionQuantity(GridPosition position, string propertyName, decimal value)
-        {
-            var field = typeof(GridPosition).GetField($"<{propertyName}>k__BackingField",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            field.SetValue(position, value);
         }
 
         #endregion

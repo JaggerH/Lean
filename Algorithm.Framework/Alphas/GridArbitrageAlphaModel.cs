@@ -24,18 +24,20 @@ using QuantConnect.TradingPairs.Grid;
 namespace QuantConnect.Algorithm.Framework.Alphas
 {
     /// <summary>
-    /// Grid-based arbitrage alpha model that generates ArbitrageInsight signals
+    /// Grid-based arbitrage alpha model that generates standard Framework Insight signals
     /// when spread crosses grid level entry/exit thresholds.
     ///
-    /// This alpha model monitors TradingPair spreads and triggers:
-    /// - Entry signals when spread crosses entry thresholds
-    /// - Exit signals when spread crosses exit thresholds (for existing positions)
+    /// This alpha model generates a single Insight for Leg1 (crypto) with Tag-based pairing.
+    /// Each signal generates:
+    /// - 1 Insight (Leg1 only, crypto symbol)
+    /// - Tag containing grid configuration and Leg2 info (using TradingPairManager.EncodeGridTag)
+    /// - PCM decodes the Tag to generate paired PortfolioTargets for both legs
     ///
     /// The model handles both LONG_SPREAD and SHORT_SPREAD directions:
-    /// - LONG_SPREAD: Long crypto, short stock (triggered when crypto is overpriced)
-    /// - SHORT_SPREAD: Short crypto, long stock (triggered when stock is overpriced)
+    /// - LONG_SPREAD: Long crypto (Up), short stock (Down)
+    /// - SHORT_SPREAD: Short crypto (Down), long stock (Up)
     /// </summary>
-    public partial class GridArbitrageAlphaModel : IArbitrageAlphaModel
+    public partial class GridArbitrageAlphaModel : AlphaModel
     {
         /// <summary>
         /// How long each generated insight remains valid
@@ -58,14 +60,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private readonly bool _requireValidPrices;
 
         /// <summary>
-        /// Tracks active insights by trading pair to prevent duplicates.
-        /// Key: TradingPair.Key (e.g., "BTCUSD-MSTR")
-        /// Value: HashSet of grid level natural keys (e.g., "-0.0200|LONG_SPREAD|ENTRY")
-        /// </summary>
-        private readonly Dictionary<string, HashSet<string>> _activeInsightsByPair;
-
-        /// <summary>
-        /// Creates a new GridArbitrageAlphaModel with the specified configuration.
+        /// Creates a new InsightGridArbitrageAlphaModel with the specified configuration.
         /// </summary>
         /// <param name="insightPeriod">How long insights remain valid (default: 5 minutes)</param>
         /// <param name="confidence">Confidence level for insights, 0-1 (default: 1.0)</param>
@@ -81,34 +76,36 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             _confidence = confidence;
             _allowMultipleEntriesPerLevel = allowMultipleEntriesPerLevel;
             _requireValidPrices = requireValidPrices;
-            _activeInsightsByPair = new Dictionary<string, HashSet<string>>();
 
             if (_confidence < 0 || _confidence > 1)
             {
                 throw new ArgumentOutOfRangeException(nameof(confidence),
                     "Confidence must be between 0 and 1");
             }
+
+            Name = nameof(GridArbitrageAlphaModel);
         }
 
         /// <summary>
-        /// Updates this alpha model with the latest data from the arbitrage algorithm.
+        /// Updates this alpha model with the latest data from the algorithm.
         /// This is called each time the algorithm receives data for subscribed securities.
         /// </summary>
-        /// <param name="algorithm">The AI algorithm instance (provides access to TradingPairs)</param>
+        /// <param name="algorithm">The algorithm instance</param>
         /// <param name="data">The new data available</param>
-        /// <returns>The new arbitrage insights generated</returns>
-        public IEnumerable<ArbitrageInsight> Update(AIAlgorithm algorithm, Slice data)
+        /// <returns>The new insights generated (single Leg1 insights with Tag)</returns>
+        public override IEnumerable<Insight> Update(QCAlgorithm algorithm, Slice data)
         {
-            var insights = new List<ArbitrageInsight>();
+            // Cast to AIAlgorithm to access TradingPairs
+            var aiAlgo = algorithm as AIAlgorithm;
 
             // Track Slice update statistics (for optimization evaluation)
-            TrackSliceUpdateStats(algorithm, data);
+            TrackSliceUpdateStats(aiAlgo, data);
 
             // Update all trading pairs with latest market data
-            algorithm.TradingPairs.UpdateAll();
+            aiAlgo.TradingPairs.UpdateAll();
 
             // Check each trading pair for grid triggers
-            foreach (var pair in algorithm.TradingPairs)
+            foreach (var pair in aiAlgo.TradingPairs)
             {
                 // Skip if prices are invalid and we require valid prices
                 if (_requireValidPrices && !pair.HasValidPrices)
@@ -122,82 +119,86 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                 // Check each grid level for entry triggers
                 foreach (var levelPair in pair.LevelPairs)
                 {
-                    var entryInsight = CheckEntrySignal(pair, levelPair, currentSpread);
-                    if (entryInsight != null)
+                    var entryInsights = CheckEntrySignal(pair, levelPair, currentSpread, aiAlgo);
+                    foreach (var insight in entryInsights)
                     {
-                        insights.Add(entryInsight);
+                        yield return insight;
                     }
                 }
 
                 // Check each active position for exit triggers
-                // Use position.LevelPair instead of pair.LevelPairs for defensive exit checking
                 foreach (var position in pair.GridPositions.Values)
                 {
-                    var exitInsight = CheckExitSignal(pair, position, currentSpread);
-                    if (exitInsight != null)
+                    var exitInsights = CheckExitSignal(pair, position, currentSpread, aiAlgo);
+                    foreach (var insight in exitInsights)
                     {
-                        insights.Add(exitInsight);
+                        yield return insight;
                     }
                 }
             }
+        }
 
-            // Set framework-managed fields for all insights
-            foreach (var insight in insights)
-            {
-                insight.GeneratedTimeUtc = algorithm.UtcTime;
-                insight.CloseTimeUtc = algorithm.UtcTime.Add(_insightPeriod);
-                insight.SourceModel = nameof(GridArbitrageAlphaModel);
-            }
-
-            return insights;
+        /// <summary>
+        /// Event fired each time the we add/remove securities from the data feed.
+        /// Maps to TradingPairChanges for managing pair-specific tracking.
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance that experienced the change in securities</param>
+        /// <param name="changes">The security additions and removals from the algorithm</param>
+        public override void OnSecuritiesChanged(QCAlgorithm algorithm, Data.UniverseSelection.SecurityChanges changes)
+        {
+            // Note: This is called for individual security changes.
+            // For TradingPair-level changes, AIAlgorithm should call OnTradingPairsChanged directly
+            // if needed, or we can infer changes from added/removed securities.
         }
 
         /// <summary>
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
-        /// This allows the alpha model to initialize or clean up resources for trading pairs.
+        /// Optionally cancels active insights for removed pairs.
         /// </summary>
         /// <param name="algorithm">The AI algorithm instance</param>
         /// <param name="changes">The trading pair additions and removals</param>
         public void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
         {
-            // Clean up tracking for removed pairs
+            // Optional: Cancel active insights for removed pairs
+            // The framework will naturally expire insights, but explicit cancellation is cleaner
             foreach (var removedPair in changes.RemovedPairs)
             {
-                string pairKey = removedPair.Key;
-                if (_activeInsightsByPair.ContainsKey(pairKey))
+                var insightsToCancel = algorithm.Insights
+                    .GetActiveInsights(algorithm.UtcTime)
+                    .OfType<GridInsight>()
+                    .Where(gi => gi.Symbol == removedPair.Leg1Symbol ||
+                                 gi.Symbol == removedPair.Leg2Symbol)
+                    .Cast<Insight>()
+                    .ToList();
+
+                if (insightsToCancel.Any())
                 {
-                    _activeInsightsByPair.Remove(pairKey);
+                    algorithm.Insights.Cancel(insightsToCancel);
                 }
             }
 
-            // Initialize tracking for added pairs
-            foreach (var addedPair in changes.AddedPairs)
-            {
-                string pairKey = addedPair.Key;
-                if (!_activeInsightsByPair.ContainsKey(pairKey))
-                {
-                    _activeInsightsByPair[pairKey] = new HashSet<string>();
-                }
-            }
+            // No tracking initialization needed for added pairs
         }
 
         /// <summary>
         /// Checks if the spread has crossed the entry threshold for a grid level.
-        /// Generates an entry insight if triggered and no duplicate exists.
+        /// Generates a single insight for Leg1 if triggered and no duplicate exists.
         /// </summary>
         /// <param name="pair">The trading pair</param>
         /// <param name="levelPair">The grid level configuration</param>
         /// <param name="currentSpread">The current spread value</param>
-        /// <returns>ArbitrageInsight if entry triggered, null otherwise</returns>
-        private ArbitrageInsight CheckEntrySignal(
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <returns>Enumerable of single Leg1 Insight (with Tag) if entry triggered, empty otherwise</returns>
+        private IEnumerable<Insight> CheckEntrySignal(
             TradingPair pair,
             GridLevelPair levelPair,
-            decimal currentSpread)
+            decimal currentSpread,
+            AIAlgorithm algorithm)
         {
-            // Skip entry signals for pairs pending removal (allow graceful closure via exits only)
+            // Skip entry signals for pairs pending removal
             if (pair.IsPendingRemoval)
             {
-                return null;
+                yield break;
             }
 
             // Determine spread direction from the entry level
@@ -208,106 +209,163 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             if (direction == SpreadDirection.LongSpread)
             {
                 // LONG_SPREAD: Entry when spread <= entry threshold (crypto overpriced)
-                // Example: Entry at -2%, triggers when spread is -2.5%, -3%, etc.
                 triggered = currentSpread <= levelPair.Entry.SpreadPct;
             }
             else if (direction == SpreadDirection.ShortSpread)
             {
                 // SHORT_SPREAD: Entry when spread >= entry threshold (stock overpriced)
-                // Example: Entry at +2%, triggers when spread is +2.5%, +3%, etc.
                 triggered = currentSpread >= levelPair.Entry.SpreadPct;
             }
 
             if (!triggered)
             {
-                return null;
+                yield break;
             }
 
-            // Check if we already have an active position at this level (avoid duplicate entries)
+            // Check if we already have an active position at this level
             if (!_allowMultipleEntriesPerLevel && pair.TryGetPosition(levelPair, out var position, out _))
             {
                 if (position.Invested)
                 {
-                    return null;
+                    yield break;
                 }
             }
 
-            // Check if we already generated an insight for this level (avoid duplicate signals)
-            string pairKey = pair.Key;
-            string levelKey = levelPair.Entry.NaturalKey;
-            if (!ShouldGenerateInsight(pairKey, levelKey))
+            // Check if we already generated an insight for this level
+            if (!ShouldGenerateInsight((QCAlgorithm)algorithm, pair, levelPair.Entry))
             {
-                return null;
+                yield break;
             }
 
-            // Generate entry insight
-            var insight = new ArbitrageInsight(
+            // Generate single insight for Leg1 (PCM will generate paired targets)
+            var insight = GenerateSingleInsight(
                 pair,
                 levelPair,
-                SignalType.Entry,
                 direction,
-                currentSpread,
-                _insightPeriod,
-                _confidence
-            );
+                SignalType.Entry,
+                algorithm);
 
-            // Track this insight to prevent duplicates
-            TrackInsight(pairKey, levelKey);
+            yield return insight;
+        }
+
+        /// <summary>
+        /// Checks if the spread has crossed the exit threshold for an existing position.
+        /// Uses the position's own LevelPair for defensive exit checking.
+        /// </summary>
+        /// <param name="pair">The trading pair</param>
+        /// <param name="position">The active grid position to check</param>
+        /// <param name="currentSpread">The current spread value</param>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <returns>Enumerable of single Leg1 Insight (with Tag) if exit triggered, empty otherwise</returns>
+        private IEnumerable<Insight> CheckExitSignal(
+            TradingPair pair,
+            GridPosition position,
+            decimal currentSpread,
+            AIAlgorithm algorithm)
+        {
+            // Check if spread crossed exit threshold
+            bool triggered = position.ShouldExit(currentSpread);
+
+            if (!triggered)
+            {
+                yield break;
+            }
+
+            // Check if we already generated an exit insight for this position
+            if (!ShouldGenerateInsight((QCAlgorithm)algorithm, pair, position.LevelPair.Exit))
+            {
+                yield break;
+            }
+
+            // Generate single insight for exit (Flat direction, PCM will generate paired targets)
+            var insight = GenerateSingleInsight(
+                pair,
+                position.LevelPair,
+                SpreadDirection.FlatSpread,
+                SignalType.Exit,
+                algorithm);
+
+            yield return insight;
+        }
+
+        /// <summary>
+        /// Generates a single GridInsight for Leg1 (crypto) only.
+        /// Uses TradingPairManager.EncodeGridTag() to create the Tag containing pairing information.
+        /// PCM will decode the Tag to generate paired PortfolioTargets for both legs.
+        /// </summary>
+        /// <param name="pair">The trading pair</param>
+        /// <param name="levelPair">The grid level configuration</param>
+        /// <param name="direction">The spread direction</param>
+        /// <param name="signalType">Entry or Exit signal type</param>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <returns>Single GridInsight for Leg1 with Tag containing pairing info</returns>
+        private Insight GenerateSingleInsight(
+            TradingPair pair,
+            GridLevelPair levelPair,
+            SpreadDirection direction,
+            SignalType signalType,
+            AIAlgorithm algorithm)
+        {
+            // Map SpreadDirection to InsightDirection for Leg1 only
+            var leg1Dir = direction switch
+            {
+                SpreadDirection.LongSpread => InsightDirection.Up,
+                SpreadDirection.ShortSpread => InsightDirection.Down,
+                SpreadDirection.FlatSpread => InsightDirection.Flat,
+                _ => throw new ArgumentException($"Unknown SpreadDirection: {direction}")
+            };
+
+            // Encode tag using existing TradingPairManager method
+            var tag = TradingPairManager.EncodeGridTag(
+                pair.Leg1Symbol,
+                pair.Leg2Symbol,
+                levelPair);
+
+            // Determine which GridLevel to use based on signal type
+            GridLevel level = signalType == SignalType.Entry ? levelPair.Entry : levelPair.Exit;
+
+            // Create GridInsight for Leg1 (Crypto) only
+            var insight = new GridInsight(
+                pair.Leg1Symbol,
+                _insightPeriod,
+                leg1Dir,
+                level,
+                _confidence,
+                tag);
+
+            // Set framework-managed fields
+            insight.GeneratedTimeUtc = algorithm.UtcTime;
+            insight.CloseTimeUtc = algorithm.UtcTime.Add(_insightPeriod);
+            insight.SourceModel = Name;
 
             return insight;
         }
 
         /// <summary>
-        /// Checks if the spread has crossed the exit threshold for an existing position.
-        /// Uses the position's own LevelPair for defensive exit checking (independent of
-        /// TradingPair.LevelPairs configuration changes).
+        /// Maps SpreadDirection to InsightDirection for each leg.
         /// </summary>
-        /// <param name="pair">The trading pair</param>
-        /// <param name="position">The active grid position to check</param>
-        /// <param name="currentSpread">The current spread value</param>
-        /// <returns>ArbitrageInsight if exit triggered, null otherwise</returns>
-        private ArbitrageInsight CheckExitSignal(
-            TradingPair pair,
-            GridPosition position,
-            decimal currentSpread)
+        /// <param name="direction">The spread direction</param>
+        /// <returns>Tuple of (Leg1Direction, Leg2Direction)</returns>
+        private (InsightDirection, InsightDirection) MapSpreadDirectionToInsightDirection(
+            SpreadDirection direction)
         {
-            // Only generate exit signals for invested positions
-            if (!position.Invested)
+            switch (direction)
             {
-                return null;
+                case SpreadDirection.LongSpread:
+                    // LONG_SPREAD: Buy crypto (Up), Sell stock (Down)
+                    return (InsightDirection.Up, InsightDirection.Down);
+
+                case SpreadDirection.ShortSpread:
+                    // SHORT_SPREAD: Sell crypto (Down), Buy stock (Up)
+                    return (InsightDirection.Down, InsightDirection.Up);
+
+                case SpreadDirection.FlatSpread:
+                    // Exit: Close both legs (Flat)
+                    return (InsightDirection.Flat, InsightDirection.Flat);
+
+                default:
+                    throw new ArgumentException($"Unknown SpreadDirection: {direction}");
             }
-
-            // Check if spread crossed exit threshold using position's own LevelPair
-            bool triggered = position.ShouldExit(currentSpread);
-
-            if (!triggered)
-            {
-                return null;
-            }
-
-            // Check if we already generated an exit insight for this position
-            string pairKey = pair.Key;
-            string levelKey = position.LevelPair.Exit.NaturalKey;
-            if (!ShouldGenerateInsight(pairKey, levelKey))
-            {
-                return null;
-            }
-
-            // Generate exit insight (direction is FlatSpread for closing)
-            var insight = new ArbitrageInsight(
-                pair,
-                position.LevelPair,
-                SignalType.Exit,
-                SpreadDirection.FlatSpread,
-                currentSpread,
-                _insightPeriod,
-                _confidence
-            );
-
-            // Track this insight to prevent duplicates
-            TrackInsight(pairKey, levelKey);
-
-            return insight;
         }
 
         /// <summary>
@@ -325,34 +383,36 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <summary>
         /// Checks if we should generate an insight for the given pair and level.
         /// Returns false if we've already generated an insight for this combination.
+        /// Queries the framework's InsightCollection instead of maintaining separate tracking.
+        ///
+        /// Note: Since we now generate only Leg1 insights, we only check for Leg1Symbol duplicates.
         /// </summary>
-        /// <param name="pairKey">The trading pair key</param>
-        /// <param name="levelKey">The grid level natural key</param>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="pair">The trading pair</param>
+        /// <param name="targetLevel">The grid level to check</param>
         /// <returns>True if insight should be generated, false if duplicate</returns>
-        private bool ShouldGenerateInsight(string pairKey, string levelKey)
+        private bool ShouldGenerateInsight(
+            QCAlgorithm algorithm,
+            TradingPair pair,
+            GridLevel targetLevel)
         {
-            if (!_activeInsightsByPair.TryGetValue(pairKey, out var activeLevels))
-            {
-                return true;
-            }
+            // Get all active insights from framework
+            var activeInsights = algorithm.Insights.GetActiveInsights(algorithm.UtcTime);
 
-            return !activeLevels.Contains(levelKey);
+            // Filter for GridInsights related to Leg1Symbol and level
+            // We only generate Leg1 insights now, so only check Leg1Symbol
+            var duplicates = activeInsights
+                .OfType<GridInsight>()
+                .Where(gi =>
+                    // Match by Leg1Symbol only
+                    gi.Symbol == pair.Leg1Symbol &&
+                    // Match by GridLevel (uses value equality comparison)
+                    gi.Level == targetLevel)
+                .ToList();
+
+            // Allow generation if no duplicates exist
+            return duplicates.Count == 0;
         }
 
-        /// <summary>
-        /// Tracks an insight to prevent duplicate generation.
-        /// Adds the level key to the active insights set for the pair.
-        /// </summary>
-        /// <param name="pairKey">The trading pair key</param>
-        /// <param name="levelKey">The grid level natural key</param>
-        private void TrackInsight(string pairKey, string levelKey)
-        {
-            if (!_activeInsightsByPair.ContainsKey(pairKey))
-            {
-                _activeInsightsByPair[pairKey] = new HashSet<string>();
-            }
-
-            _activeInsightsByPair[pairKey].Add(levelKey);
-        }
     }
 }
