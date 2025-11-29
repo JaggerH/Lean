@@ -28,6 +28,24 @@ Or in Visual Studio: Open `QuantConnect.Lean.sln` and press F5.
 
 ## Testing
 
+### Testing Workflow After Modifying C# Source Files
+
+When C# source files are modified, follow this workflow:
+
+1. **Build and check for errors:**
+   ```bash
+   dotnet build QuantConnect.Lean.sln | grep -i error
+   ```
+   Since build output is extremely long, use `grep` to filter only errors.
+
+2. **Run tests without rebuilding:**
+   ```bash
+   dotnet test --no-build
+   ```
+   The `--no-build` flag skips rebuilding since we already built in step 1.
+
+### General Testing Commands
+
 **Run all tests:**
 ```bash
 dotnet test Tests/QuantConnect.Tests.csproj
