@@ -21,11 +21,11 @@ using QuantConnect.Logging;
 namespace QuantConnect.Algorithm.Framework.Alphas
 {
     /// <summary>
-    /// Monitoring and performance tracking functionality for GridArbitrageAlphaModel.
+    /// Monitoring and performance tracking functionality for ArbitrageAlphaModel.
     /// This partial class handles Slice update rate statistics to help evaluate
     /// whether optimization (filtering by updated symbols) would be beneficial.
     /// </summary>
-    public partial class GridArbitrageAlphaModel
+    public partial class ArbitrageAlphaModel
     {
         /// <summary>
         /// Time of last statistics report
@@ -125,7 +125,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
 
             // Log the report
             Log.Trace($"═══════════════════════════════════════════════════════════════");
-            Log.Trace($"InsightGridArbitrageAlphaModel - Slice Update Statistics Report");
+            Log.Trace($"ArbitrageAlphaModel - Slice Update Statistics Report");
             Log.Trace($"═══════════════════════════════════════════════════════════════");
             Log.Trace($"Time Period: {_statsReportInterval.TotalMinutes:F0} minutes");
             Log.Trace($"Total Slice Updates: {_totalSliceUpdates:N0}");

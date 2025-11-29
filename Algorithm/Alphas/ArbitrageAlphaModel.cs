@@ -37,7 +37,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
     /// - LONG_SPREAD: Long crypto (Up), short stock (Down)
     /// - SHORT_SPREAD: Short crypto (Down), long stock (Up)
     /// </summary>
-    public partial class GridArbitrageAlphaModel : AlphaModel
+    public partial class ArbitrageAlphaModel : AlphaModel
     {
         /// <summary>
         /// How long each generated insight remains valid
@@ -55,12 +55,12 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private readonly bool _requireValidPrices;
 
         /// <summary>
-        /// Creates a new InsightGridArbitrageAlphaModel with the specified configuration.
+        /// Creates a new ArbitrageAlphaModel with the specified configuration.
         /// </summary>
         /// <param name="insightPeriod">How long insights remain valid (default: 5 minutes)</param>
         /// <param name="confidence">Confidence level for insights, 0-1 (default: 1.0)</param>
         /// <param name="requireValidPrices">Whether to require valid prices before generating signals (default: true)</param>
-        public GridArbitrageAlphaModel(
+        public ArbitrageAlphaModel(
             TimeSpan? insightPeriod = null,
             double confidence = 1.0,
             bool requireValidPrices = true)
@@ -75,7 +75,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                     "Confidence must be between 0 and 1");
             }
 
-            Name = nameof(GridArbitrageAlphaModel);
+            Name = nameof(ArbitrageAlphaModel);
         }
 
         /// <summary>
@@ -315,11 +315,12 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             var activeInsights = algorithm.Insights.GetActiveInsights(algorithm.UtcTime);
 
             // Filter for GridInsights related to Leg1Symbol and level
-            // We only generate Leg1 insights now, so only check Leg1Symbol
+            // We only generate Leg1 insights now, so check both Leg1Symbol and Level
             var duplicates = activeInsights
                 .OfType<GridInsight>()
                 .Where(gi =>
-                    // Match by GridLevel (uses value equality comparison)
+                    // Match by both Symbol and GridLevel (uses value equality comparison)
+                    gi.Symbol == pair.Leg1Symbol &&
                     gi.Level == targetLevel)
                 .ToList();
 

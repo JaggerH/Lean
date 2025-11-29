@@ -41,8 +41,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         private Symbol _btcSymbol;
         private Symbol _mstrSymbol;
 
-        [OneTimeSetUp]
-        public void OneTimeSetUp()
+        [SetUp]
+        public void Setup()
         {
             // Create algorithm instance
             _algorithm = new AQCAlgorithm();
@@ -65,169 +65,29 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
                 Ask = new Bar(50001m, 50001m, 50001m, 50001m)
             });
 
-            mstrSecurity.SetMarketPrice(new QuoteBar
+            // Equity securities need TradeBar, not QuoteBar
+            mstrSecurity.SetMarketPrice(new TradeBar
             {
                 Symbol = _mstrSymbol,
                 Time = _algorithm.UtcTime,
-                Bid = new Bar(300m, 300m, 300m, 300m),
-                Ask = new Bar(300.01m, 300.01m, 300.01m, 300.01m)
+                Open = 300m,
+                High = 300m,
+                Low = 300m,
+                Close = 300m,
+                Volume = 1000
             });
-        }
-
-        [SetUp]
-        public void Setup()
-        {
-            // Clear insights from previous tests
-            _algorithm?.Insights?.Clear(new[] { _btcSymbol, _mstrSymbol });
 
             _pcm = new ArbitragePortfolioConstructionModel();
-            _algorithm.SetPortfolioConstruction(_pcm);
+            _algorithm.SetArbitragePortfolioConstruction(_pcm);
         }
 
-        #region Category 1: Target Generation (1→2)
-
-        [Test]
-        public void Test_SingleInsight_GeneratesTwoTargets()
-        {
-            // Arrange
-            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
-
-            // Create single Leg1 insight with Tag
-            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _mstrSymbol, levelPair);
-            var insight = new GridInsight(
-                _btcSymbol,
-                TimeSpan.FromMinutes(5),
-                InsightDirection.Up,
-                levelPair.Entry,
-                1.0,
-                tag);
-            insight.GeneratedTimeUtc = _algorithm.UtcTime;
-            insight.CloseTimeUtc = _algorithm.UtcTime.Add(TimeSpan.FromMinutes(5));
-
-            // Add to framework
-            _algorithm.Insights.Add(insight);
-
-            // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
-
-            // Assert - Must generate exactly 2 targets (not 1)
-            Assert.AreEqual(2, targets.Count, "Must generate exactly 2 targets from 1 insight");
-
-            // Verify targets are for both legs
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
-
-            Assert.IsNotNull(leg1Target, "Must have target for Leg1");
-            Assert.IsNotNull(leg2Target, "Must have target for Leg2");
-        }
-
-        [Test]
-        public void Test_MultipleInsights_GenerateMultiplePairs()
-        {
-            // Arrange - 3 insights (representing 3 different grid levels)
-            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-
-            var level1 = new GridLevelPair(-0.03m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-            var level2 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-            var level3 = new GridLevelPair(-0.01m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-
-            var insights = new[]
-            {
-                CreateInsight(_btcSymbol, InsightDirection.Up, level1),
-                CreateInsight(_btcSymbol, InsightDirection.Up, level2),
-                CreateInsight(_btcSymbol, InsightDirection.Up, level3)
-            };
-
-            foreach (var i in insights)
-                _algorithm.Insights.Add(i);
-
-            // Act
-            var targets = _pcm.CreateTargets(_algorithm, insights).ToList();
-
-            // Assert - 3 insights → 6 targets (2 per insight)
-            Assert.AreEqual(6, targets.Count, "3 insights must generate 6 targets (2 per insight)");
-
-            // Verify each insight generated 2 targets
-            foreach (var insight in insights)
-            {
-                var targetsForInsight = targets.Where(t => t.Tag == insight.Tag).ToList();
-                Assert.AreEqual(2, targetsForInsight.Count,
-                    $"Each insight must generate exactly 2 targets");
-            }
-        }
-
-        #endregion
-
-        #region Category 2: Tag Propagation
-
-        [Test]
-        public void Test_BothTargets_HaveSameTag()
-        {
-            // Arrange
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
-            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _mstrSymbol, levelPair);
-
-            var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
-            _algorithm.Insights.Add(insight);
-
-            // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
-
-            // Assert
-            Assert.AreEqual(2, targets.Count);
-
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
-
-            Assert.AreEqual(tag, leg1Target.Tag, "Leg1 target must have same Tag as insight");
-            Assert.AreEqual(tag, leg2Target.Tag, "Leg2 target must have same Tag as insight");
-            Assert.AreEqual(leg1Target.Tag, leg2Target.Tag, "Both targets must have identical Tag");
-        }
-
-        [Test]
-        public void Test_MultipleInsights_UniqueTagsPerPair()
-        {
-            // Arrange - 2 insights with different Tags
-            var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-            var level2 = new GridLevelPair(-0.03m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-
-            var insights = new[]
-            {
-                CreateInsight(_btcSymbol, InsightDirection.Up, level1),
-                CreateInsight(_btcSymbol, InsightDirection.Up, level2)
-            };
-
-            foreach (var i in insights)
-                _algorithm.Insights.Add(i);
-
-            // Act
-            var targets = _pcm.CreateTargets(_algorithm, insights).ToList();
-
-            // Assert - 2 insights → 4 targets (2 pairs)
-            Assert.AreEqual(4, targets.Count);
-
-            // Group targets by Tag
-            var targetsByTag = targets.GroupBy(t => t.Tag).ToList();
-            Assert.AreEqual(2, targetsByTag.Count, "Should have 2 unique Tags (one per insight)");
-
-            // Each Tag should have exactly 2 targets
-            foreach (var group in targetsByTag)
-            {
-                Assert.AreEqual(2, group.Count(), $"Tag {group.Key} must have exactly 2 targets");
-            }
-        }
-
-        #endregion
-
-        #region Category 3: Direction Calculation
+        #region Category 1: Direction Calculation
 
         [Test]
         public void Test_LongSpread_Entry_OppositeDirections()
         {
             // Arrange - LONG_SPREAD: Leg1 Up, Leg2 Down
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -235,23 +95,23 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert
-            Assert.AreEqual(2, targets.Count);
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
 
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
+            var target = targets[0];
 
             // LONG_SPREAD entry: Leg1 Up (positive quantity), Leg2 Down (negative quantity)
-            Assert.Greater(leg1Target.Quantity, 0, "LONG_SPREAD: Leg1 quantity must be positive");
-            Assert.Less(leg2Target.Quantity, 0, "LONG_SPREAD: Leg2 quantity must be negative");
+            Assert.Greater(target.Leg1Quantity, 0, "LONG_SPREAD: Leg1 quantity must be positive");
+            Assert.Less(target.Leg2Quantity, 0, "LONG_SPREAD: Leg2 quantity must be negative");
         }
 
         [Test]
         public void Test_ShortSpread_Entry_OppositeDirections()
         {
             // Arrange - SHORT_SPREAD: Leg1 Down, Leg2 Up
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(0.02m, -0.01m, "SHORT_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -259,23 +119,23 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert
-            Assert.AreEqual(2, targets.Count);
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
 
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
+            var target = targets[0];
 
             // SHORT_SPREAD entry: Leg1 Down (negative quantity), Leg2 Up (positive quantity)
-            Assert.Less(leg1Target.Quantity, 0, "SHORT_SPREAD: Leg1 quantity must be negative");
-            Assert.Greater(leg2Target.Quantity, 0, "SHORT_SPREAD: Leg2 quantity must be positive");
+            Assert.Less(target.Leg1Quantity, 0, "SHORT_SPREAD: Leg1 quantity must be negative");
+            Assert.Greater(target.Leg2Quantity, 0, "SHORT_SPREAD: Leg2 quantity must be positive");
         }
 
         [Test]
         public void Test_Exit_BothZero()
         {
             // Arrange - Exit signal (Flat direction)
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -283,27 +143,27 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert
-            Assert.AreEqual(2, targets.Count);
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
 
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
+            var target = targets[0];
 
             // Exit: Both legs should have 0 quantity
-            Assert.AreEqual(0, leg1Target.Quantity, "Exit: Leg1 quantity must be 0");
-            Assert.AreEqual(0, leg2Target.Quantity, "Exit: Leg2 quantity must be 0");
+            Assert.AreEqual(0, target.Leg1Quantity, "Exit: Leg1 quantity must be 0");
+            Assert.AreEqual(0, target.Leg2Quantity, "Exit: Leg2 quantity must be 0");
         }
 
         #endregion
 
-        #region Category 4: Quantity Calculation
+        #region Category 2: Quantity Calculation
 
         [Test]
         public void Test_SingleInsight_EqualPortfolioAllocation()
         {
             // Arrange
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -311,18 +171,17 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert - With 1 insight and PositionSizePct=0.25, each leg gets 25% of portfolio
-            Assert.AreEqual(2, targets.Count);
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
 
-            var leg1Target = targets.First(t => t.Symbol == _btcSymbol);
-            var leg2Target = targets.First(t => t.Symbol == _mstrSymbol);
+            var target = targets[0];
 
             // Both legs should have same absolute percentage (25%)
-            Assert.AreEqual(0.25, (double)Math.Abs(leg1Target.Quantity), 0.001,
+            Assert.AreEqual(0.25, (double)Math.Abs(target.Leg1Quantity), 0.001,
                 "Leg1 should get 25% allocation");
-            Assert.AreEqual(0.25, (double)Math.Abs(leg2Target.Quantity), 0.001,
+            Assert.AreEqual(0.25, (double)Math.Abs(target.Leg2Quantity), 0.001,
                 "Leg2 should get 25% allocation");
         }
 
@@ -330,6 +189,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         public void Test_MultipleInsights_SplitPortfolioEqually()
         {
             // Arrange - 2 insights, each with 25% PositionSizePct
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
             var level2 = new GridLevelPair(-0.03m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
 
@@ -343,21 +203,23 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
                 _algorithm.Insights.Add(i);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, insights).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, insights);
 
             // Assert - 2 insights split portfolio 50/50, each gets 12.5% (50% * 25%)
-            Assert.AreEqual(4, targets.Count);
+            Assert.AreEqual(2, targets.Length, "Should generate 2 ArbitragePortfolioTargets");
 
             foreach (var target in targets)
             {
-                Assert.AreEqual(0.125, (double)Math.Abs(target.Quantity), 0.001,
-                    "Each leg of each insight should get 12.5% allocation");
+                Assert.AreEqual(0.125, (double)Math.Abs(target.Leg1Quantity), 0.001,
+                    "Each leg1 should get 12.5% allocation");
+                Assert.AreEqual(0.125, (double)Math.Abs(target.Leg2Quantity), 0.001,
+                    "Each leg2 should get 12.5% allocation");
             }
         }
 
         #endregion
 
-        #region Category 5: Tag Decoding
+        #region Category 3: Tag Decoding
 
         [Test]
         public void Test_InvalidTag_SkipsTarget()
@@ -378,16 +240,17 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert - Should skip this insight (no targets generated)
-            Assert.AreEqual(0, targets.Count, "Invalid Tag should result in no targets");
+            Assert.AreEqual(0, targets.Length, "Invalid Tag should result in no targets");
         }
 
         [Test]
         public void Test_TagDecoding_RecoversLeg2Symbol()
         {
             // Arrange
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -395,20 +258,21 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert - PCM correctly decoded Leg2Symbol from Tag
-            Assert.AreEqual(2, targets.Count);
-            var symbols = targets.Select(t => t.Symbol).ToList();
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
+            var target = targets[0];
 
-            Assert.Contains(_btcSymbol, symbols, "Must contain Leg1Symbol");
-            Assert.Contains(_mstrSymbol, symbols, "Must contain Leg2Symbol (decoded from Tag)");
+            Assert.AreEqual(_btcSymbol, target.Leg1Symbol, "Must have Leg1Symbol");
+            Assert.AreEqual(_mstrSymbol, target.Leg2Symbol, "Must have Leg2Symbol (decoded from Tag)");
         }
 
         [Test]
         public void Test_TagDecoding_RecoversPositionSizePct()
         {
             // Arrange - PositionSizePct = 0.30 (30%)
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.30m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -416,26 +280,26 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
             // Assert - With 1 insight and PositionSizePct=0.30, allocation should be 30%
-            Assert.AreEqual(2, targets.Count);
+            Assert.AreEqual(1, targets.Length, "Should generate 1 ArbitragePortfolioTarget");
+            var target = targets[0];
 
-            foreach (var target in targets)
-            {
-                Assert.AreEqual(0.30, (double)Math.Abs(target.Quantity), 0.001,
-                    "PCM should decode PositionSizePct=0.30 from Tag");
-            }
+            Assert.AreEqual(0.30, (double)Math.Abs(target.Leg1Quantity), 0.001,
+                "PCM should decode PositionSizePct=0.30 from Tag for Leg1");
+            Assert.AreEqual(0.30, (double)Math.Abs(target.Leg2Quantity), 0.001,
+                "PCM should decode PositionSizePct=0.30 from Tag for Leg2");
         }
 
         #endregion
 
-        #region Category 6: Expired Insights
+        #region Category 4: Expired Insights
 
         [Test]
-        public void Test_ExpiredInsight_GeneratesZeroTargets()
+        public void Test_ExpiredInsight_DoesNotGenerateTargets()
         {
-            // Arrange - Create expired insight
+            // Arrange - Create expired entry insight
             var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
                                               (_btcSymbol, _mstrSymbol));
 
@@ -445,19 +309,37 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Add(insight);
 
             // Act - PCM processes expired insights
-            var targets = _pcm.CreateTargets(_algorithm, new[] { insight }).ToList();
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
 
-            // Assert - Expired insights should generate flatten targets
-            // Note: This depends on how PCM handles expired insights
-            // If PCM removes expired insights, targets count may be 2 (flatten both legs)
-            if (targets.Count > 0)
-            {
-                foreach (var target in targets)
-                {
-                    Assert.AreEqual(0, target.Quantity,
-                        "Expired insights should flatten positions");
-                }
-            }
+            // Assert - For grid arbitrage strategy, expired Entry insights should NOT generate
+            // flatten targets. Positions should only be closed by explicit Exit signals (Direction=Flat).
+            // Insight expiration just means no new grid level has been triggered, but existing
+            // positions should remain open until an exit signal is received.
+            Assert.AreEqual(0, targets.Length,
+                "Expired Entry insights should NOT generate targets (no auto-flatten)");
+        }
+
+        [Test]
+        public void Test_ExitSignal_GeneratesZeroTargets()
+        {
+            // Arrange - Create Exit signal (Direction=Flat)
+            _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
+                                              (_btcSymbol, _mstrSymbol));
+
+            var insight = CreateInsight(_btcSymbol, InsightDirection.Flat, levelPair);
+            _algorithm.Insights.Add(insight);
+
+            // Act
+            var targets = _pcm.CreateArbitrageTargets(_algorithm, new[] { insight });
+
+            // Assert - Exit signals (Direction=Flat) should generate flatten targets
+            Assert.AreEqual(1, targets.Length, "Exit signal should generate 1 ArbitragePortfolioTarget");
+
+            var target = targets[0];
+
+            Assert.AreEqual(0, target.Leg1Quantity, "Exit signal: Leg1 should flatten to 0");
+            Assert.AreEqual(0, target.Leg2Quantity, "Exit signal: Leg2 should flatten to 0");
         }
 
         #endregion
@@ -481,7 +363,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
 
             insight.GeneratedTimeUtc = _algorithm.UtcTime;
             insight.CloseTimeUtc = _algorithm.UtcTime.Add(TimeSpan.FromMinutes(5));
-            insight.SourceModel = "GridArbitrageAlphaModel";
+            insight.SourceModel = "ArbitrageAlphaModel";
 
             return insight;
         }

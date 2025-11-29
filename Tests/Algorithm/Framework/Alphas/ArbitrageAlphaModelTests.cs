@@ -30,14 +30,14 @@ using QuantConnect.TradingPairs.Grid;
 namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 {
     /// <summary>
-    /// Tests for refactored GridArbitrageAlphaModel (Tag-based pairing)
+    /// Tests for refactored ArbitrageAlphaModel (Tag-based pairing)
     /// This model generates 1 Insight per signal (Leg1 only) with Tag containing pairing info
     /// </summary>
     [TestFixture]
-    public class GridArbitrageAlphaModelTests
+    public class ArbitrageAlphaModelTests
     {
         private AQCAlgorithm _algorithm;
-        private GridArbitrageAlphaModel _alphaModel;
+        private ArbitrageAlphaModel _alphaModel;
         private Symbol _btcSymbol;
         private Symbol _mstrSymbol;
         private Security _btcSecurity;
@@ -59,7 +59,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _mstrSecurity = _algorithm.AddSecurity(_mstrSymbol);
 
             // Create and set alpha model
-            _alphaModel = new GridArbitrageAlphaModel(
+            _alphaModel = new ArbitrageAlphaModel(
                 insightPeriod: TimeSpan.FromMinutes(5),
                 confidence: 1.0,
                 requireValidPrices: true);
@@ -384,7 +384,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         public void Test_InsightPeriod_DefaultValue()
         {
             // Arrange
-            _alphaModel = new GridArbitrageAlphaModel(); // Use defaults
+            _alphaModel = new ArbitrageAlphaModel(); // Use defaults
             _algorithm.SetAlpha(_alphaModel);
 
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
@@ -413,7 +413,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var customConfidence = 0.75;
-            _alphaModel = new GridArbitrageAlphaModel(confidence: customConfidence);
+            _alphaModel = new ArbitrageAlphaModel(confidence: customConfidence);
             _algorithm.SetAlpha(_alphaModel);
 
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
@@ -468,6 +468,121 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             Assert.AreEqual(1, insightsAfterSecond, "Second call should not generate duplicate");
         }
 
+        [Test]
+        public void Test_SameSymbolAndLevel_WithinInsightPeriod_NoDuplicate()
+        {
+            // Arrange - This test simulates the scenario from the bug report:
+            // Two insights generated 1 minute 25 seconds apart for the same symbol/level
+            // Both should NOT be generated since the first is still active (5 min period)
+            _algorithm.SetAlpha(_alphaModel);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act - First call at T+0 generates insight
+            var slice1 = CreateSlice();
+            _algorithm.OnFrameworkData(slice1);
+            var insightsAfterFirst = _algorithm.Insights.Count;
+            Assert.AreEqual(1, insightsAfterFirst, "First call should generate 1 insight");
+
+            // Act - Advance time by 1 minute 25 seconds (still within 5-minute insight period)
+            _algorithm.SetDateTime(_algorithm.UtcTime.AddSeconds(85));
+
+            // Prices still trigger the same entry level
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            var slice2 = CreateSlice();
+            _algorithm.OnFrameworkData(slice2);
+            var insightsAfterSecond = _algorithm.Insights.Count;
+
+            // Assert - Second call should NOT generate duplicate (still within 5-min period)
+            Assert.AreEqual(1, insightsAfterSecond,
+                "Second call at T+85s should not generate duplicate insight (within 5-min period)");
+
+            // Verify the existing insight is still active
+            var activeInsights = _algorithm.Insights.GetActiveInsights(_algorithm.UtcTime);
+            Assert.AreEqual(1, activeInsights.Count, "Original insight should still be active");
+        }
+
+        [Test]
+        public void Test_SameSymbolAndLevel_AfterInsightExpiry_GeneratesNew()
+        {
+            // Arrange - Verify that after the insight period expires, a new insight CAN be generated
+            _algorithm.SetAlpha(_alphaModel);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act - First call generates insight
+            var slice1 = CreateSlice();
+            _algorithm.OnFrameworkData(slice1);
+            Assert.AreEqual(1, _algorithm.Insights.Count, "First call should generate 1 insight");
+
+            // Act - Advance time beyond the 5-minute insight period
+            _algorithm.SetDateTime(_algorithm.UtcTime.AddMinutes(6));
+
+            // Prices still trigger the same entry level
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            var slice2 = CreateSlice();
+            _algorithm.OnFrameworkData(slice2);
+
+            // Assert - After expiry, a new insight should be generated
+            Assert.AreEqual(2, _algorithm.Insights.Count,
+                "After 6 minutes, a new insight should be generated (old one expired)");
+
+            // Verify only one is active (the new one)
+            var activeInsights = _algorithm.Insights.GetActiveInsights(_algorithm.UtcTime);
+            Assert.AreEqual(1, activeInsights.Count, "Only the new insight should be active");
+        }
+
+        [Test]
+        public void Test_DifferentSymbols_SameLevel_BothGenerated()
+        {
+            // Arrange - Verify that the same level on different symbols generates separate insights
+            var ethSymbol = Symbol.Create("ETHUSD", SecurityType.Crypto, Market.Coinbase);
+            var ethSecurity = _algorithm.AddSecurity(ethSymbol);
+
+            var pair1 = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
+            var pair2 = _algorithm.TradingPairs.AddPair(ethSymbol, _mstrSymbol);
+
+            // Both pairs use identical grid levels
+            pair1.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+            pair2.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
+
+            // Both pairs trigger entry
+            SetPrices(_btcSecurity, 40000m, 40100m);
+            SetPrices(ethSecurity, 2000m, 2010m);
+            SetPrices(_mstrSecurity, 41100m, 41200m);
+            _algorithm.TradingPairs.UpdateAll();
+
+            // Act
+            var slice = CreateSlice();
+            _algorithm.OnFrameworkData(slice);
+
+            // Assert - Should generate 2 insights (one per symbol/pair)
+            var insights = _algorithm.Insights.ToList();
+            Assert.AreEqual(2, insights.Count, "Should generate insights for both BTC and ETH pairs");
+
+            // Verify different symbols
+            var symbols = insights.Select(i => i.Symbol).ToHashSet();
+            Assert.AreEqual(2, symbols.Count, "Insights should be for different symbols");
+            Assert.IsTrue(symbols.Contains(_btcSymbol), "Should include BTC insight");
+            Assert.IsTrue(symbols.Contains(ethSymbol), "Should include ETH insight");
+        }
+
         #endregion
 
         #region Category 7: Insight Properties
@@ -492,8 +607,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             Assert.AreEqual(1, insights.Count);
             var insight = insights[0];
 
-            Assert.AreEqual("GridArbitrageAlphaModel", insight.SourceModel,
-                "SourceModel must be GridArbitrageAlphaModel");
+            Assert.AreEqual("ArbitrageAlphaModel", insight.SourceModel,
+                "SourceModel must be ArbitrageAlphaModel");
             Assert.AreEqual(InsightType.Price, insight.Type,
                 "Insight type must be Price");
             Assert.IsNotNull(insight.Id, "Insight Id must be set");

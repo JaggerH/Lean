@@ -1,3 +1,5 @@
+using QuantConnect.Algorithm.Framework.Execution;
+using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Data;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
@@ -52,6 +54,11 @@ namespace QuantConnect.Algorithm
         {
             // Initialize TradingPairs manager for arbitrage strategies
             TradingPairs = new TradingPairs.TradingPairManager(this);
+
+            // Set default Null models for arbitrage framework
+            // These will be replaced when user calls SetArbitragePortfolioConstruction/SetArbitrageExecution
+            SetArbitragePortfolioConstruction(new NullArbitragePortfolioConstructionModel());
+            SetArbitrageExecution(new NullArbitrageExecutionModel());
         }
 
         /// <summary>

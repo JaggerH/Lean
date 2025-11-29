@@ -173,7 +173,7 @@ namespace QuantConnect.Algorithm
         /// </summary>
         /// <param name="insights">The insight to process</param>
         [DocumentationAttribute(AlgorithmFramework)]
-        private void ProcessInsights(Insight[] insights)
+        protected virtual void ProcessInsights(Insight[] insights)
         {
             // construct portfolio targets from insights
             var targetsEnumerable = PortfolioConstruction.CreateTargets(this, insights);
