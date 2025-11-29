@@ -43,10 +43,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         private Security _btcSecurity;
         private Security _mstrSecurity;
 
-        [OneTimeSetUp]
-        public void OneTimeSetUp()
+        [SetUp]
+        public void Setup()
         {
-            // Create algorithm instance
+            // Create fresh algorithm instance for each test
             _algorithm = new AQCAlgorithm();
             _algorithm.SubscriptionManager.SetDataManager(
                 new DataManagerStub(_algorithm));
@@ -57,22 +57,15 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             // Add securities
             _btcSecurity = _algorithm.AddSecurity(_btcSymbol);
             _mstrSecurity = _algorithm.AddSecurity(_mstrSymbol);
-        }
 
-        [SetUp]
-        public void Setup()
-        {
-            // Clear trading pairs from previous tests
-            _algorithm?.TradingPairs?.Clear();
-
-            // Clear insights from previous tests to prevent test pollution
-            _algorithm?.Insights?.Clear(new[] { _btcSymbol, _mstrSymbol });
-
+            // Create and set alpha model
             _alphaModel = new GridArbitrageAlphaModel(
                 insightPeriod: TimeSpan.FromMinutes(5),
                 confidence: 1.0,
-                allowMultipleEntriesPerLevel: false,
                 requireValidPrices: true);
+
+            // Set AlphaModel to algorithm for framework integration
+            _algorithm.SetAlpha(_alphaModel);
         }
 
         #region Category 1: Single Insight Generation
@@ -91,14 +84,14 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - Must generate exactly 1 insight (Leg1 only, not 2)
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count, "Must generate exactly 1 insight for entry signal");
 
             // Verify it's for Leg1 (crypto)
-            var insight = insights[0];
-            Assert.AreEqual(pair.Leg1Symbol, insight.Symbol, "Insight must be for Leg1 (crypto)");
+            Assert.AreEqual(pair.Leg1Symbol, insights[0].Symbol, "Insight must be for Leg1 (crypto)");
         }
 
         [Test]
@@ -120,14 +113,14 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - Must generate exactly 1 insight (Leg1 only, not 2)
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count, "Must generate exactly 1 insight for exit signal");
 
             // Verify it's for Leg1 (crypto)
-            var insight = insights[0];
-            Assert.AreEqual(pair.Leg1Symbol, insight.Symbol, "Insight must be for Leg1 (crypto)");
+            Assert.AreEqual(pair.Leg1Symbol, insights[0].Symbol, "Insight must be for Leg1 (crypto)");
         }
 
         [Test]
@@ -146,9 +139,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - Must generate 3 insights (NOT 6), one per level
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(3, insights.Count, "Must generate 3 insights (1 per level), not 6");
 
             // Verify all are for Leg1Symbol
@@ -175,9 +169,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count);
             var tag = insights[0].Tag;
 
@@ -204,7 +199,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
+            var insights = _algorithm.Insights.ToList();
 
             // Assert
             var tag = insights[0].Tag;
@@ -231,7 +227,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
+            var insights = _algorithm.Insights.ToList();
 
             // Assert
             var tag = insights[0].Tag;
@@ -258,9 +255,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - Each level should have unique Tag
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(3, insights.Count);
             var tags = insights.Select(i => i.Tag).ToList();
             Assert.AreEqual(3, tags.Distinct().Count(), "Each insight must have unique Tag");
@@ -283,12 +281,12 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - LONG_SPREAD entry: Leg1 (crypto) Up (PCM will determine Leg2 Down)
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count);
-            var insight = insights[0];
-            Assert.AreEqual(InsightDirection.Up, insight.Direction,
+            Assert.AreEqual(InsightDirection.Up, insights[0].Direction,
                 "LONG_SPREAD entry: Leg1 (crypto) must be Up");
         }
 
@@ -305,7 +303,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
+
+            // Assert
+            var insights = _algorithm.Insights.ToList();
+            Assert.AreEqual(1, insights.Count);
 
             // Assert - SHORT_SPREAD entry: Leg1 (crypto) Down (PCM will determine Leg2 Up)
             Assert.AreEqual(1, insights.Count);
@@ -331,12 +333,12 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert - Exit: Leg1 Flat (PCM will also make Leg2 Flat)
-            Assert.AreEqual(1, insights.Count);
-            var insight = insights[0];
-            Assert.AreEqual(InsightDirection.Flat, insight.Direction,
+            var insights = _algorithm.Insights.ToList();
+            Assert.AreEqual(1, insights.Count, "Must generate exactly 1 exit insight");
+            Assert.AreEqual(InsightDirection.Flat, insights[0].Direction,
                 "Exit signal must have Flat direction");
         }
 
@@ -359,9 +361,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count);
             var insight = insights[0];
 
@@ -382,6 +385,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             _alphaModel = new GridArbitrageAlphaModel(); // Use defaults
+            _algorithm.SetAlpha(_alphaModel);
 
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
@@ -392,7 +396,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
+
+            // Assert
+            var insights = _algorithm.Insights.ToList();
+            Assert.AreEqual(1, insights.Count);
 
             // Assert - Default is 5 minutes
             Assert.AreEqual(1, insights.Count);
@@ -406,6 +414,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             // Arrange
             var customConfidence = 0.75;
             _alphaModel = new GridArbitrageAlphaModel(confidence: customConfidence);
+            _algorithm.SetAlpha(_alphaModel);
 
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
             pair.AddLevelPair(-0.02m, 0.01m, SpreadDirection.LongSpread, 0.25m);
@@ -416,38 +425,16 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count);
+
             Assert.AreEqual(customConfidence, insights[0].Confidence,
                 "Confidence should match custom value");
         }
 
-        [Test]
-        public void Test_AllowMultipleEntriesPerLevel_False_BlocksDuplicate()
-        {
-            // Arrange - allowMultipleEntriesPerLevel = false (default)
-            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
-            pair.AddLevelPair(levelPair);
-
-            // Create existing invested position
-            CreateInvestedPosition(pair, levelPair, 1.0m, -100m);
-
-            // Trigger entry condition again
-            SetPrices(_btcSecurity, 40000m, 40100m);
-            SetPrices(_mstrSecurity, 41100m, 41200m);
-            _algorithm.TradingPairs.UpdateAll();
-
-            // Act
-            var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
-
-            // Assert - No new entry (already invested)
-            Assert.AreEqual(0, insights.Count, "Should not allow multiple entries per level");
-        }
 
         #endregion
 
@@ -498,9 +485,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
 
             // Assert
+            var insights = _algorithm.Insights.ToList();
             Assert.AreEqual(1, insights.Count);
             var insight = insights[0];
 
@@ -531,7 +519,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Act
             var slice = CreateSlice();
-            var insights = _alphaModel.Update(_algorithm, slice).ToList();
+            _algorithm.OnFrameworkData(slice);
+
+            // Assert
+            var insights = _algorithm.Insights.ToList();
+            Assert.AreEqual(1, insights.Count);
 
             // Assert - Verify PCM can decode the Tag
             Assert.AreEqual(1, insights.Count);

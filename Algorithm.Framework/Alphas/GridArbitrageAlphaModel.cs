@@ -50,11 +50,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private readonly double _confidence;
 
         /// <summary>
-        /// Whether to allow multiple entry signals for the same grid level
-        /// </summary>
-        private readonly bool _allowMultipleEntriesPerLevel;
-
-        /// <summary>
         /// Whether to require valid prices before generating signals
         /// </summary>
         private readonly bool _requireValidPrices;
@@ -64,17 +59,14 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// </summary>
         /// <param name="insightPeriod">How long insights remain valid (default: 5 minutes)</param>
         /// <param name="confidence">Confidence level for insights, 0-1 (default: 1.0)</param>
-        /// <param name="allowMultipleEntriesPerLevel">Whether to allow multiple entries per grid level (default: false)</param>
         /// <param name="requireValidPrices">Whether to require valid prices before generating signals (default: true)</param>
         public GridArbitrageAlphaModel(
             TimeSpan? insightPeriod = null,
             double confidence = 1.0,
-            bool allowMultipleEntriesPerLevel = false,
             bool requireValidPrices = true)
         {
             _insightPeriod = insightPeriod ?? TimeSpan.FromMinutes(5);
             _confidence = confidence;
-            _allowMultipleEntriesPerLevel = allowMultipleEntriesPerLevel;
             _requireValidPrices = requireValidPrices;
 
             if (_confidence < 0 || _confidence > 1)
@@ -139,48 +131,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         }
 
         /// <summary>
-        /// Event fired each time the we add/remove securities from the data feed.
-        /// Maps to TradingPairChanges for managing pair-specific tracking.
-        /// </summary>
-        /// <param name="algorithm">The algorithm instance that experienced the change in securities</param>
-        /// <param name="changes">The security additions and removals from the algorithm</param>
-        public override void OnSecuritiesChanged(QCAlgorithm algorithm, Data.UniverseSelection.SecurityChanges changes)
-        {
-            // Note: This is called for individual security changes.
-            // For TradingPair-level changes, AIAlgorithm should call OnTradingPairsChanged directly
-            // if needed, or we can infer changes from added/removed securities.
-        }
-
-        /// <summary>
-        /// Event fired when trading pairs are added or removed from the TradingPairManager.
-        /// Optionally cancels active insights for removed pairs.
-        /// </summary>
-        /// <param name="algorithm">The AI algorithm instance</param>
-        /// <param name="changes">The trading pair additions and removals</param>
-        public void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
-        {
-            // Optional: Cancel active insights for removed pairs
-            // The framework will naturally expire insights, but explicit cancellation is cleaner
-            foreach (var removedPair in changes.RemovedPairs)
-            {
-                var insightsToCancel = algorithm.Insights
-                    .GetActiveInsights(algorithm.UtcTime)
-                    .OfType<GridInsight>()
-                    .Where(gi => gi.Symbol == removedPair.Leg1Symbol ||
-                                 gi.Symbol == removedPair.Leg2Symbol)
-                    .Cast<Insight>()
-                    .ToList();
-
-                if (insightsToCancel.Any())
-                {
-                    algorithm.Insights.Cancel(insightsToCancel);
-                }
-            }
-
-            // No tracking initialization needed for added pairs
-        }
-
-        /// <summary>
         /// Checks if the spread has crossed the entry threshold for a grid level.
         /// Generates a single insight for Leg1 if triggered and no duplicate exists.
         /// </summary>
@@ -220,15 +170,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             if (!triggered)
             {
                 yield break;
-            }
-
-            // Check if we already have an active position at this level
-            if (!_allowMultipleEntriesPerLevel && pair.TryGetPosition(levelPair, out var position, out _))
-            {
-                if (position.Invested)
-                {
-                    yield break;
-                }
             }
 
             // Check if we already generated an insight for this level
@@ -299,7 +240,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <param name="signalType">Entry or Exit signal type</param>
         /// <param name="algorithm">The algorithm instance</param>
         /// <returns>Single GridInsight for Leg1 with Tag containing pairing info</returns>
-        private Insight GenerateSingleInsight(
+        private GridInsight GenerateSingleInsight(
             TradingPair pair,
             GridLevelPair levelPair,
             SpreadDirection direction,
@@ -331,41 +272,15 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                 leg1Dir,
                 level,
                 _confidence,
-                tag);
-
-            // Set framework-managed fields
-            insight.GeneratedTimeUtc = algorithm.UtcTime;
-            insight.CloseTimeUtc = algorithm.UtcTime.Add(_insightPeriod);
-            insight.SourceModel = Name;
+                tag)
+            {
+                // Set framework-managed fields
+                GeneratedTimeUtc = algorithm.UtcTime,
+                CloseTimeUtc = algorithm.UtcTime.Add(_insightPeriod),
+                SourceModel = Name
+            };
 
             return insight;
-        }
-
-        /// <summary>
-        /// Maps SpreadDirection to InsightDirection for each leg.
-        /// </summary>
-        /// <param name="direction">The spread direction</param>
-        /// <returns>Tuple of (Leg1Direction, Leg2Direction)</returns>
-        private (InsightDirection, InsightDirection) MapSpreadDirectionToInsightDirection(
-            SpreadDirection direction)
-        {
-            switch (direction)
-            {
-                case SpreadDirection.LongSpread:
-                    // LONG_SPREAD: Buy crypto (Up), Sell stock (Down)
-                    return (InsightDirection.Up, InsightDirection.Down);
-
-                case SpreadDirection.ShortSpread:
-                    // SHORT_SPREAD: Sell crypto (Down), Buy stock (Up)
-                    return (InsightDirection.Down, InsightDirection.Up);
-
-                case SpreadDirection.FlatSpread:
-                    // Exit: Close both legs (Flat)
-                    return (InsightDirection.Flat, InsightDirection.Flat);
-
-                default:
-                    throw new ArgumentException($"Unknown SpreadDirection: {direction}");
-            }
         }
 
         /// <summary>
@@ -373,7 +288,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// </summary>
         /// <param name="directionString">Direction string ("LONG_SPREAD" or "SHORT_SPREAD")</param>
         /// <returns>SpreadDirection enum value</returns>
-        private SpreadDirection DetermineDirection(string directionString)
+        private static SpreadDirection DetermineDirection(string directionString)
         {
             return directionString == "LONG_SPREAD"
                 ? SpreadDirection.LongSpread
@@ -404,8 +319,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             var duplicates = activeInsights
                 .OfType<GridInsight>()
                 .Where(gi =>
-                    // Match by Leg1Symbol only
-                    gi.Symbol == pair.Leg1Symbol &&
                     // Match by GridLevel (uses value equality comparison)
                     gi.Level == targetLevel)
                 .ToList();
@@ -414,5 +327,47 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             return duplicates.Count == 0;
         }
 
+        
+        /// <summary>
+        /// Event fired each time the we add/remove securities from the data feed.
+        /// Maps to TradingPairChanges for managing pair-specific tracking.
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance that experienced the change in securities</param>
+        /// <param name="changes">The security additions and removals from the algorithm</param>
+        public override void OnSecuritiesChanged(QCAlgorithm algorithm, Data.UniverseSelection.SecurityChanges changes)
+        {
+            // Note: This is called for individual security changes.
+            // For TradingPair-level changes, AIAlgorithm should call OnTradingPairsChanged directly
+            // if needed, or we can infer changes from added/removed securities.
+        }
+
+        /// <summary>
+        /// Event fired when trading pairs are added or removed from the TradingPairManager.
+        /// Optionally cancels active insights for removed pairs.
+        /// </summary>
+        /// <param name="algorithm">The AI algorithm instance</param>
+        /// <param name="changes">The trading pair additions and removals</param>
+        public void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        {
+            // Optional: Cancel active insights for removed pairs
+            // The framework will naturally expire insights, but explicit cancellation is cleaner
+            foreach (var removedPair in changes.RemovedPairs)
+            {
+                var insightsToCancel = algorithm.Insights
+                    .GetActiveInsights(algorithm.UtcTime)
+                    .OfType<GridInsight>()
+                    .Where(gi => gi.Symbol == removedPair.Leg1Symbol ||
+                                 gi.Symbol == removedPair.Leg2Symbol)
+                    .Cast<Insight>()
+                    .ToList();
+
+                if (insightsToCancel.Any())
+                {
+                    algorithm.Insights.Cancel(insightsToCancel);
+                }
+            }
+
+            // No tracking initialization needed for added pairs
+        }
     }
 }
