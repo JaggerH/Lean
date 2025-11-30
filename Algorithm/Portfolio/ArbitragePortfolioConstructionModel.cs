@@ -22,6 +22,9 @@ using QuantConnect.Data;
 using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
+using QuantConnect.Orders;
+using QuantConnect.Securities;
+using QuantConnect.Securities.MultiAccount;
 using QuantConnect.TradingPairs;
 
 namespace QuantConnect.Algorithm.Framework.Portfolio
@@ -50,7 +53,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// <summary>
         /// The algorithm instance
         /// </summary>
-        protected IAlgorithm Algorithm { get; set; }
+        protected AIAlgorithm Algorithm { get; set; }
         /// <summary>
         /// Creates a new ArbitragePortfolioConstructionModel
         /// </summary>
@@ -67,7 +70,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <returns>List of active Leg1 insights with Tags</returns>
-        private List<Insight> GetTargetInsights(QCAlgorithm algorithm)
+        private List<Insight> GetTargetInsights(AIAlgorithm algorithm)
         {
             // Get all active insights
             var activeInsights = algorithm.Insights
@@ -94,48 +97,6 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         {
             // Only create targets for insights with valid Tags
             return !string.IsNullOrEmpty(insight.Tag);
-        }
-
-        /// <summary>
-        /// Determines the target allocation percentage for each insight.
-        /// Decodes Tags to get PositionSizePct and calculates allocation.
-        /// </summary>
-        /// <param name="activeInsights">Active Leg1 insights with Tags</param>
-        /// <returns>Dictionary mapping each insight to its target allocation percentage</returns>
-        private Dictionary<Insight, double> DetermineTargetPercent(List<Insight> activeInsights)
-        {
-            var result = new Dictionary<Insight, double>();
-
-            Log.Trace($"ArbitragePortfolioConstructionModel.DetermineTargetPercent: activeInsights.Count = {activeInsights.Count}");
-
-            if (activeInsights.Count == 0)
-            {
-                return result;
-            }
-
-            // Allocate equal percentage to each insight (1 insight per trading pair)
-            var percentPerInsight = 1.0 / activeInsights.Count;
-
-            foreach (var insight in activeInsights)
-            {
-                // Decode Tag to get grid configuration
-                if (!TradingPairManager.TryDecodeGridTag(
-                    insight.Tag, out _, out _, out var levelPair))
-                {
-                    Log.Error($"ArbitragePortfolioConstructionModel: Failed to decode grid tag: " +
-                              $"{insight.Tag ?? "null"}");
-                    continue;
-                }
-
-                // Calculate allocation based on PositionSizePct from grid configuration
-                var targetPercent = percentPerInsight * (double)levelPair.Entry.PositionSizePct;
-
-                // Set allocation with direction sign (Up=1, Down=-1, Flat=0)
-                var direction = (int)insight.Direction;
-                result[insight] = targetPercent * direction;
-            }
-
-            return result;
         }
 
         /// <summary>
@@ -184,109 +145,90 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// This is the arbitrage-specific version that returns IArbitragePortfolioTarget
         /// instead of IPortfolioTarget, supporting per-position tracking.
         /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="algorithm">The algorithm instance (must be AIAlgorithm)</param>
         /// <param name="insights">Array of insights</param>
         /// <returns>Array of arbitrage portfolio targets (one per grid position)</returns>
         public IArbitragePortfolioTarget[] CreateArbitrageTargets(
             IAlgorithm algorithm, Insight[] insights)
         {
-            // Cast to QCAlgorithm for base class methods
-            if (!(algorithm is QCAlgorithm qcAlgorithm))
-            {
-                Log.Error("ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                          "Algorithm must be QCAlgorithm");
-                return Array.Empty<IArbitragePortfolioTarget>();
-            }
-
-            // Set Algorithm property for base class methods
-            Algorithm = qcAlgorithm;
-
-            // Check if algorithm implements AIAlgorithm
-            if (!(algorithm is AIAlgorithm aiAlgorithm))
-            {
-                Log.Error("ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                          "Algorithm must implement AIAlgorithm interface");
-                return Array.Empty<IArbitragePortfolioTarget>();
-            }
+            // Framework guarantees algorithm is AIAlgorithm (which extends QCAlgorithm)
+            // Only AQCAlgorithm calls this method
+            Algorithm = (AIAlgorithm)algorithm;
 
             // Check if rebalancing is due
-            if (!IsRebalanceDue(insights, qcAlgorithm.UtcTime))
+            if (!IsRebalanceDue(insights, Algorithm.UtcTime))
             {
                 return Array.Empty<IArbitragePortfolioTarget>();
             }
-
-            // Get target insights (Leg1 insights with Tags)
-            var targetInsights = GetTargetInsights(qcAlgorithm);
-
-            Log.Trace($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                     $"targetInsights.Count = {targetInsights.Count}");
-
-            if (targetInsights.Count == 0)
-            {
-                return Array.Empty<IArbitragePortfolioTarget>();
-            }
-
-            // Calculate target allocations
-            var targetPercents = DetermineTargetPercent(targetInsights);
-
-            Log.Trace($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                     $"targetPercents.Count = {targetPercents.Count}");
 
             var targets = new List<IArbitragePortfolioTarget>();
 
-            // Create arbitrage portfolio targets (one per insight/grid position)
-            foreach (var insight in targetInsights)
-            {
-                if (!targetPercents.TryGetValue(insight, out var percent))
-                {
-                    Log.Error("ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                             "Failed to get percent for insight");
-                    continue;
-                }
+            // Get active insights
+            var activeInsights = GetTargetInsights(Algorithm);
 
+            foreach (var insight in activeInsights)
+            {
                 // Decode Tag to get symbols and grid configuration
                 if (!TradingPairManager.TryDecodeGridTag(
                     insight.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
                 {
-                    Log.Error($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
+                    Log.Error($"ArbitragePortfolioConstructionModel: " +
                              $"Failed to decode grid tag: {insight.Tag ?? "null"}");
                     continue;
                 }
 
-                // Get trading pair
-                if (!aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
+                // Validate trading pair exists
+                if (!Algorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
                 {
-                    Log.Error($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
+                    Log.Error($"ArbitragePortfolioConstructionModel: " +
                              $"Trading pair not found: ({leg1Symbol}, {leg2Symbol})");
                     continue;
                 }
 
-                // Calculate delta quantities for both legs
-                var leg1Delta = CalculateLegDelta(qcAlgorithm, leg1Symbol, percent);
+                // Calculate target percent from grid configuration (NOT divided by insight count)
+                var targetPercent = (decimal)levelPair.Entry.PositionSizePct;
 
-                // Leg2 has opposite direction for entry, same for exit (Flat)
-                var leg2Percent = insight.Direction == InsightDirection.Flat
-                    ? percent
-                    : percent * -1;  // Opposite direction for spread trading
+                // Apply direction
+                if (insight.Direction == InsightDirection.Down)
+                {
+                    targetPercent = -targetPercent;
+                }
+                else if (insight.Direction == InsightDirection.Flat)
+                {
+                    // Flat = Exit signal, generate zero-quantity target for closing
+                    targets.Add(new ArbitragePortfolioTarget(
+                        leg1Symbol,
+                        leg2Symbol,
+                        0,  // Target quantity = 0 (close position)
+                        0,
+                        insight.Tag));
+                    continue;
+                }
 
-                var leg2Delta = CalculateLegDelta(qcAlgorithm, leg2Symbol, leg2Percent);
+                // Calculate target quantities using multi-account logic
+                var pairTargets = CalculatePairTargets(leg1Symbol, leg2Symbol, targetPercent);
 
-                // Create ArbitragePortfolioTarget with Tag (no GridPosition reference needed)
+                if (!pairTargets.HasValue)
+                {
+                    Log.Error($"ArbitragePortfolioConstructionModel: " +
+                             $"Failed to calculate targets for {leg1Symbol}/{leg2Symbol}");
+                    continue;
+                }
+
+                // Create ArbitragePortfolioTarget with ABSOLUTE quantities
                 var target = new ArbitragePortfolioTarget(
                     leg1Symbol,
                     leg2Symbol,
-                    leg1Delta,
-                    leg2Delta,
+                    pairTargets.Value.leg1Qty,  // Absolute target quantity
+                    pairTargets.Value.leg2Qty,  // Absolute target quantity
                     insight.Tag);
-                targets.Add(target);
 
-                Log.Trace($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
-                         $"Created target: {target}");
+                targets.Add(target);
             }
 
-            // Clean up expired insights
-            Algorithm.Insights.RemoveExpiredInsights(qcAlgorithm.UtcTime);
-
+            // Clean up expired insights (no Target generation needed)
+            // ExecutionModel will handle Target cleanup via ClearFulfilled()
+            Algorithm.Insights.RemoveExpiredInsights(Algorithm.UtcTime);
             return targets.ToArray();
         }
 
@@ -302,28 +244,146 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         }
 
         /// <summary>
-        /// Calculates the delta quantity for a leg based on target percent
+        /// Calculate absolute target quantities for both legs of an arbitrage pair.
+        /// Handles multi-account setup and buying power constraints.
         /// </summary>
-        private decimal CalculateLegDelta(
-            QCAlgorithm algorithm,
-            Symbol symbol,
-            double targetPercent)
+        /// <param name="leg1Symbol">First leg symbol</param>
+        /// <param name="leg2Symbol">Second leg symbol</param>
+        /// <param name="targetPercent">Target percentage (signed)</param>
+        /// <returns>Tuple of (leg1 target qty, leg2 target qty), or null if failed</returns>
+        private (decimal leg1Qty, decimal leg2Qty)? CalculatePairTargets(
+            Symbol leg1Symbol,
+            Symbol leg2Symbol,
+            decimal targetPercent)
         {
-            // Use PortfolioTarget.Percent with returnDeltaQuantity=true to get delta
-            var target = PortfolioTarget.Percent(
-                algorithm,
-                symbol,
-                (decimal)targetPercent,
-                returnDeltaQuantity: true);
+            // Step 1: Calculate max tradable market value
+            var maxTradableValue = CalculateMaxTradableMarketValue(
+                leg1Symbol, leg2Symbol, targetPercent, respectBuyingPower: true);
 
-            if (target == null)
+            if (maxTradableValue <= 0)
             {
-                Log.Error($"ArbitragePortfolioConstructionModel.CalculateLegDelta: " +
-                         $"Failed to calculate target for {symbol}");
-                return 0;
+                return null;
             }
 
-            return target.Quantity;
+            // Step 2: Get portfolios for each leg
+            var portfolio1 = GetPortfolioForSymbol(leg1Symbol);
+            var portfolio2 = GetPortfolioForSymbol(leg2Symbol);
+
+            // Step 3: Calculate target percent for each account
+            var targetPercent1 = maxTradableValue / portfolio1.TotalPortfolioValue * Math.Sign(targetPercent);
+            var targetPercent2 = maxTradableValue / portfolio2.TotalPortfolioValue * -Math.Sign(targetPercent);
+
+            // Step 4: Use PortfolioTarget.Percent to calculate target quantities
+            var target1 = PortfolioTarget.Percent(
+                Algorithm,
+                leg1Symbol,
+                targetPercent1,
+                returnDeltaQuantity: false,  // Absolute quantity
+                portfolio: portfolio1);
+
+            var target2 = PortfolioTarget.Percent(
+                Algorithm,
+                leg2Symbol,
+                targetPercent2,
+                returnDeltaQuantity: false,  // Absolute quantity
+                portfolio: portfolio2);
+
+            // Step 5: Validate results
+            if (target1 == null || target2 == null)
+            {
+                return null;
+            }
+
+            return (target1.Quantity, target2.Quantity);
+        }
+
+        /// <summary>
+        /// Calculate maximum tradable market value considering both accounts' constraints.
+        /// </summary>
+        private decimal CalculateMaxTradableMarketValue(
+            Symbol symbol1,
+            Symbol symbol2,
+            decimal targetPercent,
+            bool respectBuyingPower)
+        {
+            // Get portfolios
+            var portfolio1 = GetPortfolioForSymbol(symbol1);
+            var portfolio2 = GetPortfolioForSymbol(symbol2);
+
+            // Calculate planned market values
+            var plannedValue1 = portfolio1.TotalPortfolioValue * Math.Abs(targetPercent);
+            var plannedValue2 = portfolio2.TotalPortfolioValue * Math.Abs(targetPercent);
+
+            decimal targetValue;
+
+            if (respectBuyingPower)
+            {
+                // Get buying powers
+                var (buyingPower1, buyingPower2) = GetAccountBuyingPowers(
+                    symbol1, symbol2, targetPercent);
+
+                // Take minimum across all constraints
+                targetValue = Math.Min(
+                    Math.Min(plannedValue1, plannedValue2),
+                    Math.Min(buyingPower1, buyingPower2));
+            }
+            else
+            {
+                // Only consider portfolio values
+                targetValue = Math.Min(plannedValue1, plannedValue2);
+            }
+
+            return targetValue;
+        }
+
+        /// <summary>
+        /// Get buying power for both accounts based on order direction.
+        /// </summary>
+        private (decimal buyingPower1, decimal buyingPower2) GetAccountBuyingPowers(
+            Symbol symbol1,
+            Symbol symbol2,
+            decimal targetPercent)
+        {
+            // Determine order directions
+            var direction1 = targetPercent > 0 ? OrderDirection.Buy : OrderDirection.Sell;
+            var direction2 = targetPercent > 0 ? OrderDirection.Sell : OrderDirection.Buy;  // Opposite
+
+            // Get portfolios
+            var portfolio1 = GetPortfolioForSymbol(symbol1);
+            var portfolio2 = GetPortfolioForSymbol(symbol2);
+
+            // Get buying powers
+            var buyingPower1 = portfolio1.GetBuyingPower(symbol1, direction1);
+            var buyingPower2 = portfolio2.GetBuyingPower(symbol2, direction2);
+
+            return (buyingPower1, buyingPower2);
+        }
+
+        /// <summary>
+        /// Get the appropriate portfolio manager for a symbol.
+        /// Uses multi-account routing to determine which account should hold this symbol.
+        /// </summary>
+        private SecurityPortfolioManager GetPortfolioForSymbol(Symbol symbol)
+        {
+            var multiPortfolio = (MultiSecurityPortfolioManager)Algorithm.Portfolio;
+
+            // Create temporary order to determine routing
+            var tempOrder = new MarketOrder(symbol, 0, Algorithm.UtcTime);
+
+            // Access router via reflection
+            var router = multiPortfolio.GetType()
+                .GetField("_router", System.Reflection.BindingFlags.NonPublic |
+                                     System.Reflection.BindingFlags.Instance)
+                ?.GetValue(multiPortfolio) as IOrderRouter;
+
+            if (router == null)
+            {
+                throw new InvalidOperationException(
+                    "ArbitragePortfolioConstructionModel: Failed to access IOrderRouter from MultiSecurityPortfolioManager");
+            }
+
+            var accountName = router.Route(tempOrder);
+            return multiPortfolio.GetAccount(accountName);
         }
 
     }

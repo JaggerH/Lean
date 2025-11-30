@@ -20,7 +20,8 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
 {
     /// <summary>
     /// Portfolio target for arbitrage trading representing a complete GridPosition.
-    /// Contains both legs with delta quantities (amount to trade, not absolute target).
+    /// Contains both legs with absolute target quantities (not deltas).
+    /// ExecutionModel calculates deltas by comparing target quantities with current holdings.
     /// This class does NOT implement IPortfolioTarget as it has different semantics
     /// specific to arbitrage trading with paired legs.
     ///
@@ -40,12 +41,14 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         public Symbol Leg2Symbol { get; }
 
         /// <summary>
-        /// Delta quantity for leg1 (amount to trade, not absolute target)
+        /// Target quantity for leg1 (absolute position target, not delta).
+        /// ExecutionModel will calculate the delta (difference from current holdings).
         /// </summary>
         public decimal Leg1Quantity { get; }
 
         /// <summary>
-        /// Delta quantity for leg2 (amount to trade, not absolute target)
+        /// Target quantity for leg2 (absolute position target, not delta).
+        /// ExecutionModel will calculate the delta (difference from current holdings).
         /// </summary>
         public decimal Leg2Quantity { get; }
 
@@ -61,8 +64,8 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// </summary>
         /// <param name="leg1Symbol">First leg symbol</param>
         /// <param name="leg2Symbol">Second leg symbol</param>
-        /// <param name="leg1Quantity">Delta quantity for leg1 (amount to trade)</param>
-        /// <param name="leg2Quantity">Delta quantity for leg2 (amount to trade)</param>
+        /// <param name="leg1Quantity">Target quantity for leg1 (absolute position target)</param>
+        /// <param name="leg2Quantity">Target quantity for leg2 (absolute position target)</param>
         /// <param name="tag">Tag identifying the grid position</param>
         public ArbitragePortfolioTarget(
             Symbol leg1Symbol,
