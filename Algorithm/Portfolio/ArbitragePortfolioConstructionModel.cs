@@ -195,7 +195,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
             {
                 Log.Error("ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
                           "Algorithm must be QCAlgorithm");
-                return Array.Empty<ArbitragePortfolioTarget>();
+                return Array.Empty<IArbitragePortfolioTarget>();
             }
 
             // Set Algorithm property for base class methods
@@ -206,13 +206,13 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
             {
                 Log.Error("ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
                           "Algorithm must implement AIAlgorithm interface");
-                return Array.Empty<ArbitragePortfolioTarget>();
+                return Array.Empty<IArbitragePortfolioTarget>();
             }
 
             // Check if rebalancing is due
             if (!IsRebalanceDue(insights, qcAlgorithm.UtcTime))
             {
-                return Array.Empty<ArbitragePortfolioTarget>();
+                return Array.Empty<IArbitragePortfolioTarget>();
             }
 
             // Get target insights (Leg1 insights with Tags)
@@ -223,7 +223,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
 
             if (targetInsights.Count == 0)
             {
-                return Array.Empty<ArbitragePortfolioTarget>();
+                return Array.Empty<IArbitragePortfolioTarget>();
             }
 
             // Calculate target allocations
@@ -232,7 +232,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
             Log.Trace($"ArbitragePortfolioConstructionModel.CreateArbitrageTargets: " +
                      $"targetPercents.Count = {targetPercents.Count}");
 
-            var targets = new List<ArbitragePortfolioTarget>();
+            var targets = new List<IArbitragePortfolioTarget>();
 
             // Create arbitrage portfolio targets (one per insight/grid position)
             foreach (var insight in targetInsights)
