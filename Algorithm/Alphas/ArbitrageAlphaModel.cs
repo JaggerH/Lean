@@ -330,19 +330,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
 
         
         /// <summary>
-        /// Event fired each time the we add/remove securities from the data feed.
-        /// Maps to TradingPairChanges for managing pair-specific tracking.
-        /// </summary>
-        /// <param name="algorithm">The algorithm instance that experienced the change in securities</param>
-        /// <param name="changes">The security additions and removals from the algorithm</param>
-        public override void OnSecuritiesChanged(QCAlgorithm algorithm, Data.UniverseSelection.SecurityChanges changes)
-        {
-            // Note: This is called for individual security changes.
-            // For TradingPair-level changes, AIAlgorithm should call OnTradingPairsChanged directly
-            // if needed, or we can infer changes from added/removed securities.
-        }
-
-        /// <summary>
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
         /// Optionally cancels active insights for removed pairs.
         /// </summary>
