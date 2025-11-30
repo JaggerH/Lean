@@ -91,26 +91,5 @@ namespace QuantConnect.Algorithm
             // Note: Arbitrage strategies typically have their own risk controls
             ArbitrageExecution.Execute(this, targets);
         }
-
-        /// <summary>
-        /// Override OnSecuritiesChanged to notify arbitrage models.
-        /// </summary>
-        /// <param name="changes">The security additions and removals</param>
-        public override void OnSecuritiesChanged(SecurityChanges changes)
-        {
-            // Call base implementation first
-            base.OnSecuritiesChanged(changes);
-
-            // Notify arbitrage models if set
-            if (ArbitragePortfolioConstruction != null)
-            {
-                ArbitragePortfolioConstruction.OnSecuritiesChanged(this, changes);
-            }
-
-            if (ArbitrageExecution != null)
-            {
-                ArbitrageExecution.OnSecuritiesChanged(this, changes);
-            }
-        }
     }
 }

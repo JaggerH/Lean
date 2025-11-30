@@ -166,6 +166,18 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
+        /// Event fired when trading pairs are added or removed from the TradingPairManager.
+        /// Allows the execution model to initialize or clean up resources for trading pairs.
+        /// </summary>
+        /// <param name="algorithm">The AI algorithm instance</param>
+        /// <param name="changes">The trading pair additions and removals</param>
+        public virtual void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        {
+            // For removed pairs: clean up any pending orders if needed
+            // Default implementation is empty - derived classes can override
+        }
+
+        /// <summary>
         /// Event fired on order events (fills, partial fills, cancellations)
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>

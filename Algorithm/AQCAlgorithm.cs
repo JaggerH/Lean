@@ -1,8 +1,9 @@
-using QuantConnect.Algorithm.Framework.Execution;
-using QuantConnect.Algorithm.Framework.Portfolio;
+
 using QuantConnect.Data;
 using QuantConnect.Interfaces;
-using QuantConnect.Logging;
+using QuantConnect.Algorithm.Framework.Alphas;
+using QuantConnect.Algorithm.Framework.Execution;
+using QuantConnect.Algorithm.Framework.Portfolio;
 
 namespace QuantConnect.Algorithm
 {
@@ -54,6 +55,9 @@ namespace QuantConnect.Algorithm
         {
             // Initialize TradingPairs manager for arbitrage strategies
             TradingPairs = new TradingPairs.TradingPairManager(this);
+
+            // Subscribe to trading pair collection changes
+            TradingPairs.CollectionChanged += OnTradingPairsCollectionChanged;
 
             // Set default Null models for arbitrage framework
             // These will be replaced when user calls SetArbitragePortfolioConstruction/SetArbitrageExecution
@@ -152,6 +156,65 @@ namespace QuantConnect.Algorithm
             }
 
             return TradingPairs.AddPair(leg1, leg2, pairType);
+        }
+
+        /// <summary>
+        /// Private event handler for TradingPairManager.CollectionChanged.
+        /// Converts NotifyCollectionChangedEventArgs to TradingPairChanges and calls OnTradingPairsChanged.
+        /// </summary>
+        /// <param name="sender">The event sender (TradingPairManager)</param>
+        /// <param name="e">The collection changed event args</param>
+        private void OnTradingPairsCollectionChanged(object sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            var addedPairs = new System.Collections.Generic.List<TradingPairs.TradingPair>();
+            var removedPairs = new System.Collections.Generic.List<TradingPairs.TradingPair>();
+
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Add && e.NewItems != null)
+            {
+                foreach (TradingPairs.TradingPair pair in e.NewItems)
+                {
+                    addedPairs.Add(pair);
+                }
+            }
+            else if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Remove && e.OldItems != null)
+            {
+                foreach (TradingPairs.TradingPair pair in e.OldItems)
+                {
+                    removedPairs.Add(pair);
+                }
+            }
+
+            if (addedPairs.Count > 0 || removedPairs.Count > 0)
+            {
+                var changes = new TradingPairs.TradingPairChanges(addedPairs, removedPairs);
+                OnTradingPairsChanged(changes);
+            }
+        }
+
+        /// <summary>
+        /// Called when trading pairs are added or removed from the algorithm.
+        /// Notifies all arbitrage framework models of the changes.
+        /// </summary>
+        /// <param name="changes">The trading pairs that were added and removed</param>
+        public virtual void OnTradingPairsChanged(TradingPairs.TradingPairChanges changes)
+        {
+            // Notify Alpha model if it's an ArbitrageAlphaModel
+            if (Alpha is IArbitrageAlphaModel arbitrageAlpha)
+            {
+                arbitrageAlpha.OnTradingPairsChanged(this, changes);
+            }
+
+            // Notify Portfolio Construction model
+            if (ArbitragePortfolioConstruction is ArbitragePortfolioConstructionModel portfolioModel)
+            {
+                portfolioModel.OnTradingPairsChanged(this, changes);
+            }
+
+            // Notify Execution model
+            if (ArbitrageExecution is ArbitrageExecutionModel executionModel)
+            {
+                executionModel.OnTradingPairsChanged(this, changes);
+            }
         }
     }
 }
