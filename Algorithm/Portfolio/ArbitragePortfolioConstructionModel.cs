@@ -17,8 +17,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Algorithm.Framework.Alphas;
-using QuantConnect.Algorithm.Framework.Portfolio;
-using QuantConnect.Data;
 using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
@@ -186,7 +184,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                 }
 
                 // Calculate target percent from grid configuration (NOT divided by insight count)
-                var targetPercent = (decimal)levelPair.Entry.PositionSizePct;
+                var targetPercent = levelPair.Entry.PositionSizePct;
 
                 // Apply direction
                 if (insight.Direction == InsightDirection.Down)
@@ -362,28 +360,34 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// <summary>
         /// Get the appropriate portfolio manager for a symbol.
         /// Uses multi-account routing to determine which account should hold this symbol.
+        /// Falls back to main portfolio if not using multi-account setup.
         /// </summary>
         private SecurityPortfolioManager GetPortfolioForSymbol(Symbol symbol)
         {
-            var multiPortfolio = (MultiSecurityPortfolioManager)Algorithm.Portfolio;
-
-            // Create temporary order to determine routing
-            var tempOrder = new MarketOrder(symbol, 0, Algorithm.UtcTime);
-
-            // Access router via reflection
-            var router = multiPortfolio.GetType()
-                .GetField("_router", System.Reflection.BindingFlags.NonPublic |
-                                     System.Reflection.BindingFlags.Instance)
-                ?.GetValue(multiPortfolio) as IOrderRouter;
-
-            if (router == null)
+            // Check if using multi-account portfolio
+            if (Algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
             {
-                throw new InvalidOperationException(
-                    "ArbitragePortfolioConstructionModel: Failed to access IOrderRouter from MultiSecurityPortfolioManager");
+                // Create temporary order to determine routing
+                var tempOrder = new MarketOrder(symbol, 0, Algorithm.UtcTime);
+
+                // Access router via reflection
+                var router = multiPortfolio.GetType()
+                    .GetField("_router", System.Reflection.BindingFlags.NonPublic |
+                                         System.Reflection.BindingFlags.Instance)
+                    ?.GetValue(multiPortfolio) as IOrderRouter;
+
+                if (router == null)
+                {
+                    throw new InvalidOperationException(
+                        "ArbitragePortfolioConstructionModel: Failed to access IOrderRouter from MultiSecurityPortfolioManager");
+                }
+
+                var accountName = router.Route(tempOrder);
+                return multiPortfolio.GetAccount(accountName);
             }
 
-            var accountName = router.Route(tempOrder);
-            return multiPortfolio.GetAccount(accountName);
+            // Fallback to main portfolio (single account scenario)
+            return Algorithm.Portfolio;
         }
 
     }

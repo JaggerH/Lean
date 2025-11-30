@@ -14,7 +14,6 @@
 */
 
 using QuantConnect.Algorithm.Framework.Alphas;
-using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Interfaces;
 
