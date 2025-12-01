@@ -53,13 +53,11 @@ namespace QuantConnect.TradingPairs.Grid
         /// <param name="exitSpreadPct">Exit trigger spread (e.g., -0.005 for -0.5%)</param>
         /// <param name="direction">Trade direction (LONG_SPREAD or SHORT_SPREAD)</param>
         /// <param name="positionSizePct">Position size as percentage (e.g., 0.25 for 25%)</param>
-        /// <param name="pairSymbol">Trading pair symbols (leg1, leg2) - used for validation only, not stored</param>
         public GridLevelPair(
             decimal entrySpreadPct,
             decimal exitSpreadPct,
             string direction,
-            decimal positionSizePct,
-            (Symbol, Symbol) pairSymbol)
+            decimal positionSizePct)
         {
             // Validate direction
             if (direction != "LONG_SPREAD" && direction != "SHORT_SPREAD")

@@ -180,7 +180,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
         private GridPosition CreateGridPosition(TradingPair pair, decimal leg1Qty, decimal leg2Qty)
         {
             // Create a grid level pair
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (pair.Leg1Symbol, pair.Leg2Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var position = new GridPosition(pair, levelPair);
 
@@ -919,8 +919,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
 
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = CreateGridPosition(pair, 1.0m, -100m, levelPair);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
             pair.GridPositions[tag] = position;
@@ -948,8 +947,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
 
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = CreateGridPosition(pair, 1.0m, -100m, levelPair);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
             pair.GridPositions[tag] = position;
@@ -978,8 +976,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair1 = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
             var pair2 = manager.AddPair(_btcSecurity.Symbol, _ethSecurity.Symbol);
 
-            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                               (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position1 = CreateGridPosition(pair1, 1.0m, -100m, levelPair1);
             var tag1 = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair1);
             pair1.GridPositions[tag1] = position1;
@@ -1082,7 +1079,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             // Mock ExecutionHistoryProvider to return executions that will rebuild grid positions
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
             var mockProvider = new Mock<IExecutionHistoryProvider>();
@@ -1125,7 +1122,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Mock ExecutionHistoryProvider to return partial executions
             // This simulates: reconciliation processes some fills, but discrepancies remain due to user trades
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
             var mockProvider = new Mock<IExecutionHistoryProvider>();
@@ -1361,7 +1358,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
         private GridPosition CreateGridPosition(TradingPair pair, decimal leg1Qty, decimal leg2Qty)
         {
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (pair.Leg1Symbol, pair.Leg2Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = new GridPosition(pair, levelPair);
 
             var leg1QuantityField = typeof(GridPosition).GetProperty("Leg1Quantity", BindingFlags.Public | BindingFlags.Instance);
@@ -1442,7 +1439,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var exitSpread = decimal.Parse(parts[3]);
             var direction = parts[4];
             var positionSize = decimal.Parse(parts[5]);
-            return new GridLevelPair(entrySpread, exitSpread, direction, positionSize, (leg1Symbol, leg2Symbol));
+            return new GridLevelPair(entrySpread, exitSpread, direction, positionSize);
         }
 
         // Create ExecutionRecord helper
@@ -1546,7 +1543,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act
             var orderEvent1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1589,7 +1586,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act
             var orderEvent1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "reconnect_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1622,7 +1619,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Create first position
             var orderEvent1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair1, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1634,7 +1631,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             SetPortfolioHolding(_mstrSecurity.Symbol, -100m);
 
             // Act - Add second position
-            var levelPair2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m);
             var orderEvent3 = CreateOrderEvent(_btcSecurity.Symbol, 0.3m, 51000m, T0.AddMinutes(5), "exec_3", levelPair2, _btcSecurity.Symbol, _mstrSecurity.Symbol);
             manager.ProcessGridOrderEvent(orderEvent3);
             var orderEvent4 = CreateOrderEvent(_mstrSecurity.Symbol, -60m, 510m, T0.AddMinutes(5).AddSeconds(10), "exec_4", levelPair2, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1671,7 +1668,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var T2 = new DateTime(2024, 1, 1, 10, 3, 0, DateTimeKind.Utc); // OLDER than T0
             var T3 = new DateTime(2024, 1, 1, 10, 7, 0, DateTimeKind.Utc); // NEWER than T1
 
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act - Process fills in specific order to test timestamp update logic
             var btc1 = CreateOrderEvent(_btcSecurity.Symbol, 0.1m, 50000m, T0, "btc_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1715,7 +1712,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act - Process partial fills
             var partial1 = CreateOrderEvent(_btcSecurity.Symbol, 0.2m, 50000m, T0, "partial_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol, OrderStatus.PartiallyFilled);
@@ -1758,7 +1755,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Process live OrderEvent
             var liveEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "live_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1794,7 +1791,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act - Process two fills with same ExecutionId but different Symbols
             var btcEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "shared_id", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1820,7 +1817,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act - Process two events with null ExecutionId
             var event1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, null, levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -1848,7 +1845,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act
             var event1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -2042,7 +2039,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
             manager.InitializeBaseline(); // empty
@@ -2129,7 +2126,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSecurity.Symbol, _mstrSecurity.Symbol, levelPair);
 
             // Process live event
@@ -2168,7 +2165,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = CreateTradingPair(manager, _btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Process two OrderEvents
             var event1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
@@ -2221,7 +2218,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             manager.InitializeBaseline();
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var orderEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
             manager.ProcessGridOrderEvent(orderEvent);
 
@@ -2255,7 +2252,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             manager1.InitializeBaseline(); // baseline = 1 BTC, -100 MSTR
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var orderEvent = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair, _btcSecurity.Symbol, _mstrSecurity.Symbol);
             manager1.ProcessGridOrderEvent(orderEvent); // baseline = 1 BTC, -100 MSTR
 
@@ -2308,11 +2305,11 @@ namespace QuantConnect.Tests.Common.TradingPairs
             manager1.InitializeBaseline();
 
             var T0 = new DateTime(2024, 1, 1, 10, 0, 0, DateTimeKind.Utc);
-            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var orderEvent1 = CreateOrderEvent(_btcSecurity.Symbol, 0.5m, 50000m, T0, "exec_1", levelPair1, _btcSecurity.Symbol, _mstrSecurity.Symbol);
             manager1.ProcessGridOrderEvent(orderEvent1);
 
-            var levelPair2 = new GridLevelPair(-0.03m, 0.02m, "LONG_SPREAD", 0.30m, (_ethSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair2 = new GridLevelPair(-0.03m, 0.02m, "LONG_SPREAD", 0.30m);
             var orderEvent2 = CreateOrderEvent(_ethSecurity.Symbol, 2m, 3000m, T0.AddMinutes(1), "exec_2", levelPair2, _ethSecurity.Symbol, _mstrSecurity.Symbol);
             manager1.ProcessGridOrderEvent(orderEvent2);
 

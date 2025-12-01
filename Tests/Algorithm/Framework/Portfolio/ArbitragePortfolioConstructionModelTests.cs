@@ -134,8 +134,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - LONG_SPREAD: Leg1 Up, Leg2 Down
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             _algorithm.Insights.Add(insight);
@@ -158,8 +157,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - SHORT_SPREAD: Leg1 Down, Leg2 Up
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(0.02m, -0.01m, "SHORT_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(0.02m, -0.01m, "SHORT_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Down, levelPair);
             _algorithm.Insights.Add(insight);
@@ -182,8 +180,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - Exit signal (Flat direction)
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Flat, levelPair);
             _algorithm.Insights.Add(insight);
@@ -210,8 +207,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             _algorithm.Insights.Add(insight);
@@ -243,8 +239,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             // IMPORTANT: After refactoring, each insight uses its FULL PositionSizePct,
             // NOT divided by insight count
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
-            var level2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m, (_btcSymbol, _mstrSymbol));
+            var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
+            var level2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m);
 
             var insights = new[]
             {
@@ -278,8 +274,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - 2 insights with DIFFERENT PositionSizePct (30% vs 40%)
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.30m, (_btcSymbol, _mstrSymbol));
-            var level2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.40m, (_btcSymbol, _mstrSymbol));
+            var level1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.30m);
+            var level2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.40m);
 
             var insight1 = CreateInsight(_btcSymbol, InsightDirection.Up, level1);
             var insight2 = CreateInsight(_btcSymbol, InsightDirection.Up, level2);
@@ -316,8 +312,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
 
             // Test with 50% allocation
-            var levelPair50 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.50m,
-                                               (_btcSymbol, _mstrSymbol));
+            var levelPair50 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.50m);
             var insight50 = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair50);
             _algorithm.Insights.Add(insight50);
 
@@ -329,8 +324,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
             _algorithm.Insights.Remove(insight50);
 
             // Test with 25% allocation
-            var levelPair25 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                               (_btcSymbol, _mstrSymbol));
+            var levelPair25 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var insight25 = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair25);
             _algorithm.Insights.Add(insight25);
 
@@ -352,8 +346,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
 
             // Arrange
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 1.0m,  // 100% allocation
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 1.0m);  // 100% allocation
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             _algorithm.Insights.Add(insight);
@@ -384,8 +377,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - Create initial position first
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Simulate existing holdings in accounts
             _account1.Securities[_btcSymbol].Holdings.SetHoldings(50000m, 0.3m);  // Already hold 0.3 BTC
@@ -426,8 +418,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         public void Test_InvalidTag_SkipsTarget()
         {
             // Arrange - Create insight with invalid Tag
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = new GridInsight(
                 _btcSymbol,
@@ -452,8 +443,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             _algorithm.Insights.Add(insight);
@@ -474,8 +464,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - PositionSizePct = 0.35 (35%)
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.35m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.35m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             _algorithm.Insights.Add(insight);
@@ -505,8 +494,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - Create expired entry insight
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Up, levelPair);
             insight.CloseTimeUtc = _algorithm.UtcTime.AddHours(-1);  // Expired 1 hour ago
@@ -528,8 +516,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Portfolio
         {
             // Arrange - Create Exit signal (Direction=Flat)
             _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             var insight = CreateInsight(_btcSymbol, InsightDirection.Flat, levelPair);
             _algorithm.Insights.Add(insight);

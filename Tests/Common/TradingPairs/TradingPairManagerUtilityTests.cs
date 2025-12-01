@@ -42,8 +42,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
                 entrySpread,
                 exitSpread,
                 direction,
-                0.25m,
-                (_btcSymbol, _mstrSymbol)
+                0.25m
             );
         }
 

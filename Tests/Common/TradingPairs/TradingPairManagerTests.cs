@@ -230,7 +230,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = manager.AddPair(Symbols.SPY, Symbols.AAPL);
 
             // Create a grid level pair and position
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (Symbols.SPY, Symbols.AAPL));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = new GridPosition(pair, levelPair);
 
             // Set position quantities using reflection

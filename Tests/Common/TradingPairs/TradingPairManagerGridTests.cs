@@ -92,8 +92,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
                 entrySpread,
                 exitSpread,
                 direction,
-                0.25m,
-                (_btcSecurity.Symbol, _mstrSecurity.Symbol)
+                0.25m
             );
         }
 
@@ -347,7 +346,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Arrange
             var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
 
             // Act
             var position = new GridPosition(pair, levelPair);
@@ -365,7 +364,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             // Arrange
             var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = new GridPosition(pair, levelPair);
 
             // Act - Serialize and deserialize

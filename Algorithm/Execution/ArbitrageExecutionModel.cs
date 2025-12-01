@@ -83,9 +83,37 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <summary>
         /// Executes target using orderbook-aware matching.
         /// Validates spreads and respects market depth before placing orders.
+        ///
+        /// Execution priority (mirrors Python execution_manager.py::execute):
+        /// 1. Validate market open preconditions
+        /// 2. Single-leg sweep order detection (highest priority)
+        /// 3. Target filled check (lot size tolerance)
+        /// 4. Regular execution with orderbook matching
         /// </summary>
         private void ExecuteWithOrderbook(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
+            // === Step 1: Validate preconditions ===
+            if (!IsMarketOpen(algorithm, target))
+            {
+                return;
+            }
+
+            // === Step 2: Single-leg sweep order (highest priority) ===
+            if (ShouldSweepOrder(algorithm, target))
+            {
+                algorithm.Debug($"ArbitrageExecutionModel: Detected single-leg fill imbalance for {target.Tag}, executing sweep order");
+                SweepOrder(algorithm, target);
+                return;
+            }
+
+            // === Step 3: Target filled check ===
+            if (IsTargetFilled(algorithm, target))
+            {
+                return; // Already filled
+            }
+
+            // === Step 4: Regular execution with orderbook matching ===
+
             // Get spread parameters directly from Level (no parsing needed)
             var direction = target.Level.Direction == "LONG_SPREAD"
                 ? ArbitrageDirection.LongSpread
@@ -94,15 +122,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
 
             // Calculate remaining quantities to execute
             var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
-
-            // Check if already filled
-            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
-            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
-
-            if (Math.Abs(leg1Remaining) < lot1 && Math.Abs(leg2Remaining) < lot2)
-            {
-                return; // Already filled
-            }
 
             // Calculate target USD based on remaining quantity
             var security1 = algorithm.Securities[target.Leg1Symbol];
@@ -182,18 +201,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         private (decimal leg1Qty, decimal leg2Qty) GetCurrentQuantities(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            if (!(algorithm is Interfaces.AIAlgorithm aiAlgorithm))
-            {
-                return (0, 0);
-            }
-
-            if (!TradingPairs.TradingPairManager.TryDecodeGridTag(
+            if (!TradingPairManager.TryDecodeGridTag(
                 target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
             {
                 return (0, 0);
             }
 
-            if (!aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
+            if (!algorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
             {
                 return (0, 0);
             }
@@ -224,6 +238,132 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
+        /// Validates market open preconditions for both legs.
+        ///
+        /// Checks:
+        /// 1. Both markets are open (supports extended trading hours)
+        /// 2. Price data is valid (HasData and Price > 0)
+        ///
+        /// Mirrors Python execution_manager.py::_validate_preconditions
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="target">The arbitrage target</param>
+        /// <returns>True if validation passes, False otherwise</returns>
+        private bool IsMarketOpen(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            var leg1Security = algorithm.Securities[target.Leg1Symbol];
+            var leg2Security = algorithm.Securities[target.Leg2Symbol];
+
+            // Check if both markets are open
+            var leg1Open = leg1Security.Exchange.ExchangeOpen;
+            var leg2Open = leg2Security.Exchange.ExchangeOpen;
+
+            return leg1Open && leg2Open;
+        }
+
+        /// <summary>
+        /// Checks if target is already filled (within lot size tolerance).
+        ///
+        /// If remaining quantity is below minimum lot size for both legs,
+        /// consider the target as filled to avoid micro-trades.
+        ///
+        /// Mirrors Python execution_models.py::is_quantity_filled
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="target">The arbitrage target</param>
+        /// <returns>True if both legs are filled within lot size tolerance</returns>
+        private bool IsTargetFilled(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+
+            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
+            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
+
+            return Math.Abs(leg1Remaining) < lot1 && Math.Abs(leg2Remaining) < lot2;
+        }
+
+        /// <summary>
+        /// 触发场景是任意一腿的剩余市值小于`最小市值误差`
+        /// 最小市值误差 = max(两腿 LotSize * Price)
+        /// 意思是订单已经接近尾声了，但是还有部分订单没有成交，需要通过sweep order来补平
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="target">The arbitrage target</param>
+        /// <returns>True if sweep order should be triggered</returns>
+        private bool ShouldSweepOrder(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            // Precondition: Check if all orders are settled (no pending orders)
+            // We only trigger sweep when previous orders have completed to avoid race conditions
+            var (openOrders1, openOrders2) = GetOpenOrderQuantitiesForTag(algorithm, target);
+            if (openOrders1 != 0 || openOrders2 != 0)
+            {
+                return false; // Wait for pending orders to settle
+            }
+
+            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+
+            var leg1Security = algorithm.Securities[target.Leg1Symbol];
+            var leg2Security = algorithm.Securities[target.Leg2Symbol];
+
+            // Calculate remaining market values for both legs
+            var leg1RemainingMv = Math.Abs(leg1Remaining) * leg1Security.Price;
+            var leg2RemainingMv = Math.Abs(leg2Remaining) * leg2Security.Price;
+
+            // Calculate imbalance threshold as the larger of the two lot size market values
+            // This represents the minimum market value needed to form a balanced pair
+            var leg1LotMv = leg1Security.SymbolProperties.LotSize * leg1Security.Price;
+            var leg2LotMv = leg2Security.SymbolProperties.LotSize * leg2Security.Price;
+            var imbalanceThreshold = Math.Max(leg1LotMv, leg2LotMv);
+
+            // Trigger sweep if any leg's remaining MV falls below the threshold
+            // This indicates that leg cannot be paired anymore (too small to balance)
+            return leg1RemainingMv < imbalanceThreshold || leg2RemainingMv < imbalanceThreshold;
+        }
+
+        /// <summary>
+        /// Executes sweep order for the leg with remaining quantity.
+        ///
+        /// 一定要和 ShouldSweepOrder 配套使用，因为 SweepOrder 不管价差直接执行
+        /// ShouldSweepOrder 会限制整体剩余市值占比合理
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        /// <param name="target">The arbitrage target</param>
+        private void SweepOrder(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+
+            var leg1Security = algorithm.Securities[target.Leg1Symbol];
+            var leg2Security = algorithm.Securities[target.Leg2Symbol];
+
+            var lot1 = leg1Security.SymbolProperties.LotSize;
+            var lot2 = leg2Security.SymbolProperties.LotSize;
+
+            // Sweep leg1 if needed
+            if (leg1Remaining != 0)
+            {
+                var leg1Qty = OrderSizing.AdjustByLotSize(leg1Security, leg1Remaining);
+                if (Math.Abs(leg1Qty) >= lot1)
+                {
+                    algorithm.MarketOrder(target.Leg1Symbol, leg1Qty, Asynchronous, target.Tag);
+                    algorithm.Debug($"ArbitrageExecutionModel: Sweep order | {target.Leg1Symbol}={leg1Qty:F4} | " +
+                        $"Reason: {target.Leg2Symbol} filled | Tag={target.Tag}");
+                }
+            }
+
+            // Sweep leg2 if needed
+            if (leg2Remaining != 0)
+            {
+                var leg2Qty = OrderSizing.AdjustByLotSize(leg2Security, leg2Remaining);
+                if (Math.Abs(leg2Qty) >= lot2)
+                {
+                    algorithm.MarketOrder(target.Leg2Symbol, leg2Qty, Asynchronous, target.Tag);
+                    algorithm.Debug($"ArbitrageExecutionModel: Sweep order | {target.Leg2Symbol}={leg2Qty:F4} | " +
+                        $"Reason: {target.Leg1Symbol} filled | Tag={target.Tag}");
+                }
+            }
+        }
+
+        /// <summary>
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
         /// Allows the execution model to initialize or clean up resources for trading pairs.
         /// </summary>
@@ -244,32 +384,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
         {
             // No action needed for order events in default implementation
             // GridPosition is updated by AQCAlgorithm.OnOrderEvent
-        }
-    }
-
-    /// <summary>
-    /// Helper class for order sizing operations specific to arbitrage execution
-    /// </summary>
-    internal static class ArbitrageOrderSizing
-    {
-        /// <summary>
-        /// Adjusts a quantity to the nearest lot size
-        /// </summary>
-        /// <param name="security">The security</param>
-        /// <param name="quantity">The quantity to adjust</param>
-        /// <returns>Adjusted quantity</returns>
-        public static decimal AdjustByLotSize(Security security, decimal quantity)
-        {
-            var lotSize = security.SymbolProperties.LotSize;
-
-            if (lotSize == 0)
-            {
-                return quantity;
-            }
-
-            // Round to nearest lot size
-            var lots = Math.Round(quantity / lotSize, MidpointRounding.ToEven);
-            return lots * lotSize;
         }
     }
 }

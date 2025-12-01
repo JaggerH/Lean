@@ -68,8 +68,7 @@ namespace QuantConnect.TradingPairs
                 entrySpread,
                 exitSpread,
                 directionString,
-                positionSizePct,
-                (Leg1Symbol, Leg2Symbol)  // Pass trading pair symbols for validation
+                positionSizePct
             );
 
             LevelPairs.Add(levelPair);

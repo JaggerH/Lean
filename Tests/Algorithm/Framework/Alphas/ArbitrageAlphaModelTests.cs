@@ -99,8 +99,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             pair.AddLevelPair(levelPair);
 
             // Create invested position
@@ -159,8 +158,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             pair.AddLevelPair(levelPair);
 
             SetPrices(_btcSecurity, 40000m, 40100m);
@@ -217,8 +215,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             pair.AddLevelPair(levelPair);
 
             SetPrices(_btcSecurity, 40000m, 40100m);
@@ -321,8 +318,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             pair.AddLevelPair(levelPair);
 
             CreateInvestedPosition(pair, levelPair, 1.0m, -100m);
@@ -624,8 +620,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSymbol, _mstrSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             pair.AddLevelPair(levelPair);
 
             SetPrices(_btcSecurity, 40000m, 40100m);

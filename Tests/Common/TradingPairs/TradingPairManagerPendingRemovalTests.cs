@@ -196,8 +196,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
             // Assert - Should be able to add new positions
             Assert.IsFalse(pair.IsPendingRemoval);
-            var levelPair2 = new GridLevelPair(0.03m, -0.015m, "SHORT_SPREAD", 0.25m,
-                                               (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair2 = new GridLevelPair(0.03m, -0.015m, "SHORT_SPREAD", 0.25m);
 
             // Should not throw
             Assert.DoesNotThrow(() => pair.GetOrCreatePosition(levelPair2));
@@ -272,8 +271,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var manager = new TradingPairManager(_mockAlgorithm.Object);
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
 
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = new GridPosition(pair, levelPair);
             SetPositionQuantity(position, "Leg1Quantity", 1.0m);
             SetPositionQuantity(position, "Leg2Quantity", -100m);
@@ -304,10 +302,8 @@ namespace QuantConnect.Tests.Common.TradingPairs
             var pair = manager.AddPair(_btcSecurity.Symbol, _mstrSecurity.Symbol);
 
             // Add two positions
-            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                               (_btcSecurity.Symbol, _mstrSecurity.Symbol));
-            var levelPair2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m,
-                                               (_btcSecurity.Symbol, _mstrSecurity.Symbol));
+            var levelPair1 = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
+            var levelPair2 = new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.25m);
 
             var position1 = CreatePositionWithQuantity(pair, levelPair1, 1.0m, -100m);
             var position2 = CreatePositionWithQuantity(pair, levelPair2, 0.5m, -50m);
@@ -346,8 +342,7 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
         private void AddActivePosition(TradingPair pair, decimal leg1Qty, decimal leg2Qty)
         {
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m,
-                                              (pair.Leg1Symbol, pair.Leg2Symbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var position = new GridPosition(pair, levelPair);
             SetPositionQuantity(position, "Leg1Quantity", leg1Qty);
             SetPositionQuantity(position, "Leg2Quantity", leg2Qty);

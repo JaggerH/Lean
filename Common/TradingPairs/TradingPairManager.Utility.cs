@@ -102,8 +102,7 @@ namespace QuantConnect.TradingPairs
                     entrySpreadPct: entrySpread,
                     exitSpreadPct: exitSpread,
                     direction: direction,
-                    positionSizePct: positionSize,
-                    pairSymbol: (leg1Symbol, leg2Symbol));
+                    positionSizePct: positionSize);
 
                 return true;
             }

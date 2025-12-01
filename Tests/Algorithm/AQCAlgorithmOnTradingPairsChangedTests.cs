@@ -328,7 +328,7 @@ namespace QuantConnect.Tests.Algorithm
         public int OnTradingPairsChangedCallCount { get; private set; }
         public TradingPairChanges LastChanges { get; private set; }
 
-        public override void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public override void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
             OnTradingPairsChangedCallCount++;
             LastChanges = changes;

@@ -70,16 +70,14 @@ namespace QuantConnect.Tests.Common.TradingPairs
                 -0.02m,      // entrySpread (negative for LONG_SPREAD)
                 0.005m,      // exitSpread (positive)
                 "LONG_SPREAD",
-                0.25m,       // positionSizePct
-                (_btcSymbol, _mstrSymbol)
+                0.25m        // positionSizePct
             );
 
             _gridLevel2 = new GridLevelPair(
                 -0.03m,      // entrySpread (negative for LONG_SPREAD)
                 0.01m,       // exitSpread (positive)
                 "LONG_SPREAD",
-                0.25m,       // positionSizePct
-                (_btcSymbol, _mstrSymbol)
+                0.25m        // positionSizePct
             );
         }
 

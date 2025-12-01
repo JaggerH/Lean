@@ -80,7 +80,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Add trading pair for execution
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             _executionModel = new ArbitrageExecutionModel(
@@ -127,7 +127,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Add trading pair for execution
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             _executionModel = new ArbitrageExecutionModel(
@@ -176,7 +176,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Setup trading pair with GridLevelPair
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.2m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.2m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             _executionModel = new ArbitrageExecutionModel(
@@ -259,7 +259,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Setup trading pair requiring 2% spread
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.2m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.2m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             _executionModel = new ArbitrageExecutionModel(
@@ -293,7 +293,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             SetupPrices(_ethSymbol, 3000m, 3010m);
 
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.2m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.2m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             // Test with AutoDetect (should use SingleOrderbook)
@@ -326,7 +326,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.02m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             // This is internal, so we test indirectly via execution
@@ -357,7 +357,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
         {
             // Arrange
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(0.02m, 0.01m, "SHORT_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(0.02m, 0.01m, "SHORT_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             SetupPrices(_btcSymbol, 50000m, 50100m);
@@ -401,8 +401,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Add trading pair for execution
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair1 = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
-            var levelPair2 = new GridLevelPair(-0.02m, 0.015m, "LONG_SPREAD", 0.30m, (_btcSymbol, _ethSymbol));
+            var levelPair1 = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
+            var levelPair2 = new GridLevelPair(-0.02m, 0.015m, "LONG_SPREAD", 0.30m);
             var tag1 = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair1);
             var tag2 = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair2);
 
@@ -449,7 +449,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
             // Add trading pair for execution
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
-            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m, (_btcSymbol, _ethSymbol));
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
             var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
 
             _executionModel = new ArbitrageExecutionModel(
