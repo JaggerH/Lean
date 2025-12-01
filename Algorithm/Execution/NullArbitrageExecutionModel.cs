@@ -31,17 +31,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="targets">The arbitrage targets to execute</param>
-        public void Execute(IAlgorithm algorithm, IArbitragePortfolioTarget[] targets)
-        {
-            // No action needed
-        }
-
-        /// <summary>
-        /// Event fired when securities are added or removed from the algorithm
-        /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="changes">The security additions and removals</param>
-        public void OnSecuritiesChanged(IAlgorithm algorithm, SecurityChanges changes)
+        public void Execute(AQCAlgorithm algorithm, IArbitragePortfolioTarget[] targets)
         {
             // No action needed
         }
@@ -51,7 +41,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="orderEvent">The order event</param>
-        public void OnOrderEvent(IAlgorithm algorithm, OrderEvent orderEvent)
+        public void OnOrderEvent(AQCAlgorithm algorithm, OrderEvent orderEvent)
         {
             // No action needed
         }

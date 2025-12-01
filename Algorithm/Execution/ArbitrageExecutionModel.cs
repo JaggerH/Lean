@@ -62,7 +62,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="targets">The arbitrage targets to execute</param>
-        public void Execute(IAlgorithm algorithm, IArbitragePortfolioTarget[] targets)
+        public void Execute(AQCAlgorithm algorithm, IArbitragePortfolioTarget[] targets)
         {
             // Add new targets to collection (will overwrite existing targets with same Tag)
             _targetsCollection.AddRange(targets);
@@ -84,14 +84,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// Executes target using orderbook-aware matching.
         /// Validates spreads and respects market depth before placing orders.
         /// </summary>
-        private void ExecuteWithOrderbook(IAlgorithm algorithm, IArbitragePortfolioTarget target)
+        private void ExecuteWithOrderbook(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            var qcAlgorithm = algorithm as QCAlgorithm;
-            if (qcAlgorithm == null)
-            {
-                return;
-            }
-
             // Get spread parameters directly from Level (no parsing needed)
             var direction = target.Level.Direction == "LONG_SPREAD"
                 ? ArbitrageDirection.LongSpread
@@ -133,7 +127,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
             // Validate match result
             if (matchResult == null || !matchResult.Executable)
             {
-                qcAlgorithm.Debug($"ArbitrageExecutionModel: Orderbook matching rejected for {target.Tag}: {matchResult?.RejectReason ?? "null result"}");
+                algorithm.Debug($"ArbitrageExecutionModel: Orderbook matching rejected for {target.Tag}: {matchResult?.RejectReason ?? "null result"}");
                 return;
             }
 
@@ -144,29 +138,23 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <summary>
         /// Places orders based on orderbook match result
         /// </summary>
-        private void PlaceMatchedOrders(IAlgorithm algorithm, IArbitragePortfolioTarget target, MatchResult matchResult)
+        private void PlaceMatchedOrders(AQCAlgorithm algorithm, IArbitragePortfolioTarget target, MatchResult matchResult)
         {
-            var qcAlgorithm = algorithm as QCAlgorithm;
-            if (qcAlgorithm == null)
-            {
-                return;
-            }
-
             // Place leg1 order
             var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
             if (Math.Abs(matchResult.Symbol1Quantity) >= lot1)
             {
-                qcAlgorithm.MarketOrder(target.Leg1Symbol, matchResult.Symbol1Quantity, Asynchronous, target.Tag);
+                algorithm.MarketOrder(target.Leg1Symbol, matchResult.Symbol1Quantity, Asynchronous, target.Tag);
             }
 
             // Place leg2 order
             var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
             if (Math.Abs(matchResult.Symbol2Quantity) >= lot2)
             {
-                qcAlgorithm.MarketOrder(target.Leg2Symbol, matchResult.Symbol2Quantity, Asynchronous, target.Tag);
+                algorithm.MarketOrder(target.Leg2Symbol, matchResult.Symbol2Quantity, Asynchronous, target.Tag);
             }
 
-            qcAlgorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
+            algorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
                 $"{target.Leg1Symbol}={matchResult.Symbol1Quantity:F4} {target.Leg2Symbol}={matchResult.Symbol2Quantity:F4} | " +
                 $"spread={matchResult.AvgSpreadPct * 100:F2}% strategy={matchResult.UsedStrategy} tag={target.Tag}");
         }
@@ -174,15 +162,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <summary>
         /// Calculates remaining quantities for both legs
         /// </summary>
-        private (decimal leg1, decimal leg2) CalculateRemainingQuantities(IAlgorithm algorithm, IArbitragePortfolioTarget target)
+        private (decimal leg1, decimal leg2) CalculateRemainingQuantities(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            // Get current positions
-            var currentQty1 = GetCurrentQuantity(algorithm, target, isLeg1: true);
-            var currentQty2 = GetCurrentQuantity(algorithm, target, isLeg1: false);
+            // Get current positions for both legs
+            var (currentQty1, currentQty2) = GetCurrentQuantities(algorithm, target);
 
-            // Get open orders
-            var openOrders1 = GetOpenOrderQuantityForTag(algorithm, target.Leg1Symbol, target.Tag);
-            var openOrders2 = GetOpenOrderQuantityForTag(algorithm, target.Leg2Symbol, target.Tag);
+            // Get open orders for both legs
+            var (openOrders1, openOrders2) = GetOpenOrderQuantitiesForTag(algorithm, target);
 
             // Calculate remaining
             var remaining1 = target.Leg1Quantity - currentQty1 - openOrders1;
@@ -192,54 +178,49 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Gets current quantity for a leg from GridPosition
+        /// Gets current quantities for both legs from GridPosition
         /// </summary>
-        private decimal GetCurrentQuantity(IAlgorithm algorithm, IArbitragePortfolioTarget target, bool isLeg1)
+        private (decimal leg1Qty, decimal leg2Qty) GetCurrentQuantities(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
             if (!(algorithm is Interfaces.AIAlgorithm aiAlgorithm))
             {
-                return 0;
+                return (0, 0);
             }
 
             if (!TradingPairs.TradingPairManager.TryDecodeGridTag(
                 target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
             {
-                return 0;
+                return (0, 0);
             }
 
             if (!aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
             {
-                return 0;
+                return (0, 0);
             }
 
             var position = pair.GetOrCreatePosition(levelPair);
-            return isLeg1 ? position.Leg1Quantity : position.Leg2Quantity;
+            return (position.Leg1Quantity, position.Leg2Quantity);
         }
 
         /// <summary>
-        /// Gets the total open order quantity for a specific symbol and tag.
+        /// Gets the total open order quantities for both legs with matching tag.
         /// Only counts orders with matching Tag to support per-position tracking.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="symbol">The symbol to check</param>
-        /// <param name="tag">The tag to filter by</param>
-        /// <returns>Total open order quantity for this tag</returns>
-        protected virtual decimal GetOpenOrderQuantityForTag(IAlgorithm algorithm, Symbol symbol, string tag)
+        /// <param name="target">The arbitrage target with symbols and tag</param>
+        /// <returns>Tuple of (leg1 open quantity, leg2 open quantity)</returns>
+        protected virtual (decimal leg1Qty, decimal leg2Qty) GetOpenOrderQuantitiesForTag(
+            AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            // Use GetOpenOrderTickets to access QuantityRemaining
-            return algorithm.Transactions.GetOpenOrderTickets(symbol)
-                .Where(o => o.Tag == tag)
+            var leg1Qty = algorithm.Transactions.GetOpenOrderTickets(target.Leg1Symbol)
+                .Where(o => o.Tag == target.Tag)
                 .Sum(o => o.QuantityRemaining);
-        }
 
-        /// <summary>
-        /// Event fired when securities are added or removed from the algorithm
-        /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="changes">The security additions and removals</param>
-        public virtual void OnSecuritiesChanged(IAlgorithm algorithm, SecurityChanges changes)
-        {
-            // No action needed for securities changes in default implementation
+            var leg2Qty = algorithm.Transactions.GetOpenOrderTickets(target.Leg2Symbol)
+                .Where(o => o.Tag == target.Tag)
+                .Sum(o => o.QuantityRemaining);
+
+            return (leg1Qty, leg2Qty);
         }
 
         /// <summary>
@@ -248,7 +229,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The AI algorithm instance</param>
         /// <param name="changes">The trading pair additions and removals</param>
-        public virtual void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public virtual void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
             // For removed pairs: clean up any pending orders if needed
             // Default implementation is empty - derived classes can override
@@ -259,7 +240,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="orderEvent">The order event</param>
-        public virtual void OnOrderEvent(IAlgorithm algorithm, OrderEvent orderEvent)
+        public virtual void OnOrderEvent(AQCAlgorithm algorithm, OrderEvent orderEvent)
         {
             // No action needed for order events in default implementation
             // GridPosition is updated by AQCAlgorithm.OnOrderEvent

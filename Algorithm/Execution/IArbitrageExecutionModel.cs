@@ -33,20 +33,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="targets">The arbitrage targets to execute</param>
-        void Execute(IAlgorithm algorithm, IArbitragePortfolioTarget[] targets);
-
-        /// <summary>
-        /// Event fired when securities are added or removed from the algorithm
-        /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="changes">The security additions and removals</param>
-        void OnSecuritiesChanged(IAlgorithm algorithm, SecurityChanges changes);
+        void Execute(AQCAlgorithm algorithm, IArbitragePortfolioTarget[] targets);
 
         /// <summary>
         /// Event fired on order events (fills, partial fills, cancellations)
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="orderEvent">The order event</param>
-        void OnOrderEvent(IAlgorithm algorithm, OrderEvent orderEvent);
+        void OnOrderEvent(AQCAlgorithm algorithm, OrderEvent orderEvent);
     }
 }
