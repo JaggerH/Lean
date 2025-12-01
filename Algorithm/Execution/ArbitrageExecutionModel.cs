@@ -39,12 +39,21 @@ namespace QuantConnect.Algorithm.Framework.Execution
         protected bool Asynchronous { get; }
 
         /// <summary>
+        /// Gets the preferred matching strategy for orderbook execution
+        /// </summary>
+        protected MatchingStrategy PreferredStrategy { get; }
+
+        /// <summary>
         /// Creates a new ArbitrageExecutionModel
         /// </summary>
         /// <param name="asynchronous">True to submit orders asynchronously, false for synchronous</param>
-        public ArbitrageExecutionModel(bool asynchronous = true)
+        /// <param name="preferredStrategy">Preferred matching strategy (default: AutoDetect)</param>
+        public ArbitrageExecutionModel(
+            bool asynchronous = true,
+            MatchingStrategy preferredStrategy = MatchingStrategy.AutoDetect)
         {
             Asynchronous = asynchronous;
+            PreferredStrategy = preferredStrategy;
         }
 
         /// <summary>
@@ -60,12 +69,10 @@ namespace QuantConnect.Algorithm.Framework.Execution
 
             if (!_targetsCollection.IsEmpty)
             {
-                // Execute all targets
+                // Execute all targets using orderbook-aware matching
                 foreach (var target in _targetsCollection.GetTargets())
                 {
-                    // Execute both legs
-                    ExecuteLeg(algorithm, target, isLeg1: true);
-                    ExecuteLeg(algorithm, target, isLeg1: false);
+                    ExecuteWithOrderbook(algorithm, target);
                 }
 
                 // Clear fulfilled targets
@@ -74,69 +81,183 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Executes a single leg of an arbitrage target
+        /// Executes target using orderbook-aware matching.
+        /// Validates spreads and respects market depth before placing orders.
         /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="target">The arbitrage target</param>
-        /// <param name="isLeg1">True to execute leg1, false to execute leg2</param>
-        protected virtual void ExecuteLeg(IAlgorithm algorithm, IArbitragePortfolioTarget target, bool isLeg1)
+        private void ExecuteWithOrderbook(IAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            // Cast to QCAlgorithm for order placement
-            if (!(algorithm is QCAlgorithm qcAlgorithm))
+            var qcAlgorithm = algorithm as QCAlgorithm;
+            if (qcAlgorithm == null)
             {
                 return;
             }
 
-            var symbol = isLeg1 ? target.Leg1Symbol : target.Leg2Symbol;
-            var targetDelta = isLeg1 ? target.Leg1Quantity : target.Leg2Quantity;
-
-            // Get GridPosition from Tag
-            decimal currentQty = 0;
-            if (algorithm is Interfaces.AIAlgorithm aiAlgorithm)
+            // Parse spread parameters from Tag
+            if (!TryParseSpreadParameters(target.Tag, out var direction, out var expectedSpreadPct))
             {
+                qcAlgorithm.Error($"ArbitrageExecutionModel: Failed to parse spread parameters from tag: {target.Tag}, rejecting execution");
+                return;
+            }
+
+            // Calculate remaining quantities to execute
+            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+
+            // Check if already filled
+            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
+            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
+
+            if (Math.Abs(leg1Remaining) < lot1 && Math.Abs(leg2Remaining) < lot2)
+            {
+                return; // Already filled
+            }
+
+            // Calculate target USD based on remaining quantity
+            var security1 = algorithm.Securities[target.Leg1Symbol];
+            var targetUsd = Math.Abs(leg1Remaining) * security1.Price;
+
+            if (targetUsd <= 0)
+            {
+                return;
+            }
+
+            // Use OrderbookMatcher to calculate executable quantities
+            var matchResult = OrderbookMatcher.MatchPair(
+                algorithm,
+                target.Leg1Symbol,
+                target.Leg2Symbol,
+                targetUsd,
+                direction,
+                expectedSpreadPct,
+                PreferredStrategy
+            );
+
+            // Validate match result
+            if (matchResult == null || !matchResult.Executable)
+            {
+                qcAlgorithm.Debug($"ArbitrageExecutionModel: Orderbook matching rejected for {target.Tag}: {matchResult?.RejectReason ?? "null result"}");
+                return;
+            }
+
+            // Place orders for both legs using matched quantities
+            PlaceMatchedOrders(algorithm, target, matchResult);
+        }
+
+        /// <summary>
+        /// Places orders based on orderbook match result
+        /// </summary>
+        private void PlaceMatchedOrders(IAlgorithm algorithm, IArbitragePortfolioTarget target, MatchResult matchResult)
+        {
+            var qcAlgorithm = algorithm as QCAlgorithm;
+            if (qcAlgorithm == null)
+            {
+                return;
+            }
+
+            // Place leg1 order
+            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
+            if (Math.Abs(matchResult.Symbol1Quantity) >= lot1)
+            {
+                qcAlgorithm.MarketOrder(target.Leg1Symbol, matchResult.Symbol1Quantity, Asynchronous, target.Tag);
+            }
+
+            // Place leg2 order
+            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
+            if (Math.Abs(matchResult.Symbol2Quantity) >= lot2)
+            {
+                qcAlgorithm.MarketOrder(target.Leg2Symbol, matchResult.Symbol2Quantity, Asynchronous, target.Tag);
+            }
+
+            qcAlgorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
+                $"{target.Leg1Symbol}={matchResult.Symbol1Quantity:F4} {target.Leg2Symbol}={matchResult.Symbol2Quantity:F4} | " +
+                $"spread={matchResult.AvgSpreadPct * 100:F2}% strategy={matchResult.UsedStrategy} tag={target.Tag}");
+        }
+
+        /// <summary>
+        /// Parses spread parameters from Tag
+        /// </summary>
+        private bool TryParseSpreadParameters(string tag, out ArbitrageDirection direction, out decimal expectedSpreadPct)
+        {
+            try
+            {
+                // Try TradingPairManager decoding first (GridLevel format)
                 if (TradingPairs.TradingPairManager.TryDecodeGridTag(
-                    target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
+                    tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
                 {
-                    if (aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
-                    {
-                        var position = pair.GetOrCreatePosition(levelPair);
-                        currentQty = isLeg1 ? position.Leg1Quantity : position.Leg2Quantity;
-                    }
+                    direction = levelPair.Entry.Direction == "LONG_SPREAD"
+                        ? ArbitrageDirection.LongSpread
+                        : ArbitrageDirection.ShortSpread;
+
+                    expectedSpreadPct = levelPair.Entry.SpreadPct; // Already in decimal format
+                    return true;
                 }
-            }
 
-            // Check if security exists
-            if (!algorithm.Securities.ContainsKey(symbol))
+                // Fallback: try direct parsing (if Tag format is "Symbol1|Symbol2|EntrySpread|...")
+                var parts = tag.Split('|');
+                if (parts.Length >= 5)
+                {
+                    direction = parts[4].Contains("LONG")
+                        ? ArbitrageDirection.LongSpread
+                        : ArbitrageDirection.ShortSpread;
+
+                    expectedSpreadPct = decimal.Parse(parts[2]) / 100m;
+                    return true;
+                }
+
+                direction = ArbitrageDirection.LongSpread;
+                expectedSpreadPct = 0;
+                return false;
+            }
+            catch
             {
-                qcAlgorithm.Error($"ArbitrageExecutionModel.ExecuteLeg: Security {symbol} not found");
-                return;
+                direction = ArbitrageDirection.LongSpread;
+                expectedSpreadPct = 0;
+                return false;
             }
+        }
 
-            var security = algorithm.Securities[symbol];
+        /// <summary>
+        /// Calculates remaining quantities for both legs
+        /// </summary>
+        private (decimal leg1, decimal leg2) CalculateRemainingQuantities(IAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            // Get current positions
+            var currentQty1 = GetCurrentQuantity(algorithm, target, isLeg1: true);
+            var currentQty2 = GetCurrentQuantity(algorithm, target, isLeg1: false);
 
-            // Calculate unordered quantity
-            // Simplified: assume initial position = 0
-            var alreadyTraded = currentQty;
+            // Get open orders
+            var openOrders1 = GetOpenOrderQuantityForTag(algorithm, target.Leg1Symbol, target.Tag);
+            var openOrders2 = GetOpenOrderQuantityForTag(algorithm, target.Leg2Symbol, target.Tag);
 
-            // Only count open orders with same Tag to avoid cross-contamination
-            var openOrdersQty = GetOpenOrderQuantityForTag(algorithm, symbol, target.Tag);
+            // Calculate remaining
+            var remaining1 = target.Leg1Quantity - currentQty1 - openOrders1;
+            var remaining2 = target.Leg2Quantity - currentQty2 - openOrders2;
 
-            var unorderedQty = targetDelta - alreadyTraded - openOrdersQty;
+            return (remaining1, remaining2);
+        }
 
-            // Adjust to lot size
-            unorderedQty = ArbitrageOrderSizing.AdjustByLotSize(security, unorderedQty);
-
-            // Check if we need to place an order
-            if (Math.Abs(unorderedQty) < security.SymbolProperties.LotSize)
+        /// <summary>
+        /// Gets current quantity for a leg from GridPosition
+        /// </summary>
+        private decimal GetCurrentQuantity(IAlgorithm algorithm, IArbitragePortfolioTarget target, bool isLeg1)
+        {
+            if (!(algorithm is Interfaces.AIAlgorithm aiAlgorithm))
             {
-                return;
+                return 0;
             }
 
-            // Submit market order with Tag for tracking
-            qcAlgorithm.MarketOrder(security, unorderedQty, Asynchronous, target.Tag);
+            if (!TradingPairs.TradingPairManager.TryDecodeGridTag(
+                target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
+            {
+                return 0;
+            }
 
-            qcAlgorithm.Debug($"ArbitrageExecutionModel: Placed order for {symbol} " +
-                          $"quantity={unorderedQty:F2} tag={target.Tag}");
+            if (!aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
+            {
+                return 0;
+            }
+
+            var position = pair.GetOrCreatePosition(levelPair);
+            return isLeg1 ? position.Leg1Quantity : position.Leg2Quantity;
         }
 
         /// <summary>
