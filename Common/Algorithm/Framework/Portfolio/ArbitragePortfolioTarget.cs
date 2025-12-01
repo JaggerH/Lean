@@ -14,7 +14,7 @@
 */
 
 using System;
-using QuantConnect.TradingPairs;
+using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.Algorithm.Framework.Portfolio
 {
@@ -24,9 +24,6 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
     /// ExecutionModel calculates deltas by comparing target quantities with current holdings.
     /// This class does NOT implement IPortfolioTarget as it has different semantics
     /// specific to arbitrage trading with paired legs.
-    ///
-    /// Uses Tag as the unique identifier - GridPosition can be retrieved from Tag
-    /// using TradingPairManager.TryDecodeGridTag(), so no direct reference is needed.
     /// </summary>
     public class ArbitragePortfolioTarget : IArbitragePortfolioTarget
     {
@@ -53,6 +50,12 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         public decimal Leg2Quantity { get; }
 
         /// <summary>
+        /// Grid level containing spread and direction information for this execution.
+        /// Eliminates need for Tag parsing in execution model.
+        /// </summary>
+        public GridLevel Level { get; }
+
+        /// <summary>
         /// Tag for tracking back to GridPosition.
         /// Format: "{Symbol1.ID}|{Symbol2.ID}|{EntrySpread}|{ExitSpread}|{Direction}|{PositionSize}"
         /// Use TradingPairManager.TryDecodeGridTag() to retrieve GridPosition from this Tag.
@@ -66,18 +69,21 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// <param name="leg2Symbol">Second leg symbol</param>
         /// <param name="leg1Quantity">Target quantity for leg1 (absolute position target)</param>
         /// <param name="leg2Quantity">Target quantity for leg2 (absolute position target)</param>
+        /// <param name="level">Grid level with spread and direction information</param>
         /// <param name="tag">Tag identifying the grid position</param>
         public ArbitragePortfolioTarget(
             Symbol leg1Symbol,
             Symbol leg2Symbol,
             decimal leg1Quantity,
             decimal leg2Quantity,
+            GridLevel level,
             string tag)
         {
             Leg1Symbol = leg1Symbol ?? throw new ArgumentNullException(nameof(leg1Symbol));
             Leg2Symbol = leg2Symbol ?? throw new ArgumentNullException(nameof(leg2Symbol));
             Leg1Quantity = leg1Quantity;
             Leg2Quantity = leg2Quantity;
+            Level = level;
             Tag = tag ?? throw new ArgumentNullException(nameof(tag));
         }
 

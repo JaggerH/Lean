@@ -92,12 +92,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 return;
             }
 
-            // Parse spread parameters from Tag
-            if (!TryParseSpreadParameters(target.Tag, out var direction, out var expectedSpreadPct))
-            {
-                qcAlgorithm.Error($"ArbitrageExecutionModel: Failed to parse spread parameters from tag: {target.Tag}, rejecting execution");
-                return;
-            }
+            // Get spread parameters directly from Level (no parsing needed)
+            var direction = target.Level.Direction == "LONG_SPREAD"
+                ? ArbitrageDirection.LongSpread
+                : ArbitrageDirection.ShortSpread;
+            var expectedSpreadPct = target.Level.SpreadPct;
 
             // Calculate remaining quantities to execute
             var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
@@ -170,49 +169,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
             qcAlgorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
                 $"{target.Leg1Symbol}={matchResult.Symbol1Quantity:F4} {target.Leg2Symbol}={matchResult.Symbol2Quantity:F4} | " +
                 $"spread={matchResult.AvgSpreadPct * 100:F2}% strategy={matchResult.UsedStrategy} tag={target.Tag}");
-        }
-
-        /// <summary>
-        /// Parses spread parameters from Tag
-        /// </summary>
-        private bool TryParseSpreadParameters(string tag, out ArbitrageDirection direction, out decimal expectedSpreadPct)
-        {
-            try
-            {
-                // Try TradingPairManager decoding first (GridLevel format)
-                if (TradingPairs.TradingPairManager.TryDecodeGridTag(
-                    tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
-                {
-                    direction = levelPair.Entry.Direction == "LONG_SPREAD"
-                        ? ArbitrageDirection.LongSpread
-                        : ArbitrageDirection.ShortSpread;
-
-                    expectedSpreadPct = levelPair.Entry.SpreadPct; // Already in decimal format
-                    return true;
-                }
-
-                // Fallback: try direct parsing (if Tag format is "Symbol1|Symbol2|EntrySpread|...")
-                var parts = tag.Split('|');
-                if (parts.Length >= 5)
-                {
-                    direction = parts[4].Contains("LONG")
-                        ? ArbitrageDirection.LongSpread
-                        : ArbitrageDirection.ShortSpread;
-
-                    expectedSpreadPct = decimal.Parse(parts[2]) / 100m;
-                    return true;
-                }
-
-                direction = ArbitrageDirection.LongSpread;
-                expectedSpreadPct = 0;
-                return false;
-            }
-            catch
-            {
-                direction = ArbitrageDirection.LongSpread;
-                expectedSpreadPct = 0;
-                return false;
-            }
         }
 
         /// <summary>

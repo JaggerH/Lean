@@ -183,8 +183,11 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                     continue;
                 }
 
-                // Calculate target percent from grid configuration (NOT divided by insight count)
-                var targetPercent = levelPair.Entry.PositionSizePct;
+                // Get GridLevel from insight (GridInsight carries Level property)
+                var level = ((GridInsight)insight).Level;
+
+                // Calculate target percent from GridLevel (NOT divided by insight count)
+                var targetPercent = level.PositionSizePct;
 
                 // Apply direction
                 if (insight.Direction == InsightDirection.Down)
@@ -199,6 +202,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                         leg2Symbol,
                         0,  // Target quantity = 0 (close position)
                         0,
+                        level,
                         insight.Tag));
                     continue;
                 }
@@ -219,6 +223,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                     leg2Symbol,
                     pairTargets.Value.leg1Qty,  // Absolute target quantity
                     pairTargets.Value.leg2Qty,  // Absolute target quantity
+                    level,
                     insight.Tag);
 
                 targets.Add(target);

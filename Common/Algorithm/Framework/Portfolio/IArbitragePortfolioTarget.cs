@@ -13,6 +13,8 @@
  * limitations under the License.
 */
 
+using QuantConnect.TradingPairs.Grid;
+
 namespace QuantConnect.Algorithm.Framework.Portfolio
 {
     /// <summary>
@@ -40,6 +42,12 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// Delta quantity for the second leg (amount to trade, not absolute target)
         /// </summary>
         decimal Leg2Quantity { get; }
+
+        /// <summary>
+        /// Grid level containing spread and direction information for this execution.
+        /// Eliminates need for Tag parsing in execution model.
+        /// </summary>
+        GridLevel Level { get; }
 
         /// <summary>
         /// Tag for tracking this specific grid position.
