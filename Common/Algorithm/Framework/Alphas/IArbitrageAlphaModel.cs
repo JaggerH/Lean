@@ -33,14 +33,14 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <param name="algorithm">The AI algorithm instance (provides access to TradingPairs)</param>
         /// <param name="data">The new data available</param>
         /// <returns>The new arbitrage insights generated</returns>
-        IEnumerable<ArbitrageInsight> Update(AIAlgorithm algorithm, Slice data);
+        // IEnumerable<ArbitrageInsight> Update(AIAlgorithm algorithm, Slice data);
 
         /// <summary>
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
         /// This allows the alpha model to initialize or clean up resources for trading pairs.
         /// </summary>
-        /// <param name="algorithm">The AI algorithm instance</param>
+        /// <param name="algorithm">The algorithm instance</param>
         /// <param name="changes">The trading pair additions and removals</param>
-        void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes);
+        void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes);
     }
 }

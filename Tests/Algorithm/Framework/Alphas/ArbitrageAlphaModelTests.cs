@@ -653,6 +653,295 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
         #endregion
 
+        #region Category 9: Auto-Configuration - Default Templates
+
+        [Test]
+        public void Test_AutoConfig_CryptoStock_CreatesCorrectLevels()
+        {
+            // Arrange - Create AlphaModel with default templates
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with "crypto_stock" type
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
+
+            // Manually trigger OnTradingPairsChanged (framework would do this automatically)
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should have 2 grid levels (LONG_SPREAD + SHORT_SPREAD)
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(2, levelPairs.Count, "crypto_stock should auto-configure 2 grid levels");
+
+            // Verify LONG_SPREAD level
+            var longLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "LONG_SPREAD");
+            Assert.IsNotNull(longLevel, "Should have LONG_SPREAD level");
+            Assert.AreEqual(-0.02m, longLevel.Entry.SpreadPct, "LONG_SPREAD entry should be -2%");
+            Assert.AreEqual(0.01m, longLevel.Exit.SpreadPct, "LONG_SPREAD exit should be +1%");
+            Assert.AreEqual(0.5m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 50%");
+
+            // Verify SHORT_SPREAD level
+            var shortLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "SHORT_SPREAD");
+            Assert.IsNotNull(shortLevel, "Should have SHORT_SPREAD level");
+            Assert.AreEqual(0.03m, shortLevel.Entry.SpreadPct, "SHORT_SPREAD entry should be +3%");
+            Assert.AreEqual(-0.005m, shortLevel.Exit.SpreadPct, "SHORT_SPREAD exit should be -0.5%");
+            Assert.AreEqual(0.5m, shortLevel.Entry.PositionSizePct, "SHORT_SPREAD size should be 50%");
+        }
+
+        [Test]
+        public void Test_AutoConfig_SpotFuture_CreatesCorrectLevels()
+        {
+            // Arrange - Create AlphaModel with default templates
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with "spot_future" type
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "spot_future");
+
+            // Manually trigger OnTradingPairsChanged
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should have 2 grid levels (LONG_SPREAD + SHORT_SPREAD)
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(2, levelPairs.Count, "spot_future should auto-configure 2 grid levels");
+
+            // Verify LONG_SPREAD level
+            var longLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "LONG_SPREAD");
+            Assert.IsNotNull(longLevel, "Should have LONG_SPREAD level");
+            Assert.AreEqual(-0.015m, longLevel.Entry.SpreadPct, "LONG_SPREAD entry should be -1.5%");
+            Assert.AreEqual(0.008m, longLevel.Exit.SpreadPct, "LONG_SPREAD exit should be +0.8%");
+            Assert.AreEqual(0.3m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 30%");
+
+            // Verify SHORT_SPREAD level
+            var shortLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "SHORT_SPREAD");
+            Assert.IsNotNull(shortLevel, "Should have SHORT_SPREAD level");
+            Assert.AreEqual(0.025m, shortLevel.Entry.SpreadPct, "SHORT_SPREAD entry should be +2.5%");
+            Assert.AreEqual(-0.008m, shortLevel.Exit.SpreadPct, "SHORT_SPREAD exit should be -0.8%");
+            Assert.AreEqual(0.3m, shortLevel.Entry.PositionSizePct, "SHORT_SPREAD size should be 30%");
+        }
+
+        [Test]
+        public void Test_AutoConfig_SpreadType_NoAutoConfiguration()
+        {
+            // Arrange - Create AlphaModel with default templates
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with "spread" type (no template available)
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "spread");
+
+            // Manually trigger OnTradingPairsChanged
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should have 0 grid levels (no auto-configuration for "spread" type)
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(0, levelPairs.Count,
+                "spread type should NOT auto-configure (requires manual setup)");
+        }
+
+        [Test]
+        public void Test_AutoConfig_UnknownType_NoAutoConfiguration()
+        {
+            // Arrange - Create AlphaModel with default templates
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with unknown type
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "unknown_type");
+
+            // Manually trigger OnTradingPairsChanged
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should have 0 grid levels (no template for unknown type)
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(0, levelPairs.Count,
+                "Unknown pairType should not auto-configure");
+        }
+
+        #endregion
+
+        #region Category 10: Auto-Configuration - Custom Templates
+
+        [Test]
+        public void Test_AutoConfig_CustomTemplate_OverridesDefault()
+        {
+            // Arrange - Create custom template for crypto_stock with different parameters
+            var customTemplates = new Dictionary<string, List<Func<GridLevelPair>>>
+            {
+                ["crypto_stock"] = new List<Func<GridLevelPair>>
+                {
+                    // Single LONG_SPREAD level with custom parameters
+                    () => new GridLevelPair(-0.05m, 0.02m, "LONG_SPREAD", 0.75m)
+                }
+            };
+
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true,
+                gridTemplates: customTemplates);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with "crypto_stock" type
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
+
+            // Manually trigger OnTradingPairsChanged
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should use custom template (1 level instead of 2)
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(1, levelPairs.Count,
+                "Custom template should override default (1 level instead of 2)");
+
+            // Verify custom parameters
+            var level = levelPairs[0];
+            Assert.AreEqual(-0.05m, level.Entry.SpreadPct, "Should use custom entry level");
+            Assert.AreEqual(0.02m, level.Exit.SpreadPct, "Should use custom exit level");
+            Assert.AreEqual(0.75m, level.Entry.PositionSizePct, "Should use custom position size");
+        }
+
+        [Test]
+        public void Test_AutoConfig_CustomTemplate_NewPairType()
+        {
+            // Arrange - Create custom template for new pair type "crypto_crypto"
+            var customTemplates = new Dictionary<string, List<Func<GridLevelPair>>>
+            {
+                ["crypto_crypto"] = new List<Func<GridLevelPair>>
+                {
+                    () => new GridLevelPair(-0.01m, 0.005m, "LONG_SPREAD", 0.4m),
+                    () => new GridLevelPair(0.01m, -0.005m, "SHORT_SPREAD", 0.4m)
+                }
+            };
+
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true,
+                gridTemplates: customTemplates);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Act - Add pair with custom "crypto_crypto" type
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_crypto");
+
+            // Manually trigger OnTradingPairsChanged
+            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
+
+            // Assert - Should auto-configure using custom template
+            var levelPairs = pair.LevelPairs.ToList();
+            Assert.AreEqual(2, levelPairs.Count,
+                "Custom crypto_crypto type should auto-configure 2 levels");
+
+            var longLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "LONG_SPREAD");
+            Assert.IsNotNull(longLevel, "Should have LONG_SPREAD level");
+            Assert.AreEqual(-0.01m, longLevel.Entry.SpreadPct);
+            Assert.AreEqual(0.4m, longLevel.Entry.PositionSizePct);
+        }
+
+        [Test]
+        public void Test_AutoConfig_FactoryFunction_CreatesNewInstances()
+        {
+            // Arrange - Verify that factory functions create new GridLevelPair instances
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true);
+            _algorithm.SetAlpha(_alphaModel);
+
+            var ethSymbol = Symbol.Create("ETHUSD", SecurityType.Crypto, Market.Coinbase);
+            _algorithm.AddSecurity(ethSymbol);
+
+            // Act - Add two pairs with same type
+            var pair1 = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
+            var pair2 = _algorithm.TradingPairs.AddPair(ethSymbol, _mstrSymbol, "crypto_stock");
+
+            // Manually trigger OnTradingPairsChanged for both pairs
+            var changes1 = new TradingPairChanges(new[] { pair1 }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes1);
+            var changes2 = new TradingPairChanges(new[] { pair2 }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes2);
+
+            // Assert - Each pair should have its own GridLevelPair instances
+            var pair1Levels = pair1.LevelPairs.ToList();
+            var pair2Levels = pair2.LevelPairs.ToList();
+
+            Assert.AreEqual(2, pair1Levels.Count);
+            Assert.AreEqual(2, pair2Levels.Count);
+
+            // Verify they are different instances (not shared references)
+            Assert.AreNotSame(pair1Levels[0], pair2Levels[0],
+                "Factory should create new instances, not share references");
+            Assert.AreNotSame(pair1Levels[1], pair2Levels[1],
+                "Factory should create new instances, not share references");
+        }
+
+        [Test]
+        public void Test_AutoConfig_PartialOverride_MergesWithDefaults()
+        {
+            // Arrange - Override only crypto_stock, keep spot_future default
+            var customTemplates = new Dictionary<string, List<Func<GridLevelPair>>>
+            {
+                ["crypto_stock"] = new List<Func<GridLevelPair>>
+                {
+                    () => new GridLevelPair(-0.03m, 0.015m, "LONG_SPREAD", 0.6m)
+                }
+            };
+
+            _alphaModel = new ArbitrageAlphaModel(
+                insightPeriod: TimeSpan.FromMinutes(5),
+                confidence: 1.0,
+                requireValidPrices: true,
+                gridTemplates: customTemplates);
+            _algorithm.SetAlpha(_alphaModel);
+
+            // Use ETH for the second pair (BTCUSD_SPOT doesn't exist in test DB)
+            var ethSymbol = Symbol.Create("ETHUSD", SecurityType.Crypto, Market.Coinbase);
+            _algorithm.AddSecurity(ethSymbol);
+
+            // Act - Add both crypto_stock and spot_future pairs
+            var cryptoStockPair = _algorithm.TradingPairs.AddPair(
+                _btcSymbol, _mstrSymbol, "crypto_stock");
+            var spotFuturePair = _algorithm.TradingPairs.AddPair(
+                ethSymbol, _mstrSymbol, "spot_future");
+
+            // Manually trigger OnTradingPairsChanged for both pairs
+            var changes1 = new TradingPairChanges(new[] { cryptoStockPair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes1);
+            var changes2 = new TradingPairChanges(new[] { spotFuturePair }, new TradingPair[0]);
+            _alphaModel.OnTradingPairsChanged(_algorithm, changes2);
+
+            // Assert - crypto_stock should use custom template
+            var cryptoStockLevels = cryptoStockPair.LevelPairs.ToList();
+            Assert.AreEqual(1, cryptoStockLevels.Count,
+                "crypto_stock should use custom template (1 level)");
+            Assert.AreEqual(-0.03m, cryptoStockLevels[0].Entry.SpreadPct);
+
+            // Assert - spot_future should use default template
+            var spotFutureLevels = spotFuturePair.LevelPairs.ToList();
+            Assert.AreEqual(2, spotFutureLevels.Count,
+                "spot_future should use default template (2 levels)");
+            Assert.IsTrue(spotFutureLevels.Any(lp =>
+                lp.Entry.SpreadPct == -0.015m), "Should have default -1.5% entry level");
+        }
+
+        #endregion
+
         #region Helper Methods
 
         /// <summary>

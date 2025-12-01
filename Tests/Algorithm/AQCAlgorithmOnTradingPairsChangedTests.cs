@@ -257,16 +257,16 @@ namespace QuantConnect.Tests.Algorithm
         public int OnTradingPairsChangedCallCount { get; set; }
         public TradingPairChanges LastChanges { get; private set; }
 
-        public void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
             OnTradingPairsChangedCallCount++;
             LastChanges = changes;
         }
 
-        IEnumerable<ArbitrageInsight> IArbitrageAlphaModel.Update(AIAlgorithm algorithm, Slice data)
-        {
-            return new ArbitrageInsight[0];
-        }
+        // IEnumerable<ArbitrageInsight> IArbitrageAlphaModel.Update(AIAlgorithm algorithm, Slice data)
+        // {
+        //     return new ArbitrageInsight[0];
+        // }
 
         public override IEnumerable<Insight> Update(QCAlgorithm algorithm, Slice data)
         {
@@ -306,7 +306,7 @@ namespace QuantConnect.Tests.Algorithm
         public int OnTradingPairsChangedCallCount { get; private set; }
         public TradingPairChanges LastChanges { get; private set; }
 
-        public override void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public override void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
             OnTradingPairsChangedCallCount++;
             LastChanges = changes;

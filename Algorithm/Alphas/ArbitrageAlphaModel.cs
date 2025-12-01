@@ -37,7 +37,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
     /// - LONG_SPREAD: Long crypto (Up), short stock (Down)
     /// - SHORT_SPREAD: Short crypto (Down), long stock (Up)
     /// </summary>
-    public partial class ArbitrageAlphaModel : AlphaModel
+    public partial class ArbitrageAlphaModel : AlphaModel, IArbitrageAlphaModel
     {
         /// <summary>
         /// How long each generated insight remains valid
@@ -55,15 +55,24 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private readonly bool _requireValidPrices;
 
         /// <summary>
+        /// Grid level templates for auto-configuration by pair type.
+        /// Key: pairType (e.g., "crypto_stock", "spot_future")
+        /// Value: Factory functions that create GridLevelPair instances
+        /// </summary>
+        private readonly Dictionary<string, List<Func<GridLevelPair>>> _gridTemplates;
+
+        /// <summary>
         /// Creates a new ArbitrageAlphaModel with the specified configuration.
         /// </summary>
         /// <param name="insightPeriod">How long insights remain valid (default: 5 minutes)</param>
         /// <param name="confidence">Confidence level for insights, 0-1 (default: 1.0)</param>
         /// <param name="requireValidPrices">Whether to require valid prices before generating signals (default: true)</param>
+        /// <param name="gridTemplates">Optional custom grid templates by pair type. Merges with or overrides default templates.</param>
         public ArbitrageAlphaModel(
             TimeSpan? insightPeriod = null,
             double confidence = 1.0,
-            bool requireValidPrices = true)
+            bool requireValidPrices = true,
+            Dictionary<string, List<Func<GridLevelPair>>> gridTemplates = null)
         {
             _insightPeriod = insightPeriod ?? TimeSpan.FromMinutes(5);
             _confidence = confidence;
@@ -73,6 +82,18 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             {
                 throw new ArgumentOutOfRangeException(nameof(confidence),
                     "Confidence must be between 0 and 1");
+            }
+
+            // Initialize with default templates
+            _gridTemplates = CreateDefaultTemplates();
+
+            // Merge/override with user-provided templates
+            if (gridTemplates != null)
+            {
+                foreach (var kvp in gridTemplates)
+                {
+                    _gridTemplates[kvp.Key] = kvp.Value;
+                }
             }
 
             Name = nameof(ArbitrageAlphaModel);
@@ -328,17 +349,89 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             return duplicates.Count == 0;
         }
 
-        
+        /// <summary>
+        /// Creates default grid level templates for common pair types.
+        /// These templates can be overridden by passing custom templates to the constructor.
+        /// </summary>
+        /// <returns>Dictionary of default grid templates by pair type</returns>
+        private Dictionary<string, List<Func<GridLevelPair>>> CreateDefaultTemplates()
+        {
+            return new Dictionary<string, List<Func<GridLevelPair>>>
+            {
+                // crypto_stock: Cryptocurrency vs Stock pairs
+                // Typical for tokenized stock arbitrage
+                ["crypto_stock"] = new List<Func<GridLevelPair>>
+                {
+                    // LONG_SPREAD: Long crypto when underpriced vs stock
+                    () => new GridLevelPair(
+                        entrySpreadPct: -0.02m,      // Entry at -2% spread
+                        exitSpreadPct: 0.01m,         // Exit at +1% spread
+                        direction: "LONG_SPREAD",
+                        positionSizePct: 0.5m         // 50% position size
+                    ),
+                    // SHORT_SPREAD: Short crypto when overpriced vs stock
+                    () => new GridLevelPair(
+                        entrySpreadPct: 0.03m,        // Entry at +3% spread
+                        exitSpreadPct: -0.005m,       // Exit at -0.5% spread
+                        direction: "SHORT_SPREAD",
+                        positionSizePct: 0.5m         // 50% position size
+                    )
+                },
+
+                // spot_future: Spot vs Futures pairs
+                // Typical for basis trading
+                ["spot_future"] = new List<Func<GridLevelPair>>
+                {
+                    // LONG_SPREAD: Long spot when basis is negative
+                    () => new GridLevelPair(
+                        entrySpreadPct: -0.015m,      // Entry at -1.5% basis
+                        exitSpreadPct: 0.008m,        // Exit at +0.8% basis
+                        direction: "LONG_SPREAD",
+                        positionSizePct: 0.3m         // 30% position size
+                    ),
+                    // SHORT_SPREAD: Short spot when basis is positive
+                    () => new GridLevelPair(
+                        entrySpreadPct: 0.025m,       // Entry at +2.5% basis
+                        exitSpreadPct: -0.008m,       // Exit at -0.8% basis
+                        direction: "SHORT_SPREAD",
+                        positionSizePct: 0.3m         // 30% position size
+                    )
+                }
+
+                // Note: "spread" type has no default template
+                // Users must manually configure grid levels for this generic type
+            };
+        }
+
         /// <summary>
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
-        /// Optionally cancels active insights for removed pairs.
+        /// Auto-configures grid levels for added pairs based on their pairType if a template exists.
+        /// Cancels active insights for removed pairs.
         /// </summary>
-        /// <param name="algorithm">The AI algorithm instance</param>
+        /// <param name="algorithm">The algorithm instance</param>
         /// <param name="changes">The trading pair additions and removals</param>
-        public void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
-            // Optional: Cancel active insights for removed pairs
-            // The framework will naturally expire insights, but explicit cancellation is cleaner
+            // Auto-configure grid levels for newly added pairs
+            foreach (var addedPair in changes.AddedPairs)
+            {
+                // Check if we have a template for this pair type
+                if (_gridTemplates.TryGetValue(addedPair.PairType, out var factories))
+                {
+                    // Apply each grid level template
+                    foreach (var factory in factories)
+                    {
+                        var levelPair = factory(); // Create new instance
+                        addedPair.AddLevelPair(levelPair);
+                    }
+
+                    algorithm.Debug($"ArbitrageAlphaModel: Auto-configured {factories.Count} grid level(s) for " +
+                                  $"{addedPair.Key} (type: {addedPair.PairType})");
+                }
+                // If no template exists (e.g., "spread" type), user must configure manually
+            }
+
+            // Cancel active insights for removed pairs
             foreach (var removedPair in changes.RemovedPairs)
             {
                 var insightsToCancel = algorithm.Insights
@@ -354,8 +447,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                     algorithm.Insights.Cancel(insightsToCancel);
                 }
             }
-
-            // No tracking initialization needed for added pairs
         }
     }
 }

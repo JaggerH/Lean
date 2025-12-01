@@ -250,9 +250,9 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         /// Event fired when trading pairs are added or removed from the TradingPairManager.
         /// Allows the portfolio construction model to initialize or clean up resources for trading pairs.
         /// </summary>
-        /// <param name="algorithm">The AI algorithm instance</param>
+        /// <param name="algorithm">The algorithm instance</param>
         /// <param name="changes">The trading pair additions and removals</param>
-        public virtual void OnTradingPairsChanged(AIAlgorithm algorithm, TradingPairChanges changes)
+        public virtual void OnTradingPairsChanged(IAlgorithm algorithm, TradingPairChanges changes)
         {
             // For removed pairs: clean up any tracking or cached portfolio targets
             // Default implementation is empty - derived classes can override
