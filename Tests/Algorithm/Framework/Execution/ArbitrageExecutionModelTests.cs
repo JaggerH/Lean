@@ -24,6 +24,7 @@ using QuantConnect.Data.Market;
 using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.Engine.TransactionHandlers;
 using QuantConnect.Orders;
+using QuantConnect.Orders.Fees;
 using QuantConnect.Tests.Engine.DataFeeds;
 using QuantConnect.TradingPairs;
 using QuantConnect.TradingPairs.Grid;
@@ -493,6 +494,282 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
 
         #endregion
 
+        #region IsTargetFilled Tests
+
+        [Test]
+        public void IsTargetFilled_LongSpreadEntry_ReturnsFalseWhenNotFilled()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with initial quantities = 0
+            var position = pair.GetOrCreatePosition(levelPair);
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            var level = new GridLevel(-0.015m, "LONG_SPREAD", "ENTRY", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                300m, -300m,  // Target quantities
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsFalse(isFilled, "Should not be filled when position is empty");
+        }
+
+        [Test]
+        public void IsTargetFilled_LongSpreadEntry_ReturnsTrueWhenFilled()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position and simulate fills
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 50100m, 300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 3000m, -300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            var level = new GridLevel(-0.015m, "LONG_SPREAD", "ENTRY", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                300m, -300m,  // Target matches current position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsTrue(isFilled, "Should be filled when position matches target");
+        }
+
+        [Test]
+        public void IsTargetFilled_ShortSpreadEntry_ReturnsFalseWhenNotFilled()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(0.015m, 0.01m, "SHORT_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with initial quantities = 0
+            var position = pair.GetOrCreatePosition(levelPair);
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            var level = new GridLevel(0.015m, "SHORT_SPREAD", "ENTRY", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                -300m, 300m,  // Target quantities
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsFalse(isFilled, "Should not be filled when position is empty");
+        }
+
+        [Test]
+        public void IsTargetFilled_ShortSpreadEntry_ReturnsTrueWhenFilled()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(0.015m, 0.01m, "SHORT_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position and simulate fills
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 50000m, -300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 3010m, 300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            var level = new GridLevel(0.015m, "SHORT_SPREAD", "ENTRY", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                -300m, 300m,  // Target matches current position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsTrue(isFilled, "Should be filled when position matches target");
+        }
+
+        [Test]
+        public void IsTargetFilled_CloseLongSpreadPosition_ReturnsFalseWhenNotClosed()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with existing LONG_SPREAD position (300 BTC, -300 ETH)
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 50100m, 300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 3000m, -300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            // Exit with SHORT_SPREAD to close LONG_SPREAD position
+            var level = new GridLevel(0.01m, "SHORT_SPREAD", "EXIT", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                0m, 0m,  // Target is to close position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsFalse(isFilled, "Should not be filled when position still exists");
+        }
+
+        [Test]
+        public void IsTargetFilled_CloseLongSpreadPosition_ReturnsTrueWhenClosed()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(-0.015m, 0.01m, "LONG_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with existing LONG_SPREAD, then close it
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 50100m, 300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 3000m, -300m, OrderFee.Zero, "Fill"));
+
+            // Close the position
+            position.ProcessFill(new OrderEvent(3, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 50000m, -300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(4, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 3010m, 300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            // Exit with SHORT_SPREAD
+            var level = new GridLevel(0.01m, "SHORT_SPREAD", "EXIT", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                0m, 0m,  // Target is to close position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsTrue(isFilled, "Should be filled when position is closed");
+        }
+
+        [Test]
+        public void IsTargetFilled_CloseShortSpreadPosition_ReturnsFalseWhenNotClosed()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(0.015m, 0.01m, "SHORT_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with existing SHORT_SPREAD position (-300 BTC, 300 ETH)
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 50000m, -300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 3010m, 300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            // Exit with LONG_SPREAD to close SHORT_SPREAD position
+            var level = new GridLevel(-0.01m, "LONG_SPREAD", "EXIT", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                0m, 0m,  // Target is to close position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsFalse(isFilled, "Should not be filled when position still exists");
+        }
+
+        [Test]
+        public void IsTargetFilled_CloseShortSpreadPosition_ReturnsTrueWhenClosed()
+        {
+            // Arrange
+            SetupPrices(_btcSymbol, 50000m, 50100m);
+            SetupPrices(_ethSymbol, 3000m, 3010m);
+
+            var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _ethSymbol);
+            var levelPair = new GridLevelPair(0.015m, 0.01m, "SHORT_SPREAD", 0.25m);
+            var tag = TradingPairManager.EncodeGridTag(_btcSymbol, _ethSymbol, levelPair);
+
+            // Create position with existing SHORT_SPREAD, then close it
+            var position = pair.GetOrCreatePosition(levelPair);
+            position.ProcessFill(new OrderEvent(1, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 50000m, -300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(2, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 3010m, 300m, OrderFee.Zero, "Fill"));
+
+            // Close the position
+            position.ProcessFill(new OrderEvent(3, _btcSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Buy, 50100m, 300m, OrderFee.Zero, "Fill"));
+            position.ProcessFill(new OrderEvent(4, _ethSymbol, _algorithm.UtcTime, OrderStatus.Filled,
+                OrderDirection.Sell, 3000m, -300m, OrderFee.Zero, "Fill"));
+
+            var executionModel = new TestableArbitrageExecutionModel(asynchronous: false);
+            // Exit with LONG_SPREAD
+            var level = new GridLevel(-0.01m, "LONG_SPREAD", "EXIT", 0.25m);
+            var target = new ArbitragePortfolioTarget(
+                _btcSymbol, _ethSymbol,
+                0m, 0m,  // Target is to close position
+                level,
+                tag);
+
+            // Act
+            var isFilled = executionModel.TestIsTargetFilled(_algorithm, target);
+
+            // Assert
+            Assert.IsTrue(isFilled, "Should be filled when position is closed");
+        }
+
+        #endregion
+
         #region Helper Methods
 
         private OrderbookDepth CreateOrderbook(Symbol symbol, (decimal price, decimal size)[] bids, (decimal price, decimal size)[] asks)
@@ -548,5 +825,29 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// Testable version of ArbitrageExecutionModel that exposes private methods for testing
+    /// </summary>
+    internal class TestableArbitrageExecutionModel : ArbitrageExecutionModel
+    {
+        public TestableArbitrageExecutionModel(
+            bool asynchronous = true,
+            MatchingStrategy preferredStrategy = MatchingStrategy.AutoDetect)
+            : base(asynchronous, preferredStrategy)
+        {
+        }
+
+        /// <summary>
+        /// Exposes IsTargetFilled for testing
+        /// </summary>
+        public bool TestIsTargetFilled(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        {
+            // Use reflection to call private method
+            var method = typeof(ArbitrageExecutionModel).GetMethod("IsTargetFilled",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            return (bool)method.Invoke(this, new object[] { algorithm, target });
+        }
     }
 }

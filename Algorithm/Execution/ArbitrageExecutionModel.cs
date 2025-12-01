@@ -121,7 +121,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
             var expectedSpreadPct = target.Level.SpreadPct;
 
             // Calculate remaining quantities to execute
-            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+            var (leg1Remaining, leg2Remaining) = GetRemainingQuantities(algorithm, target);
 
             // Calculate target USD based on remaining quantity
             var security1 = algorithm.Securities[target.Leg1Symbol];
@@ -179,19 +179,16 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Calculates remaining quantities for both legs
+        /// Gets remaining quantities for both legs (target - current position only, excludes open orders)
         /// </summary>
-        private (decimal leg1, decimal leg2) CalculateRemainingQuantities(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
+        private (decimal leg1, decimal leg2) GetRemainingQuantities(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
             // Get current positions for both legs
             var (currentQty1, currentQty2) = GetCurrentQuantities(algorithm, target);
 
-            // Get open orders for both legs
-            var (openOrders1, openOrders2) = GetOpenOrderQuantitiesForTag(algorithm, target);
-
-            // Calculate remaining
-            var remaining1 = target.Leg1Quantity - currentQty1 - openOrders1;
-            var remaining2 = target.Leg2Quantity - currentQty2 - openOrders2;
+            // Calculate remaining (target - current position)
+            var remaining1 = target.Leg1Quantity - currentQty1;
+            var remaining2 = target.Leg2Quantity - currentQty2;
 
             return (remaining1, remaining2);
         }
@@ -223,7 +220,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="target">The arbitrage target with symbols and tag</param>
         /// <returns>Tuple of (leg1 open quantity, leg2 open quantity)</returns>
-        protected virtual (decimal leg1Qty, decimal leg2Qty) GetOpenOrderQuantitiesForTag(
+        protected virtual (decimal leg1Qty, decimal leg2Qty) GetOpenOrderQuantities(
             AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
             var leg1Qty = algorithm.Transactions.GetOpenOrderTickets(target.Leg1Symbol)
@@ -264,22 +261,34 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <summary>
         /// Checks if target is already filled (within lot size tolerance).
         ///
-        /// If remaining quantity is below minimum lot size for both legs,
-        /// consider the target as filled to avoid micro-trades.
-        ///
-        /// Mirrors Python execution_models.py::is_quantity_filled
+        /// High-frequency semantic: Check if current position quantity has reached or exceeded target.
+        /// Direction-aware logic prevents unnecessary re-execution when position >= target.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="target">The arbitrage target</param>
         /// <returns>True if both legs are filled within lot size tolerance</returns>
         private bool IsTargetFilled(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+            // Get current positions from GridPosition
+            var (currentQty1, currentQty2) = GetCurrentQuantities(algorithm, target);
 
-            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
-            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
+            bool isLeg1Filled;
+            bool isLeg2Filled;
 
-            return Math.Abs(leg1Remaining) < lot1 && Math.Abs(leg2Remaining) < lot2;
+            if (target.Level.Direction == "LONG_SPREAD")
+            {
+                // LONG_SPREAD: BUY leg1 (positive qty), SELL leg2 (negative qty)
+                isLeg1Filled = currentQty1 >= target.Leg1Quantity;
+                isLeg2Filled = currentQty2 <= target.Leg2Quantity;
+            }
+            else // SHORT_SPREAD
+            {
+                // SHORT_SPREAD: SELL leg1 (negative qty), BUY leg2 (positive qty)
+                isLeg1Filled = currentQty1 <= target.Leg1Quantity;
+                isLeg2Filled = currentQty2 >= target.Leg2Quantity;
+            }
+
+            return isLeg1Filled && isLeg2Filled;
         }
 
         /// <summary>
@@ -294,13 +303,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         {
             // Precondition: Check if all orders are settled (no pending orders)
             // We only trigger sweep when previous orders have completed to avoid race conditions
-            var (openOrders1, openOrders2) = GetOpenOrderQuantitiesForTag(algorithm, target);
+            var (openOrders1, openOrders2) = GetOpenOrderQuantities(algorithm, target);
             if (openOrders1 != 0 || openOrders2 != 0)
             {
                 return false; // Wait for pending orders to settle
             }
 
-            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+            var (leg1Remaining, leg2Remaining) = GetRemainingQuantities(algorithm, target);
 
             var leg1Security = algorithm.Securities[target.Leg1Symbol];
             var leg2Security = algorithm.Securities[target.Leg2Symbol];
@@ -330,7 +339,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <param name="target">The arbitrage target</param>
         private void SweepOrder(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            var (leg1Remaining, leg2Remaining) = CalculateRemainingQuantities(algorithm, target);
+            var (leg1Remaining, leg2Remaining) = GetRemainingQuantities(algorithm, target);
 
             var leg1Security = algorithm.Securities[target.Leg1Symbol];
             var leg2Security = algorithm.Securities[target.Leg2Symbol];
