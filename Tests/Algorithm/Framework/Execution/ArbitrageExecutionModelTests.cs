@@ -799,6 +799,13 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
         {
             var security = _algorithm.Securities[symbol];
 
+            // Set market as open for execution tests - set hours for all days of week
+            security.Exchange.SetMarketHours(
+                new[] { Securities.MarketHoursSegment.OpenAllDay() },
+                DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday,
+                DayOfWeek.Thursday, DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday
+            );
+
             if (symbol.SecurityType == SecurityType.Crypto)
             {
                 security.SetMarketPrice(new QuoteBar
@@ -822,6 +829,14 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
                     Volume = 1000
                 });
             }
+
+            // Add orderbook data for orderbook-aware execution
+            // Create deep orderbook with sufficient liquidity
+            var orderbook = CreateOrderbook(symbol,
+                new[] { (bid, 100m), (bid * 0.99m, 200m) }, // Bids with good depth
+                new[] { (ask, 100m), (ask * 1.01m, 200m) }  // Asks with good depth
+            );
+            security.Cache.AddData(orderbook);
         }
 
         #endregion

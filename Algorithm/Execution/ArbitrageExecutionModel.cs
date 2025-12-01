@@ -85,15 +85,14 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// Validates spreads and respects market depth before placing orders.
         ///
         /// Execution priority (mirrors Python execution_manager.py::execute):
-        /// 1. Validate market open preconditions
+        /// 1. Validate preconditions (market open & target not filled)
         /// 2. Single-leg sweep order detection (highest priority)
-        /// 3. Target filled check (lot size tolerance)
-        /// 4. Regular execution with orderbook matching
+        /// 3. Regular execution with orderbook matching
         /// </summary>
         private void ExecuteWithOrderbook(AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            // === Step 1: Validate preconditions ===
-            if (!IsMarketOpen(algorithm, target))
+            // === Step 1: Validate preconditions (market open & target not filled) ===
+            if (!IsMarketOpen(algorithm, target) || IsTargetFilled(algorithm, target))
             {
                 return;
             }
@@ -106,14 +105,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 return;
             }
 
-            // === Step 3: Target filled check ===
-            if (IsTargetFilled(algorithm, target))
-            {
-                return; // Already filled
-            }
-
-            // === Step 4: Regular execution with orderbook matching ===
-
+            // === Step 3: Regular execution with orderbook matching ===
             // Get spread parameters directly from Level (no parsing needed)
             var direction = target.Level.Direction == "LONG_SPREAD"
                 ? ArbitrageDirection.LongSpread
@@ -214,13 +206,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Gets the total open order quantities for both legs with matching tag.
+        /// Gets the total open order remaining quantities for both legs with matching tag.
         /// Only counts orders with matching Tag to support per-position tracking.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="target">The arbitrage target with symbols and tag</param>
-        /// <returns>Tuple of (leg1 open quantity, leg2 open quantity)</returns>
-        protected virtual (decimal leg1Qty, decimal leg2Qty) GetOpenOrderQuantities(
+        /// <returns>Tuple of (leg1 open remaining quantity, leg2 open remaining quantity)</returns>
+        protected virtual (decimal leg1Qty, decimal leg2Qty) GetOpenOrderRemainQuantities(
             AQCAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
             var leg1Qty = algorithm.Transactions.GetOpenOrderTickets(target.Leg1Symbol)
@@ -303,7 +295,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
         {
             // Precondition: Check if all orders are settled (no pending orders)
             // We only trigger sweep when previous orders have completed to avoid race conditions
-            var (openOrders1, openOrders2) = GetOpenOrderQuantities(algorithm, target);
+            var (openOrders1, openOrders2) = GetOpenOrderRemainQuantities(algorithm, target);
             if (openOrders1 != 0 || openOrders2 != 0)
             {
                 return false; // Wait for pending orders to settle

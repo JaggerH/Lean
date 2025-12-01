@@ -157,12 +157,11 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
 
         /// <summary>
         /// Clears fulfilled targets based on GridPosition quantities.
-        /// A target is considered fulfilled when:
-        /// 1. Both legs have reached their target delta quantities (within lot size tolerance)
-        /// 2. No pending open orders exist for this Tag
+        /// A target is considered fulfilled when both legs have reached their target quantities.
+        /// Mirrors ArbitrageExecutionModel.IsTargetFilled logic for consistency.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
-        public void ClearFulfilled(IAlgorithm algorithm)
+        public void ClearFulfilled(AIAlgorithm algorithm)
         {
             var toRemove = new List<string>();
 
@@ -171,11 +170,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                 var tag = kvp.Key;
                 var target = kvp.Value;
 
-                // Check if both legs are fulfilled
-                bool leg1Fulfilled = IsLegFulfilled(algorithm, target, isLeg1: true);
-                bool leg2Fulfilled = IsLegFulfilled(algorithm, target, isLeg1: false);
-
-                if (leg1Fulfilled && leg2Fulfilled)
+                if (IsTargetFulfilled(algorithm, target))
                 {
                     toRemove.Add(tag);
                 }
@@ -188,72 +183,55 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
         }
 
         /// <summary>
-        /// Checks if a specific leg of the target is fulfilled
+        /// Checks if target is fulfilled for both legs.
+        /// Uses direction-aware comparison to determine if positions have reached target quantities.
+        /// Mirrors ArbitrageExecutionModel.IsTargetFilled logic for consistency.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="target">The target to check</param>
-        /// <param name="isLeg1">True to check leg1, false to check leg2</param>
-        /// <returns>True if the leg is fulfilled</returns>
-        private bool IsLegFulfilled(IAlgorithm algorithm, IArbitragePortfolioTarget target, bool isLeg1)
+        /// <returns>True if both legs are fulfilled</returns>
+        private bool IsTargetFulfilled(AIAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            var symbol = isLeg1 ? target.Leg1Symbol : target.Leg2Symbol;
-            var targetDelta = isLeg1 ? target.Leg1Quantity : target.Leg2Quantity;
+            // Get current positions from GridPosition
+            var (currentQty1, currentQty2) = GetCurrentQuantities(algorithm, target);
 
-            // Get GridPosition from Tag
-            if (!(algorithm is Interfaces.AIAlgorithm aiAlgorithm))
+            bool isLeg1Filled;
+            bool isLeg2Filled;
+
+            if (target.Level.Direction == "LONG_SPREAD")
             {
-                return false;
+                // LONG_SPREAD: BUY leg1 (positive qty), SELL leg2 (negative qty)
+                isLeg1Filled = currentQty1 >= target.Leg1Quantity;
+                isLeg2Filled = currentQty2 <= target.Leg2Quantity;
+            }
+            else // SHORT_SPREAD
+            {
+                // SHORT_SPREAD: SELL leg1 (negative qty), BUY leg2 (positive qty)
+                isLeg1Filled = currentQty1 <= target.Leg1Quantity;
+                isLeg2Filled = currentQty2 >= target.Leg2Quantity;
             }
 
-            if (!TradingPairs.TradingPairManager.TryDecodeGridTag(
-                target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
-            {
-                return false;
-            }
-
-            if (!aiAlgorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
-            {
-                return false;
-            }
-
-            var position = pair.GetOrCreatePosition(levelPair);
-            var currentQty = isLeg1 ? position.Leg1Quantity : position.Leg2Quantity;
-
-            // Simplified: assume initial position = 0
-            // Future optimization: add InitialLeg1Quantity/InitialLeg2Quantity to GridPosition
-            var alreadyTraded = currentQty;
-
-            // Only count open orders with same Tag to avoid cross-contamination between grid levels
-            var openOrdersQty = GetOpenOrderQuantityForTag(algorithm, symbol, target.Tag);
-
-            // Get lot size for tolerance check
-            if (!algorithm.Securities.ContainsKey(symbol))
-            {
-                return false;
-            }
-
-            var security = algorithm.Securities[symbol];
-            var lotSize = security.SymbolProperties.LotSize;
-
-            // Check if target is fulfilled within lot size tolerance
-            return Math.Abs(targetDelta - alreadyTraded) < lotSize
-                   && Math.Abs(openOrdersQty) < lotSize;
+            return isLeg1Filled && isLeg2Filled;
         }
 
         /// <summary>
-        /// Gets the total open order quantity for a specific symbol and tag.
-        /// Only counts orders with matching Tag to support per-position tracking.
+        /// Gets current quantities for both legs from GridPosition
         /// </summary>
-        /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="symbol">The symbol to check</param>
-        /// <param name="tag">The tag to filter by</param>
-        /// <returns>Total open order quantity for this tag</returns>
-        private decimal GetOpenOrderQuantityForTag(IAlgorithm algorithm, Symbol symbol, string tag)
+        private (decimal leg1Qty, decimal leg2Qty) GetCurrentQuantities(AIAlgorithm algorithm, IArbitragePortfolioTarget target)
         {
-            // Use GetOpenOrderTickets to access QuantityRemaining
-            return algorithm.Transactions.GetOpenOrderTickets(symbol)
-                .Where(o => o.Tag == tag)
-                .Sum(o => o.QuantityRemaining);
+            if (!TradingPairManager.TryDecodeGridTag(
+                target.Tag, out var leg1Symbol, out var leg2Symbol, out var levelPair))
+            {
+                return (0, 0);
+            }
+
+            if (!algorithm.TradingPairs.TryGetValue((leg1Symbol, leg2Symbol), out var pair))
+            {
+                return (0, 0);
+            }
+
+            var position = pair.GetOrCreatePosition(levelPair);
+            return (position.Leg1Quantity, position.Leg2Quantity);
         }
 
         /// <summary>
