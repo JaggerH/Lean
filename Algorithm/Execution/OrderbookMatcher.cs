@@ -16,9 +16,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Data.Market;
 using QuantConnect.Interfaces;
 using QuantConnect.Securities;
+using QuantConnect.TradingPairs.Grid;
 
 namespace QuantConnect.Algorithm.Framework.Execution
 {
@@ -180,30 +182,46 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// Auto-detects best strategy if AutoDetect is specified.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
-        /// <param name="symbol1">First symbol</param>
-        /// <param name="symbol2">Second symbol</param>
-        /// <param name="targetUsd">Target USD value to match</param>
-        /// <param name="direction">Arbitrage direction</param>
-        /// <param name="expectedSpreadPct">Expected spread percentage (as decimal, e.g., 0.01 for 1%)</param>
+        /// <param name="target">Arbitrage portfolio target containing symbols, quantities, and grid level</param>
         /// <param name="preferredStrategy">Preferred matching strategy</param>
         /// <returns>Match result with executable quantities, or null if matching fails</returns>
         public static MatchResult MatchPair(
             IAlgorithm algorithm,
-            Symbol symbol1,
-            Symbol symbol2,
-            decimal targetUsd,
-            ArbitrageDirection direction,
-            decimal expectedSpreadPct,
+            IArbitragePortfolioTarget target,
             MatchingStrategy preferredStrategy = MatchingStrategy.AutoDetect)
         {
-            if (targetUsd <= 0)
+            if (target == null)
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = "Target USD must be positive"
+                    RejectReason = "Target cannot be null"
                 };
             }
+
+            // Extract parameters from target
+            var symbol1 = target.Leg1Symbol;
+            var symbol2 = target.Leg2Symbol;
+            var targetQuantity1 = Math.Abs(target.Leg1Quantity);
+            var expectedSpreadPct = target.Level.SpreadPct;
+
+            // Convert grid level direction to ArbitrageDirection
+            var direction = target.Level.Direction == "LONG_SPREAD"
+                ? ArbitrageDirection.LongSpread
+                : ArbitrageDirection.ShortSpread;
+
+            if (targetQuantity1 <= 0)
+            {
+                return new MatchResult
+                {
+                    Executable = false,
+                    RejectReason = "Target quantity must be positive"
+                };
+            }
+
+            // Calculate target USD from quantity for internal matching logic
+            var security1 = algorithm.Securities[symbol1];
+            var targetUsd = targetQuantity1 * security1.Price;
 
             // Auto-detect strategy if requested
             var strategy = preferredStrategy;
@@ -306,8 +324,10 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 var buySize = buyLevels[i].Size;
                 var sellSize = sellLevels[j].Size;
 
-                // Calculate spread
-                var spreadPct = CalculateSpreadPct(buyPrice, sellPrice);
+                // Calculate spread using leg1/leg2 prices
+                var leg1Price = (buySymbol == symbol1) ? buyPrice : sellPrice;
+                var leg2Price = (buySymbol == symbol2) ? buyPrice : sellPrice;
+                var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
 
                 // Validate spread meets expected threshold
                 if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
@@ -448,10 +468,12 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 var obPrice = level.Price;
                 var obSize = level.Size;
 
-                // Calculate spread
+                // Calculate spread using leg1/leg2 prices
                 var buyPrice = isOrderbookBuy ? obPrice : priceOnlyPrice;
                 var sellPrice = isOrderbookBuy ? priceOnlyPrice : obPrice;
-                var spreadPct = CalculateSpreadPct(buyPrice, sellPrice);
+                var leg1Price = (orderbookSymbol == symbol1) ? obPrice : priceOnlyPrice;
+                var leg2Price = (orderbookSymbol == symbol2) ? obPrice : priceOnlyPrice;
+                var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
 
                 // Validate spread
                 if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
@@ -539,8 +561,10 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Calculate spread and validate
-            var spreadPct = CalculateSpreadPct(buyPrice, sellPrice);
+            // Calculate spread using leg1/leg2 prices
+            var leg1Price = (buySymbol == symbol1) ? buyPrice : sellPrice;
+            var leg2Price = (buySymbol == symbol2) ? buyPrice : sellPrice;
+            var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
             if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
             {
                 return new MatchResult
@@ -647,16 +671,24 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Calculate spread percentage between two prices
+        /// Calculate spread percentage using unified formula: (Leg1Price - Leg2Price) / Leg1Price
+        /// This matches TradingPair spread definition:
+        /// - Long Spread: Buy leg1 at ask, sell leg2 at bid → (leg1_ask - leg2_bid) / leg1_ask
+        /// - Short Spread: Sell leg1 at bid, buy leg2 at ask → (leg1_bid - leg2_ask) / leg1_bid
+        ///
+        /// In both cases, we use Leg1 as the numerator base.
         /// </summary>
-        private static decimal CalculateSpreadPct(decimal price1, decimal price2)
+        /// <param name="leg1Price">Price for symbol1 (leg1)</param>
+        /// <param name="leg2Price">Price for symbol2 (leg2)</param>
+        /// <returns>Spread percentage as decimal (e.g., 0.01 for 1%)</returns>
+        private static decimal CalculateSpreadPct(decimal leg1Price, decimal leg2Price)
         {
-            if (price2 == 0)
+            if (leg1Price == 0)
             {
                 return decimal.MinValue;
             }
 
-            return (price1 - price2) / price2;
+            return (leg1Price - leg2Price) / leg1Price;
         }
 
         /// <summary>
@@ -667,11 +699,18 @@ namespace QuantConnect.Algorithm.Framework.Execution
             decimal expectedSpreadPct,
             ArbitrageDirection direction)
         {
-            // LongSpread: expect symbol1 cheaper, so spread should be <= expected (more negative is better)
-            // ShortSpread: expect symbol1 more expensive, so spread should be >= expected (more positive is better)
+            // For LONG_SPREAD: We want spread to be LOW (negative is better)
+            //   Spread = (Leg1Price - Leg2Price) / Leg1Price
+            //   If Leg1 cheap, Leg2 expensive → negative spread → we buy cheap Leg1, sell expensive Leg2
+            //   Validate: actualSpread <= expectedSpread (actual should be lower/more negative)
+            //
+            // For SHORT_SPREAD: We want spread to be HIGH (positive is better)
+            //   If Leg1 expensive, Leg2 cheap → positive spread → we sell expensive Leg1, buy cheap Leg2
+            //   Validate: actualSpread >= expectedSpread (actual should be higher/more positive)
+
             return direction == ArbitrageDirection.LongSpread
-                ? actualSpreadPct <= expectedSpreadPct
-                : actualSpreadPct >= expectedSpreadPct;
+                ? actualSpreadPct <= expectedSpreadPct  // ORIGINAL LOGIC: Lower is better for LONG
+                : actualSpreadPct >= expectedSpreadPct; // Higher is better for SHORT
         }
 
         /// <summary>

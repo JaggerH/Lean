@@ -106,32 +106,10 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             // === Step 3: Regular execution with orderbook matching ===
-            // Get spread parameters directly from Level (no parsing needed)
-            var direction = target.Level.Direction == "LONG_SPREAD"
-                ? ArbitrageDirection.LongSpread
-                : ArbitrageDirection.ShortSpread;
-            var expectedSpreadPct = target.Level.SpreadPct;
-
-            // Calculate remaining quantities to execute
-            var (leg1Remaining, leg2Remaining) = GetRemainingQuantities(algorithm, target);
-
-            // Calculate target USD based on remaining quantity
-            var security1 = algorithm.Securities[target.Leg1Symbol];
-            var targetUsd = Math.Abs(leg1Remaining) * security1.Price;
-
-            if (targetUsd <= 0)
-            {
-                return;
-            }
-
             // Use OrderbookMatcher to calculate executable quantities
             var matchResult = OrderbookMatcher.MatchPair(
                 algorithm,
-                target.Leg1Symbol,
-                target.Leg2Symbol,
-                targetUsd,
-                direction,
-                expectedSpreadPct,
+                target,
                 PreferredStrategy
             );
 
