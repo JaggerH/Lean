@@ -308,11 +308,11 @@ namespace QuantConnect.Securities.MultiAccount
                                         }
                                     }
 
-                                    // 🔧 DEFENSIVE FIX: Force-initialize BaseCurrency for CryptoFuture securities
+                                    // 🔧 DEFENSIVE FIX: Force-initialize BaseCurrency for Crypto and CryptoFuture securities
                                     // Problem: OnMainCashBookUpdated event may not fire if CurrencyConversion is null
                                     // Solution: Pre-initialize with rate=0 so SetupCurrencyConversions can find it
                                     // This ensures BaseCurrency exists in CashBook even if event-based sync fails
-                                    if (symbol.SecurityType == SecurityType.CryptoFuture)
+                                    if (symbol.SecurityType == SecurityType.Crypto || symbol.SecurityType == SecurityType.CryptoFuture)
                                     {
                                         var baseCurrencySymbolStr = baseCurrencySymbol.BaseCurrency.Symbol;
                                         if (!subAccountCashBook.ContainsKey(baseCurrencySymbolStr))

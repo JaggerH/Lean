@@ -1,0 +1,405 @@
+/*
+ * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+*/
+
+using System;
+using System.Linq;
+using QuantConnect.Util;
+using QuantConnect.Logging;
+using QuantConnect.Packets;
+using QuantConnect.Interfaces;
+using QuantConnect.Configuration;
+using System.Collections.Generic;
+using QuantConnect.AlgorithmFactory;
+using QuantConnect.Lean.Engine.DataFeeds;
+using QuantConnect.Brokerages.Backtesting;
+using QuantConnect.Orders;
+using QuantConnect.Securities;
+using Newtonsoft.Json;
+using QuantConnect.Algorithm;
+using QuantConnect.Lean.Engine.Setup.MultiAccount;
+using QuantConnect.Securities.MultiAccount;
+using Newtonsoft.Json.Linq;
+
+namespace QuantConnect.Lean.Engine.Setup.MultiAccount
+{
+    /// <summary>
+    /// Multi-account backtesting setup handler that extends standard backtesting with multi-account currency conversion support.
+    /// </summary>
+    /// <remarks>
+    /// This handler is identical to the standard BacktestingSetupHandler except it adds proper currency conversion
+    /// setup for multi-account portfolios. Use this handler when running backtests with multi-account configurations.
+    /// </remarks>
+    public class BacktestingSetupHandler : ISetupHandler
+    {
+        /// <summary>
+        /// Get the maximum time that the initialization of an algorithm can take
+        /// </summary>
+        protected TimeSpan InitializationTimeOut { get; set; } = TimeSpan.FromMinutes(5);
+
+        /// <summary>
+        /// Get the maximum time that the creation of an algorithm can take
+        /// </summary>
+        protected TimeSpan AlgorithmCreationTimeout { get; set; } = BaseSetupHandler.AlgorithmCreationTimeout;
+
+        /// <summary>
+        /// The worker thread instance the setup handler should use
+        /// </summary>
+        public WorkerThread WorkerThread { get; set; }
+
+        /// <summary>
+        /// Internal errors list from running the setup procedures.
+        /// </summary>
+        public List<Exception> Errors { get; set; }
+
+        /// <summary>
+        /// Maximum runtime of the algorithm in seconds.
+        /// </summary>
+        /// <remarks>Maximum runtime is a formula based on the number and resolution of symbols requested, and the days backtesting</remarks>
+        public TimeSpan MaximumRuntime { get; protected set; }
+
+        /// <summary>
+        /// Starting capital according to the users initialize routine.
+        /// </summary>
+        /// <remarks>Set from the user code.</remarks>
+        /// <seealso cref="QCAlgorithm.SetCash(decimal)"/>
+        public decimal StartingPortfolioValue { get; protected set; }
+
+        /// <summary>
+        /// Start date for analysis loops to search for data.
+        /// </summary>
+        /// <seealso cref="QCAlgorithm.SetStartDate(DateTime)"/>
+        public DateTime StartingDate { get; protected set; }
+
+        /// <summary>
+        /// Maximum number of orders for this backtest.
+        /// </summary>
+        /// <remarks>To stop algorithm flooding the backtesting system with hundreds of megabytes of order data we limit it to 100 per day</remarks>
+        public int MaxOrders { get; protected set; }
+
+        /// <summary>
+        /// Initialize the backtest setup handler.
+        /// </summary>
+        public BacktestingSetupHandler()
+        {
+            MaximumRuntime = TimeSpan.FromSeconds(300);
+            Errors = new List<Exception>();
+            StartingDate = new DateTime(1998, 01, 01);
+        }
+
+        /// <summary>
+        /// Create a new instance of an algorithm from a physical dll path.
+        /// </summary>
+        /// <param name="assemblyPath">The path to the assembly's location</param>
+        /// <param name="algorithmNodePacket">Details of the task required</param>
+        /// <returns>A new instance of IAlgorithm, or throws an exception if there was an error</returns>
+        public virtual IAlgorithm CreateAlgorithmInstance(AlgorithmNodePacket algorithmNodePacket, string assemblyPath)
+        {
+            string error;
+            IAlgorithm algorithm;
+
+            var debugNode = algorithmNodePacket as BacktestNodePacket;
+            var debugging = debugNode != null && debugNode.Debugging || Config.GetBool("debugging", false);
+
+            if (debugging && !BaseSetupHandler.InitializeDebugging(algorithmNodePacket, WorkerThread))
+            {
+                throw new AlgorithmSetupException("Failed to initialize debugging");
+            }
+
+            // Limit load times to 90 seconds and force the assembly to have exactly one derived type
+            var loader = new Loader(debugging, algorithmNodePacket.Language, AlgorithmCreationTimeout, names => names.SingleOrAlgorithmTypeName(Config.Get("algorithm-type-name", algorithmNodePacket.AlgorithmId)), WorkerThread);
+            var complete = loader.TryCreateAlgorithmInstanceWithIsolator(assemblyPath, algorithmNodePacket.RamAllocation, out algorithm, out error);
+            if (!complete) throw new AlgorithmSetupException($"During the algorithm initialization, the following exception has occurred: {error}");
+
+            return algorithm;
+        }
+
+        /// <summary>
+        /// Creates a new <see cref="BacktestingBrokerage"/> instance
+        /// </summary>
+        /// <param name="algorithmNodePacket">Job packet</param>
+        /// <param name="uninitializedAlgorithm">The algorithm instance before Initialize has been called</param>
+        /// <param name="factory">The brokerage factory</param>
+        /// <returns>The brokerage instance, or throws if error creating instance</returns>
+        public virtual IBrokerage CreateBrokerage(AlgorithmNodePacket algorithmNodePacket, IAlgorithm uninitializedAlgorithm, out IBrokerageFactory factory)
+        {
+            // Check for multi-account configuration
+            var configString = Configuration.Config.Get("multi-account-config");
+
+            if (!string.IsNullOrEmpty(configString))
+            {
+                try
+                {
+                    var configToken = JToken.Parse(configString);
+                    var accountsNode = configToken["accounts"];
+
+                    if (accountsNode != null && accountsNode.HasValues)
+                    {
+                        Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Multi-account mode enabled");
+
+                        // Get brokerage factory
+                        var brokerageName = Configuration.Config.Get("brokerage", "DefaultBrokerage");
+                        IBrokerageFactory brokerageFactory = null;
+
+                        try
+                        {
+                            brokerageFactory = Composer.Instance.GetExportedValueByTypeName<IBrokerageFactory>(brokerageName);
+                        }
+                        catch
+                        {
+                            brokerageFactory = new BacktestingBrokerageFactory();
+                        }
+
+                        // Use service classes for configuration and portfolio creation
+                        var configService = new MultiAccountConfigurationService();
+
+                        // Detect configuration format: if any account value is an object, use ParseMultiBrokerageConfig
+                        // Otherwise use ParseSingleBrokerageConfig for simplified format
+                        MultiAccountConfigurationService.MultiAccountConfiguration multiConfig;
+                        var firstAccount = accountsNode.First;
+                        if (firstAccount is JProperty firstProperty && firstProperty.Value is JObject)
+                        {
+                            // Full format: { "Gate": { "initial-cash": 50000, "brokerage": "..." }, ... }
+                            Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Using multi-brokerage configuration format");
+                            multiConfig = configService.ParseMultiBrokerageConfig(configToken as JObject, uninitializedAlgorithm);
+                        }
+                        else
+                        {
+                            // Simplified format: { "Gate": 50000, "IBKR": 50000 }
+                            Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Using single-brokerage configuration format");
+                            multiConfig = configService.ParseSingleBrokerageConfig(configToken, brokerageFactory, uninitializedAlgorithm);
+                        }
+
+                        configService.ValidateConfiguration(multiConfig);
+
+                        Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Parsed {multiConfig.AccountInitialCash.Count} accounts");
+
+                        var portfolioFactory = new MultiAccountPortfolioFactory();
+                        portfolioFactory.CreateAndAttach(
+                            uninitializedAlgorithm,
+                            multiConfig.AccountInitialCash,
+                            multiConfig.AccountCurrencies,
+                            multiConfig.Router);
+
+                        Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"BacktestingSetupHandler.CreateBrokerage(): Failed to parse multi-account config: {ex.Message}");
+                    throw;
+                }
+            }
+
+            // Create standard backtesting brokerage
+            factory = new BacktestingBrokerageFactory();
+            return new BacktestingBrokerage(uninitializedAlgorithm);
+        }
+
+        /// <summary>
+        /// Setup the algorithm cash, dates and data subscriptions as desired.
+        /// </summary>
+        /// <param name="parameters">The parameters object to use</param>
+        /// <returns>Boolean true on successfully initializing the algorithm</returns>
+        public virtual bool Setup(SetupHandlerParameters parameters)
+        {
+            var algorithm = parameters.Algorithm;
+            var job = parameters.AlgorithmNodePacket as BacktestNodePacket;
+            if (job == null)
+            {
+                throw new ArgumentException("Expected BacktestNodePacket but received " + parameters.AlgorithmNodePacket.GetType().Name);
+            }
+
+            BaseSetupHandler.Setup(parameters);
+
+            if (algorithm == null)
+            {
+                Errors.Add(new AlgorithmSetupException("Could not create instance of algorithm"));
+                return false;
+            }
+
+            algorithm.Name = job.Name;
+
+            //Make sure the algorithm start date ok.
+            if (job.PeriodStart == default(DateTime))
+            {
+                Errors.Add(new AlgorithmSetupException("Algorithm start date was never set"));
+                return false;
+            }
+
+            var controls = job.Controls;
+            var isolator = new Isolator();
+            var initializeComplete = isolator.ExecuteWithTimeLimit(InitializationTimeOut, () =>
+            {
+                try
+                {
+                    parameters.ResultHandler.SendStatusUpdate(AlgorithmStatus.Initializing, "Initializing algorithm...");
+                    //Set our parameters
+                    algorithm.SetParameters(job.Parameters);
+                    algorithm.SetAvailableDataTypes(BaseSetupHandler.GetConfiguredDataFeeds());
+
+                    //Algorithm is backtesting, not live:
+                    algorithm.SetAlgorithmMode(job.AlgorithmMode);
+
+                    //Set the source impl for the event scheduling
+                    algorithm.Schedule.SetEventSchedule(parameters.RealTimeHandler);
+
+                    // set the option chain provider
+                    var optionChainProvider = new BacktestingOptionChainProvider();
+                    var initParameters = new ChainProviderInitializeParameters(parameters.MapFileProvider, algorithm.HistoryProvider);
+                    optionChainProvider.Initialize(initParameters);
+                    algorithm.SetOptionChainProvider(new CachingOptionChainProvider(optionChainProvider));
+
+                    // set the future chain provider
+                    var futureChainProvider = new BacktestingFutureChainProvider();
+                    futureChainProvider.Initialize(initParameters);
+                    algorithm.SetFutureChainProvider(new CachingFutureChainProvider(futureChainProvider));
+
+                    // before we call initialize
+                    BaseSetupHandler.LoadBacktestJobAccountCurrency(algorithm, job);
+
+                    //Initialise the algorithm, get the required data:
+                    algorithm.Initialize();
+
+                    // set start and end date if present in the job
+                    if (job.PeriodStart.HasValue)
+                    {
+                        algorithm.SetStartDate(job.PeriodStart.Value);
+                    }
+                    if (job.PeriodFinish.HasValue)
+                    {
+                        algorithm.SetEndDate(job.PeriodFinish.Value);
+                    }
+
+                    if(job.OutOfSampleMaxEndDate.HasValue)
+                    {
+                        if(algorithm.EndDate > job.OutOfSampleMaxEndDate.Value)
+                        {
+                            Log.Trace($"BacktestingSetupHandler.Setup(): setting end date to {job.OutOfSampleMaxEndDate.Value:yyyyMMdd}");
+                            algorithm.SetEndDate(job.OutOfSampleMaxEndDate.Value);
+
+                            if (algorithm.StartDate > algorithm.EndDate)
+                            {
+                                algorithm.SetStartDate(algorithm.EndDate);
+                            }
+                        }
+                    }
+
+                    // after we call initialize
+                    BaseSetupHandler.LoadBacktestJobCashAmount(algorithm, job);
+
+                    // after algorithm was initialized, should set trading days per year for our great portfolio statistics
+                    BaseSetupHandler.SetBrokerageTradingDayPerYear(algorithm);
+
+                    // finalize initialization
+                    algorithm.PostInitialize();
+                }
+                catch (Exception err)
+                {
+                    Errors.Add(new AlgorithmSetupException("During the algorithm initialization, the following exception has occurred: ", err));
+                }
+            }, controls.RamAllocation,
+                sleepIntervalMillis: 100,  // entire system is waiting on this, so be as fast as possible
+                workerThread: WorkerThread);
+
+            if (Errors.Count > 0)
+            {
+                // if we already got an error just exit right away
+                return false;
+            }
+
+            //Before continuing, detect if this is ready:
+            if (!initializeComplete) return false;
+
+            MaximumRuntime = TimeSpan.FromMinutes(job.Controls.MaximumRuntimeMinutes);
+
+            // Multi-account currency conversion setup (must be done BEFORE BaseSetupHandler.SetupCurrencyConversions)
+            // This follows the same pattern as MultiAccount.BrokerageSetupHandler for consistency
+            if (algorithm.Portfolio is MultiSecurityPortfolioManager multiPortfolio)
+            {
+                Log.Trace($"BacktestingSetupHandler: Detected MultiSecurityPortfolioManager with {multiPortfolio.SubAccounts.Count} sub-accounts");
+
+                var conversionCoordinator = new CurrencyConversionCoordinator();
+
+                // Get ISecurityService from UniverseSelection using reflection
+                var securityServiceField = parameters.UniverseSelection.GetType().GetField("_securityService",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var securityService = securityServiceField?.GetValue(parameters.UniverseSelection) as ISecurityService;
+
+                if (securityService != null)
+                {
+                    Log.Trace("BacktestingSetupHandler: Setting up multi-account currency conversions");
+
+                    // Diagnostic: Show sub-account CashBooks before setup
+                    foreach (var accountKvp in multiPortfolio.SubAccounts)
+                    {
+                        var accountName = accountKvp.Key;
+                        var subCashBook = accountKvp.Value.CashBook;
+                        Log.Trace($"BacktestingSetupHandler: Account '{accountName}' CashBook has {subCashBook.Count} currencies: {string.Join(", ", subCashBook.Keys)}");
+                    }
+
+                    // Step 1: Setup sub-account currency conversions
+                    // Each sub-account creates conversions based on its own AccountCurrency (e.g., USDT for Gate.io)
+                    conversionCoordinator.SetupSubAccountConversions(multiPortfolio, algorithm, securityService);
+
+                    // Step 2: Sync sub-account cash and conversions to main CashBook
+                    // This aggregates all currencies and their conversions from sub-accounts
+                    conversionCoordinator.SyncConversionsToMain(multiPortfolio);
+
+                    // Step 3: Update conversion rates with current market data
+                    algorithm.OnEndOfTimeStep();
+
+                    Log.Trace("BacktestingSetupHandler: Multi-account currency conversion setup completed");
+                }
+                else
+                {
+                    Log.Error("BacktestingSetupHandler: Could not get ISecurityService from UniverseSelection - currency conversions may fail");
+                }
+            }
+
+            // Setup currency conversions for main account (will handle any remaining currencies)
+            BaseSetupHandler.SetupCurrencyConversions(algorithm, parameters.UniverseSelection);
+
+            StartingPortfolioValue = algorithm.Portfolio.Cash;
+
+            // Get and set maximum orders for this job
+            MaxOrders = job.Controls.BacktestingMaxOrders;
+            algorithm.SetMaximumOrders(MaxOrders);
+
+            //Starting date of the algorithm:
+            StartingDate = algorithm.StartDate;
+
+            //Put into log for debugging:
+            Log.Trace("SetUp Backtesting: User: " + job.UserId + " ProjectId: " + job.ProjectId + " AlgoId: " + job.AlgorithmId);
+            Log.Trace($"Dates: Start: {algorithm.StartDate.ToStringInvariant("d")} " +
+                      $"End: {algorithm.EndDate.ToStringInvariant("d")} " +
+                      $"Cash: {StartingPortfolioValue.ToStringInvariant("C")} " +
+                      $"MaximumRuntime: {MaximumRuntime} " +
+                      $"MaxOrders: {MaxOrders}");
+
+            return initializeComplete;
+        }
+
+
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// </summary>
+        /// <filterpriority>2</filterpriority>
+        public void Dispose()
+        {
+        }
+    } // End Result Handler Thread:
+
+} // End Namespace

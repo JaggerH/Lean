@@ -145,7 +145,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
 
             algorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
                 $"{target.Leg1Symbol}={matchResult.Symbol1Quantity:F4} {target.Leg2Symbol}={matchResult.Symbol2Quantity:F4} | " +
-                $"spread={matchResult.AvgSpreadPct * 100:F2}% strategy={matchResult.UsedStrategy} tag={target.Tag}");
+                $"spread={matchResult.AvgSpreadPct:P2} strategy={matchResult.UsedStrategy} tag={target.Tag}");
         }
 
         /// <summary>
