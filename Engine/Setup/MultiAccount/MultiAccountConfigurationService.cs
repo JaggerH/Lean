@@ -103,8 +103,8 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 var accountName = kvp.Key;
                 var accountConfig = kvp.Value as JObject;
 
-                // Extract initial-cash
-                var initialCash = accountConfig["initial-cash"]?.Value<decimal>() ?? 0m;
+                // Extract cash
+                var initialCash = accountConfig["cash"]?.Value<decimal>() ?? 0m;
                 config.AccountInitialCash[accountName] = initialCash;
 
                 // Extract brokerage name
