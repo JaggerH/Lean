@@ -17,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
+using QuantConnect.Brokerages;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
 using QuantConnect.Orders;
@@ -61,6 +62,15 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             /// Brokerage configs per account (multi-brokerage mode only)
             /// </summary>
             public Dictionary<string, JObject> BrokerageConfigs { get; set; }
+
+            /// <summary>
+            /// Market to BrokerageModel mapping (e.g., { "Gate": GateBrokerageModel, "USA": IBKRBrokerageModel })
+            /// </summary>
+            /// <remarks>
+            /// Used by RoutedBrokerageModel to route securities to their appropriate brokerage models
+            /// based on the security's market (Symbol.ID.Market)
+            /// </remarks>
+            public Dictionary<string, IBrokerageModel> MarketToBrokerageModel { get; set; }
         }
 
         /// <summary>
@@ -78,7 +88,8 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 IsMultiBrokerageMode = true,
                 AccountInitialCash = new Dictionary<string, decimal>(),
                 AccountCurrencies = new Dictionary<string, string>(),
-                BrokerageConfigs = new Dictionary<string, JObject>()
+                BrokerageConfigs = new Dictionary<string, JObject>(),
+                MarketToBrokerageModel = new Dictionary<string, IBrokerageModel>(StringComparer.OrdinalIgnoreCase)
             };
 
             var accountsNode = multiBrokerageConfig["accounts"] as JObject;
@@ -103,19 +114,48 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                     throw new ArgumentException($"Account '{accountName}' missing 'brokerage' field");
                 }
 
-                // Query BrokerageModel.DefaultAccountCurrency
+                // Extract market name (optional, defaults to account name if not specified)
+                var market = accountConfig["market"]?.Value<string>();
+                if (string.IsNullOrEmpty(market))
+                {
+                    market = accountName;
+                    Log.Trace($"MultiAccountConfigurationService.ParseMultiBrokerageConfig(): Account '{accountName}' missing 'market' field, using account name as market");
+                }
+
+                // Extract brokerage-params (optional)
+                var brokerageParams = accountConfig["brokerage-params"] as JObject;
+
+                // Create BrokerageModel with custom parameters
                 try
                 {
                     var brokerageFactory = Composer.Instance.Single<IBrokerageFactory>(
                         bf => bf.BrokerageType.MatchesTypeName(brokerageName));
 
-                    var brokerageModel = brokerageFactory.GetBrokerageModel(uninitializedAlgorithm.Transactions);
+                    // Create BrokerageModel with parameters if provided
+                    IBrokerageModel brokerageModel;
+                    if (brokerageParams != null && brokerageParams.HasValues)
+                    {
+                        brokerageModel = CreateBrokerageModelWithParams(brokerageFactory, brokerageParams, uninitializedAlgorithm.Transactions, accountName);
+                    }
+                    else
+                    {
+                        // Use default (via factory)
+                        brokerageModel = brokerageFactory.GetBrokerageModel(uninitializedAlgorithm.Transactions);
+                    }
+
                     var defaultCurrency = brokerageModel.DefaultAccountCurrency;
 
                     config.AccountCurrencies[accountName] = defaultCurrency;
                     config.BrokerageConfigs[accountName] = accountConfig;
 
-                    Log.Trace($"MultiAccountConfigurationService.ParseMultiBrokerageConfig(): '{accountName}' → Brokerage '{brokerageName}' → Currency '{defaultCurrency}'");
+                    // Build market → BrokerageModel mapping
+                    if (!config.MarketToBrokerageModel.ContainsKey(market))
+                    {
+                        config.MarketToBrokerageModel[market] = brokerageModel;
+                        Log.Trace($"MultiAccountConfigurationService.ParseMultiBrokerageConfig(): Market '{market}' → BrokerageModel '{brokerageModel.GetType().Name}'");
+                    }
+
+                    Log.Trace($"MultiAccountConfigurationService.ParseMultiBrokerageConfig(): '{accountName}' → Brokerage '{brokerageName}' → Market '{market}' → Currency '{defaultCurrency}'");
                 }
                 catch (Exception ex)
                 {
@@ -272,6 +312,126 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
             }
 
             Log.Trace($"MultiAccountConfigurationService.ValidateConfiguration(): ✓ {config.AccountCurrencies.Count} accounts validated");
+        }
+
+        /// <summary>
+        /// Creates a BrokerageModel instance with custom parameters using reflection
+        /// </summary>
+        /// <param name="brokerageFactory">The brokerage factory</param>
+        /// <param name="brokerageParams">Parameters from config.json</param>
+        /// <param name="transactions">SecurityTransactionManager</param>
+        /// <param name="accountName">Account name for logging</param>
+        /// <returns>BrokerageModel instance</returns>
+        private IBrokerageModel CreateBrokerageModelWithParams(
+            IBrokerageFactory brokerageFactory,
+            JObject brokerageParams,
+            Securities.SecurityTransactionManager transactions,
+            string accountName)
+        {
+            // Get the BrokerageModel type from the factory
+            var defaultModel = brokerageFactory.GetBrokerageModel(transactions);
+            var brokerageModelType = defaultModel.GetType();
+
+            Log.Trace($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Creating {brokerageModelType.Name} with custom parameters for account '{accountName}'");
+
+            // Find constructors
+            var constructors = brokerageModelType.GetConstructors();
+
+            // Try to find a constructor that matches the provided parameters
+            foreach (var constructor in constructors.OrderByDescending(c => c.GetParameters().Length))
+            {
+                var parameters = constructor.GetParameters();
+                var args = new object[parameters.Length];
+                var allMatched = true;
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    var param = parameters[i];
+                    var paramName = param.Name;
+
+                    // Try to find matching parameter in brokerageParams (case-insensitive)
+                    var configValue = brokerageParams.Properties()
+                        .FirstOrDefault(p => string.Equals(p.Name, paramName, StringComparison.OrdinalIgnoreCase));
+
+                    if (configValue != null)
+                    {
+                        // Parse the value based on parameter type
+                        try
+                        {
+                            args[i] = ConvertJsonValueToType(configValue.Value, param.ParameterType);
+                            Log.Trace($"  Parameter '{paramName}' = {args[i]} ({param.ParameterType.Name})");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error($"  Failed to convert parameter '{paramName}': {ex.Message}");
+                            allMatched = false;
+                            break;
+                        }
+                    }
+                    else if (param.HasDefaultValue)
+                    {
+                        // Use default value
+                        args[i] = param.DefaultValue;
+                        Log.Trace($"  Parameter '{paramName}' using default = {args[i]}");
+                    }
+                    else
+                    {
+                        // Required parameter not provided
+                        allMatched = false;
+                        break;
+                    }
+                }
+
+                if (allMatched)
+                {
+                    // Found a matching constructor, create the instance
+                    try
+                    {
+                        var instance = Activator.CreateInstance(brokerageModelType, args) as IBrokerageModel;
+                        Log.Trace($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Successfully created {brokerageModelType.Name}");
+                        return instance;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Failed to instantiate {brokerageModelType.Name}: {ex.Message}");
+                        throw;
+                    }
+                }
+            }
+
+            // If no matching constructor found, use default
+            Log.Trace($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): No matching constructor found, using default");
+            return defaultModel;
+        }
+
+        /// <summary>
+        /// Converts a JToken value to the specified type
+        /// </summary>
+        private object ConvertJsonValueToType(JToken value, Type targetType)
+        {
+            // Handle enums
+            if (targetType.IsEnum)
+            {
+                var stringValue = value.Value<string>();
+                return Enum.Parse(targetType, stringValue, ignoreCase: true);
+            }
+
+            // Handle common types
+            if (targetType == typeof(string))
+                return value.Value<string>();
+            if (targetType == typeof(int))
+                return value.Value<int>();
+            if (targetType == typeof(decimal))
+                return value.Value<decimal>();
+            if (targetType == typeof(bool))
+                return value.Value<bool>();
+            if (targetType == typeof(double))
+                return value.Value<double>();
+            if (targetType == typeof(long))
+                return value.Value<long>();
+
+            // Try generic ToObject
+            return value.ToObject(targetType);
         }
     }
 }

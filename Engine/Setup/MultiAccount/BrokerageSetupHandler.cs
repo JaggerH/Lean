@@ -224,9 +224,9 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 Log.Trace($"BrokerageSetupHandler.CreateMultiBrokerageBrokerage(): Registered '{brokerageName}' for '{accountName}'");
             }
 
-            // Create composite brokerage model
-            _compositeBrokerageModel = CreateCompositeBrokerageModel(brokerageFactories, uninitializedAlgorithm.Transactions);
-            Log.Trace($"BrokerageSetupHandler.CreateMultiBrokerageBrokerage(): Created composite model with {_compositeBrokerageModel.DefaultMarkets.Count} markets");
+            // Create routed brokerage model
+            _compositeBrokerageModel = CreateRoutedBrokerageModel(multiConfig.MarketToBrokerageModel);
+            Log.Trace($"BrokerageSetupHandler.CreateMultiBrokerageBrokerage(): Created routed brokerage model with {_compositeBrokerageModel.DefaultMarkets.Count} markets");
 
             // Return first factory for Engine compatibility
             _factory = brokerageFactories.First();
@@ -702,49 +702,24 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         }
 
         /// <summary>
-        /// Creates a composite brokerage model that merges DefaultMarkets from multiple brokerages
+        /// Creates a routed brokerage model that delegates to specific brokerage models based on security market
         /// </summary>
-        private IBrokerageModel CreateCompositeBrokerageModel(List<IBrokerageFactory> brokerageFactories, SecurityTransactionManager transactions)
+        /// <param name="marketToBrokerageModel">Dictionary mapping markets to their respective brokerage models</param>
+        /// <returns>A RoutedBrokerageModel instance</returns>
+        private IBrokerageModel CreateRoutedBrokerageModel(Dictionary<string, IBrokerageModel> marketToBrokerageModel)
         {
-            // Collect DefaultMarkets from all brokerage models
-            var mergedMarkets = new Dictionary<SecurityType, string>();
-
-            foreach (var factory in brokerageFactories)
+            if (marketToBrokerageModel == null || marketToBrokerageModel.Count == 0)
             {
-                var brokerageModel = factory.GetBrokerageModel(transactions);
-                var markets = brokerageModel.DefaultMarkets;
-
-                foreach (var kvp in markets)
-                {
-                    // If market not yet added, add it
-                    if (!mergedMarkets.ContainsKey(kvp.Key))
-                    {
-                        mergedMarkets[kvp.Key] = kvp.Value;
-                        Log.Trace($"BrokerageSetupHandler.CreateCompositeBrokerageModel(): Added market {kvp.Value} for {kvp.Key}");
-                    }
-                }
+                throw new ArgumentException("marketToBrokerageModel cannot be null or empty");
             }
 
-            // Create a custom brokerage model with merged markets
-            return new CompositeBrokerageModel(mergedMarkets);
-        }
-
-        /// <summary>
-        /// Composite brokerage model that combines DefaultMarkets from multiple brokerages
-        /// </summary>
-        private class CompositeBrokerageModel : DefaultBrokerageModel
-        {
-            private readonly IReadOnlyDictionary<SecurityType, string> _mergedMarkets;
-
-            public CompositeBrokerageModel(Dictionary<SecurityType, string> mergedMarkets)
+            Log.Trace($"BrokerageSetupHandler.CreateRoutedBrokerageModel(): Creating routed model with {marketToBrokerageModel.Count} market mappings");
+            foreach (var kvp in marketToBrokerageModel)
             {
-                _mergedMarkets = mergedMarkets;
+                Log.Trace($"BrokerageSetupHandler.CreateRoutedBrokerageModel(): Market '{kvp.Key}' → {kvp.Value.GetType().Name}");
             }
 
-            public override IReadOnlyDictionary<SecurityType, string> DefaultMarkets
-            {
-                get { return _mergedMarkets; }
-            }
+            return new RoutedBrokerageModel(marketToBrokerageModel);
         }
 
         /// <summary>

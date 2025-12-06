@@ -29,7 +29,7 @@ namespace QuantConnect.Brokerages
     /// </summary>
     public class GateBrokerageModel : DefaultBrokerageModel
     {
-        private const decimal _maxLeverage = 3.3m;
+        private const decimal _maxLeverage = 5m;
 
         /// <summary>
         /// Represents a set of order types supported by the current brokerage model.

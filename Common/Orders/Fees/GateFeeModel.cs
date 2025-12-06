@@ -25,12 +25,12 @@ namespace QuantConnect.Orders.Fees
         /// <summary>
         /// Tier 1 maker fee (VIP 0)
         /// </summary>
-        public const decimal MakerFee = 0.002m; // 0.2%
+        public const decimal MakerFee = 0.001m; // 0.1%
 
         /// <summary>
         /// Tier 1 taker fee (VIP 0)
         /// </summary>
-        public const decimal TakerFee = 0.002m; // 0.2%
+        public const decimal TakerFee = 0.001m; // 0.1%
 
         /// <summary>
         /// Gets the order fee associated with the specified order.

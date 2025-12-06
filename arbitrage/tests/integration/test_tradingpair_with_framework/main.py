@@ -10,17 +10,19 @@ Test Scenario:
   * IBKR Account: $50,000 - trades USA equities
 - Test Focus: Grid level auto-configuration via ArbitrageAlphaModel
 - Framework: Uses SetAlpha() BEFORE AddPair() to enable auto-configuration
+- Brokerage Models: RoutedBrokerageModel automatically applies correct models per market
 
-Test Objectives (Auto-Configuration Feature):
+Test Objectives (Full Framework Integration):
 1. Verify ArbitrageAlphaModel auto-configures grid levels for "crypto_stock" pairs
 2. Verify ArbitrageAlphaModel generates 1 Insight per signal (Leg1 only)
 3. Verify Tag contains full pairing information (Leg2Symbol + grid config)
-4. Verify PCM decodes Tag and generates 2 PortfolioTargets per Insight
-5. Verify TradingPair calculates spreads correctly
-6. Verify grid level threshold crossing detection
-7. Verify multi-account routing (Gate crypto -> Gate, USA equity -> IBKR)
-8. Verify Insights collection tracks generated signals
-9. Log all insights for verification
+4. Verify ArbitragePortfolioConstructionModel decodes Tag and generates 2 PortfolioTargets per Insight
+5. Verify ArbitrageExecutionModel executes both legs using orderbook-aware matching
+6. Verify TradingPair calculates spreads correctly
+7. Verify grid level threshold crossing detection
+8. Verify multi-account routing (Gate crypto -> Gate, USA equity -> IBKR)
+9. Verify RoutedBrokerageModel applies correct leverage, fees, and models per market
+10. Verify Insights collection tracks generated signals
 
 Auto-Configuration Details:
 - SetAlpha() is called BEFORE AddPair() to enable OnTradingPairsChanged event
@@ -28,6 +30,10 @@ Auto-Configuration Details:
 - Default "crypto_stock" template adds 2 grid levels:
   * LONG_SPREAD: entry=-2%, exit=+1%, size=50%
   * SHORT_SPREAD: entry=+3%, exit=-0.5%, size=50%
+- RoutedBrokerageModel automatically applies:
+  * Gate market -> GateBrokerageModel (fees, leverage, etc.)
+  * USA market -> InteractiveBrokersBrokerageModel (fees, leverage, etc.)
+  * No need to manually set DataNormalizationMode, BuyingPowerModel, or FeeModel
 """
 
 from AlgorithmImports import *
@@ -54,6 +60,8 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         self.Debug("=" * 60)
 
         # Add Gate crypto (lowercase symbols)
+        # Note: No need to set DataNormalizationMode, BuyingPowerModel, or FeeModel
+        # These are automatically configured by RoutedBrokerageModel based on market
         self.aapl_crypto = self.AddCrypto("aaplxusdt", Resolution.Tick, Market.Gate)
         self.tsla_crypto = self.AddCrypto("tslaxusdt", Resolution.Tick, Market.Gate)
 
@@ -61,12 +69,9 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         self.aapl_stock = self.AddEquity("AAPL", Resolution.Tick, Market.USA)
         self.tsla_stock = self.AddEquity("TSLA", Resolution.Tick, Market.USA)
 
-        # Set raw data normalization
-        for security in [self.aapl_crypto, self.aapl_stock,
-                        self.tsla_crypto, self.tsla_stock]:
-            security.DataNormalizationMode = DataNormalizationMode.Raw
-
         self.Debug(f"Added {len(self.Securities)} securities")
+        self.Debug(f"  Gate crypto securities will use GateBrokerageModel (leverage, fees, etc.)")
+        self.Debug(f"  USA equity securities will use InteractiveBrokersBrokerageModel")
         self.Debug("=" * 60)
 
         # === 4. Setup ArbitrageAlphaModel FIRST (before adding pairs) ===
@@ -76,6 +81,7 @@ class TradingPairFrameworkTest(AQCAlgorithm):
 
         from QuantConnect.Algorithm.Framework.Alphas import ArbitrageAlphaModel
         from QuantConnect.Algorithm.Framework.Portfolio import ArbitragePortfolioConstructionModel
+        from QuantConnect.Algorithm.Framework.Execution import ArbitrageExecutionModel, MatchingStrategy
 
         alpha = ArbitrageAlphaModel(
             insightPeriod=timedelta(minutes=5),  # Insights valid for 5 minutes
@@ -115,10 +121,19 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         self.Debug(f"TSLA grid levels (auto-configured): {len(list(tsla_pair.LevelPairs))}")
         self.Debug("=" * 60)
 
-        # === 6. Setup Portfolio Construction (optional) ===
-        # Note: ArbitragePortfolioConstructionModel setup is commented out for this test
-        # self.SetPortfolioConstruction(ArbitragePortfolioConstructionModel())
-        self.Debug("Portfolio Construction: Not configured (Alpha-only test)")
+        # === 6. Setup Portfolio Construction and Execution ===
+        pcm = ArbitragePortfolioConstructionModel()
+        self.SetArbitragePortfolioConstruction(pcm)
+        self.Debug("ArbitragePortfolioConstructionModel configured")
+
+        execution = ArbitrageExecutionModel(
+            asynchronous=True,  # Submit orders asynchronously
+            preferredStrategy=MatchingStrategy.AutoDetect  # Auto-detect orderbook matching
+        )
+        self.SetArbitrageExecution(execution)
+        self.Debug("ArbitrageExecutionModel configured")
+        self.Debug("  Asynchronous: True")
+        self.Debug("  Matching Strategy: AutoDetect")
         self.Debug("=" * 60)
 
         self.Debug("INITIALIZATION COMPLETE")
