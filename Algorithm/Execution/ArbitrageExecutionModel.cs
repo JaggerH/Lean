@@ -225,7 +225,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
             var leg1Open = leg1Security.Exchange.ExchangeOpen;
             var leg2Open = leg2Security.Exchange.ExchangeOpen;
 
-            return leg1Open && leg2Open;
+            // Check if both securities have data
+            var leg1HasData = leg1Security.HasData;
+            var leg2HasData = leg2Security.HasData;
+
+            return leg1Open && leg2Open && leg1HasData && leg2HasData;
         }
 
         /// <summary>
