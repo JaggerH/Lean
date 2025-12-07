@@ -1348,7 +1348,6 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                 // Apply the filled orders to GridPosition tracking (for arbitrage algorithms)
                 if (_algorithm is Interfaces.AIAlgorithm aiAlgorithm && aiAlgorithm.TradingPairs != null)
                 {
-                    Log.Trace($"[BrokerageTransactionHandler] Processing {fillsToProcess.Count} fills for GridPosition update");
                     try
                     {
                         foreach (var fill in fillsToProcess)

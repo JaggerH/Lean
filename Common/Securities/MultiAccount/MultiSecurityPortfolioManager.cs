@@ -442,8 +442,6 @@ namespace QuantConnect.Securities.MultiAccount
                         Log.Error($"MultiSecurityPortfolioManager: Insufficient buying power in account '{accountName}' for order {order.Id}");
                         return result;
                     }
-
-                    Log.Trace($"MultiSecurityPortfolioManager: Order {order.Id} validated for account '{accountName}'");
                 }
                 catch (Exception ex)
                 {

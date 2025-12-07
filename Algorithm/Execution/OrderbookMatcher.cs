@@ -919,12 +919,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
             var symbol1Qty = leg1IsBuy ? totalLeg1Qty : -totalLeg1Qty;
             var symbol2Qty = leg1IsBuy ? -totalLeg2Qty : totalLeg2Qty;
 
-            // Diagnostic logging
-            Log.Trace($"[OrderbookMatcher.BuildMatchResult]");
-            Log.Trace($"  → Leg1Symbol={leg1Symbol}, Leg2Symbol={leg2Symbol}, Leg1IsBuy={leg1IsBuy}");
-            Log.Trace($"  → TotalLeg1Qty={totalLeg1Qty}, TotalLeg2Qty={totalLeg2Qty}");
-            Log.Trace($"  → Symbol1Qty={symbol1Qty}, Symbol2Qty={symbol2Qty}");
-
             return new MatchResult
             {
                 Symbol1Quantity = symbol1Qty,
@@ -998,13 +992,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
             // Determine signed quantities for symbol1 and symbol2
             var symbol1Qty = buySymbol == symbol1 ? totalBuyQty : -totalSellQty;
             var symbol2Qty = buySymbol == symbol2 ? totalBuyQty : -totalSellQty;
-
-            // 🔍 DIAGNOSTIC: Log quantity assignment
-            Log.Trace($"[OrderbookMatcher.BuildMatchResult]");
-            Log.Trace($"  → BuySymbol={buySymbol}, SellSymbol={sellSymbol}");
-            Log.Trace($"  → Symbol1={symbol1}, Symbol2={symbol2}");
-            Log.Trace($"  → TotalBuyQty={totalBuyQty}, TotalSellQty={totalSellQty}");
-            Log.Trace($"  → Symbol1Qty={symbol1Qty}, Symbol2Qty={symbol2Qty}");
 
             return new MatchResult
             {

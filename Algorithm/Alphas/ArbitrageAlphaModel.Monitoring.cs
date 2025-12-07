@@ -181,10 +181,17 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <summary>
         /// Tracks spread percentage statistics for all trading pairs and logs a report every hour.
         /// This helps monitor spread volatility and debug signal generation issues.
+        /// Only active when debug mode is enabled.
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         private void TrackSpreadStats(AIAlgorithm algorithm)
         {
+            // Skip if debug mode is not enabled
+            if (!_debug)
+            {
+                return;
+            }
+
             // Initialize on first call
             if (_lastSpreadReport == DateTime.MinValue)
             {
