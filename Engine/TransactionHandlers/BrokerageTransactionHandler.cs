@@ -1345,6 +1345,24 @@ namespace QuantConnect.Lean.Engine.TransactionHandlers
                     _algorithm.Error($"Fill error: error in TradeBuilder.ProcessFill: {err.Message}");
                 }
 
+                // Apply the filled orders to GridPosition tracking (for arbitrage algorithms)
+                if (_algorithm is Interfaces.AIAlgorithm aiAlgorithm && aiAlgorithm.TradingPairs != null)
+                {
+                    Log.Trace($"[BrokerageTransactionHandler] Processing {fillsToProcess.Count} fills for GridPosition update");
+                    try
+                    {
+                        foreach (var fill in fillsToProcess)
+                        {
+                            aiAlgorithm.TradingPairs.ProcessGridOrderEvent(fill);
+                        }
+                    }
+                    catch (Exception err)
+                    {
+                        Log.Error(err);
+                        _algorithm.Error($"GridPosition update error: {err.Message}");
+                    }
+                }
+
                 // Apply the filled orders to the trade builder
                 for (var i = 0; i < orderEvents.Count; i++)
                 {
