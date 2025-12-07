@@ -46,7 +46,7 @@ namespace QuantConnect.AlgorithmFactory.Python.Wrappers
     /// <summary>
     /// Creates and wraps the algorithm written in python.
     /// </summary>
-    public class AlgorithmPythonWrapper : BasePythonWrapper<IAlgorithm>, IAlgorithm
+    public class AlgorithmPythonWrapper : BasePythonWrapper<IAlgorithm>, IAlgorithm, AIAlgorithm
     {
         private readonly dynamic _onData;
         private readonly dynamic _onMarginCall;
@@ -1308,5 +1308,30 @@ namespace QuantConnect.AlgorithmFactory.Python.Wrappers
             _onMarginCall?.Dispose();
             base.Dispose();
         }
+
+        /// <summary>
+        /// AIAlgorithm interface implementation - delegate to base algorithm if it implements AIAlgorithm
+        /// </summary>
+        public IExecutionHistoryProvider ExecutionHistoryProvider
+        {
+            get => (_baseAlgorithm as AIAlgorithm)?.ExecutionHistoryProvider;
+            set
+            {
+                if (_baseAlgorithm is AIAlgorithm aiAlgorithm)
+                {
+                    aiAlgorithm.ExecutionHistoryProvider = value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// AIAlgorithm interface implementation - delegate to base algorithm if it implements AIAlgorithm
+        /// </summary>
+        public TradingPairs.TradingPairManager TradingPairs => (_baseAlgorithm as AIAlgorithm)?.TradingPairs;
+
+        /// <summary>
+        /// AIAlgorithm interface implementation - delegate to base algorithm if it implements AIAlgorithm
+        /// </summary>
+        public bool SupportsExecutionHistory => (_baseAlgorithm as AIAlgorithm)?.SupportsExecutionHistory ?? false;
     }
 }
