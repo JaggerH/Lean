@@ -106,10 +106,22 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             // === Step 3: Regular execution with orderbook matching ===
+            // Calculate target USD for matching using remaining unfilled quantities
+            var (leg1Remaining, leg2Remaining) = GetRemainingQuantities(algorithm, target);
+
+            // Calculate market values for both legs and take the minimum
+            // This ensures we only attempt to match what's actually remaining
+            var leg1Security = algorithm.Securities[target.Leg1Symbol];
+            var leg2Security = algorithm.Securities[target.Leg2Symbol];
+            var leg1RemainingMv = Math.Abs(leg1Remaining) * leg1Security.Price;
+            var leg2RemainingMv = Math.Abs(leg2Remaining) * leg2Security.Price;
+            var targetUsd = Math.Min(leg1RemainingMv, leg2RemainingMv);
+
             // Use OrderbookMatcher to calculate executable quantities
             var matchResult = OrderbookMatcher.MatchPair(
                 algorithm,
                 target,
+                targetUsd,
                 PreferredStrategy
             );
 
