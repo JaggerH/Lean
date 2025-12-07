@@ -62,12 +62,13 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         # Add Gate crypto (lowercase symbols)
         # Note: No need to set DataNormalizationMode, BuyingPowerModel, or FeeModel
         # These are automatically configured by RoutedBrokerageModel based on market
-        self.aapl_crypto = self.AddCrypto("aaplxusdt", Resolution.Tick, Market.Gate)
-        self.tsla_crypto = self.AddCrypto("tslaxusdt", Resolution.Tick, Market.Gate)
+        # Using Resolution.Orderbook to read depth data (quotes) instead of trade data
+        self.aapl_crypto = self.AddCrypto("aaplxusdt", Resolution.ORDERBOOK, Market.Gate)
+        self.tsla_crypto = self.AddCrypto("tslaxusdt", Resolution.ORDERBOOK, Market.Gate)
 
         # Add USA equities
-        self.aapl_stock = self.AddEquity("AAPL", Resolution.Tick, Market.USA)
-        self.tsla_stock = self.AddEquity("TSLA", Resolution.Tick, Market.USA)
+        self.aapl_stock = self.AddEquity("AAPL", Resolution.TICK, Market.USA)
+        self.tsla_stock = self.AddEquity("TSLA", Resolution.TICK, Market.USA)
 
         self.Debug(f"Added {len(self.Securities)} securities")
         self.Debug(f"  Gate crypto securities will use GateBrokerageModel (leverage, fees, etc.)")
@@ -155,6 +156,28 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         # This calls OnFrameworkData() which updates TradingPairs and Alpha model
         super().OnData(data)
 
+    def OnOrderEvent(self, orderEvent):
+        """Handle order events - terminate on invalid orders"""
+        if orderEvent.Status == OrderStatus.Invalid:
+            # Get order details for comprehensive error logging
+            order = self.Transactions.GetOrderById(orderEvent.OrderId)
+            order_value = order.GetValue(self.Securities[orderEvent.Symbol])
+
+            # Comprehensive error message with all order details
+            error_msg = (
+                f"❌ Order {orderEvent.OrderId} Invalid | "
+                f"Symbol: {orderEvent.Symbol.Value} | "
+                f"Direction: {order.Direction} | "
+                f"Quantity: {order.Quantity} | "
+                f"Value: ${abs(order_value):,.2f} | "
+                f"Tag: {order.Tag} | "
+                f"Message: {orderEvent.Message}"
+            )
+
+            self.Error(error_msg)
+            self.Debug(error_msg)
+            self.Quit(f"Terminating due to invalid order: {orderEvent.OrderId}")
+            
     def LogSingleInsight(self, insight):
         """Log a single Insight (Leg1 only, with Tag-based pairing info)"""
         try:
