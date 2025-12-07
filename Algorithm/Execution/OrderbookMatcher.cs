@@ -19,6 +19,7 @@ using System.Linq;
 using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Data.Market;
 using QuantConnect.Interfaces;
+using QuantConnect.Logging;
 using QuantConnect.Securities;
 using QuantConnect.TradingPairs.Grid;
 
@@ -183,11 +184,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         /// <param name="algorithm">The algorithm instance</param>
         /// <param name="target">Arbitrage portfolio target containing symbols, quantities, and grid level</param>
+        /// <param name="targetUsd">Target USD amount to match (for market value equality)</param>
         /// <param name="preferredStrategy">Preferred matching strategy</param>
         /// <returns>Match result with executable quantities, or null if matching fails</returns>
         public static MatchResult MatchPair(
             IAlgorithm algorithm,
             IArbitragePortfolioTarget target,
+            decimal targetUsd,
             MatchingStrategy preferredStrategy = MatchingStrategy.AutoDetect)
         {
             if (target == null)
@@ -199,36 +202,21 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Extract parameters from target
-            var symbol1 = target.Leg1Symbol;
-            var symbol2 = target.Leg2Symbol;
-            var targetQuantity1 = Math.Abs(target.Leg1Quantity);
-            var expectedSpreadPct = target.Level.SpreadPct;
-
-            // Convert grid level direction to ArbitrageDirection
-            var direction = target.Level.Direction == "LONG_SPREAD"
-                ? ArbitrageDirection.LongSpread
-                : ArbitrageDirection.ShortSpread;
-
-            if (targetQuantity1 <= 0)
+            if (targetUsd <= 0)
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = "Target quantity must be positive"
+                    RejectReason = "Target USD must be positive"
                 };
             }
-
-            // Calculate target USD from quantity for internal matching logic
-            var security1 = algorithm.Securities[symbol1];
-            var targetUsd = targetQuantity1 * security1.Price;
 
             // Auto-detect strategy if requested
             var strategy = preferredStrategy;
             if (strategy == MatchingStrategy.AutoDetect)
             {
-                var hasOb1 = HasOrderbook(algorithm, symbol1);
-                var hasOb2 = HasOrderbook(algorithm, symbol2);
+                var hasOb1 = HasOrderbook(algorithm, target.Leg1Symbol);
+                var hasOb2 = HasOrderbook(algorithm, target.Leg2Symbol);
 
                 if (hasOb1 && hasOb2)
                 {
@@ -248,13 +236,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
             switch (strategy)
             {
                 case MatchingStrategy.DualOrderbook:
-                    return MatchDualOrderbook(algorithm, symbol1, symbol2, targetUsd, direction, expectedSpreadPct);
+                    return MatchDualOrderbook(algorithm, target, targetUsd);
 
                 case MatchingStrategy.SingleOrderbook:
-                    return MatchSingleOrderbook(algorithm, symbol1, symbol2, targetUsd, direction, expectedSpreadPct);
+                    return MatchSingleOrderbook(algorithm, target, targetUsd);
 
                 case MatchingStrategy.BestPrices:
-                    return MatchBestPrices(algorithm, symbol1, symbol2, targetUsd, direction, expectedSpreadPct);
+                    return MatchBestPrices(algorithm, target, targetUsd);
 
                 default:
                     return new MatchResult
@@ -271,34 +259,35 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         private static MatchResult MatchDualOrderbook(
             IAlgorithm algorithm,
-            Symbol symbol1,
-            Symbol symbol2,
-            decimal targetUsd,
-            ArbitrageDirection direction,
-            decimal expectedSpreadPct)
+            IArbitragePortfolioTarget target,
+            decimal targetUsd)
         {
-            // Determine which symbol to buy and which to sell
-            var (buySymbol, sellSymbol) = DetermineBuySellSides(symbol1, symbol2, direction);
+            // Extract basic information
+            var leg1Symbol = target.Leg1Symbol;
+            var leg2Symbol = target.Leg2Symbol;
+            var expectedSpreadPct = target.Level.SpreadPct;
+            var leg1IsBuy = IsLeg1Buy(target);  // LONG_SPREAD: true, SHORT_SPREAD: false
 
             // Get orderbooks
-            var buyOrderbook = GetOrderbook(algorithm, buySymbol);
-            var sellOrderbook = GetOrderbook(algorithm, sellSymbol);
+            var leg1Orderbook = GetOrderbook(algorithm, leg1Symbol);
+            var leg2Orderbook = GetOrderbook(algorithm, leg2Symbol);
 
-            if (buyOrderbook == null || sellOrderbook == null)
+            if (leg1Orderbook == null || leg2Orderbook == null)
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = "Orderbook not available for one or both symbols",
+                    RejectReason = "Orderbook not available for one or both legs",
                     UsedStrategy = MatchingStrategy.DualOrderbook
                 };
             }
 
-            // Get buy and sell levels
-            var buyLevels = buyOrderbook.Asks;  // Buy from asks
-            var sellLevels = sellOrderbook.Bids; // Sell to bids
+            // Get corresponding levels (buy side uses asks, sell side uses bids)
+            var leg1Levels = GetOrderbookLevels(leg1Orderbook, leg1IsBuy);
+            var leg2Levels = GetOrderbookLevels(leg2Orderbook, !leg1IsBuy);
 
-            if (buyLevels == null || buyLevels.Count == 0 || sellLevels == null || sellLevels.Count == 0)
+            if (leg1Levels == null || leg1Levels.Count == 0 ||
+                leg2Levels == null || leg2Levels.Count == 0)
             {
                 return new MatchResult
                 {
@@ -309,61 +298,51 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             // Get lot sizes
-            var buyLotSize = algorithm.Securities[buySymbol].SymbolProperties.LotSize;
-            var sellLotSize = algorithm.Securities[sellSymbol].SymbolProperties.LotSize;
+            var leg1LotSize = algorithm.Securities[leg1Symbol].SymbolProperties.LotSize;
+            var leg2LotSize = algorithm.Securities[leg2Symbol].SymbolProperties.LotSize;
 
             // Two-pointer matching algorithm
             int i = 0, j = 0;
             decimal accumulatedUsd = 0;
             var matchedLevels = new List<MatchLevel>();
 
-            while (i < buyLevels.Count && j < sellLevels.Count && accumulatedUsd < targetUsd)
+            while (i < leg1Levels.Count && j < leg2Levels.Count && accumulatedUsd < targetUsd)
             {
-                var buyPrice = buyLevels[i].Price;
-                var sellPrice = sellLevels[j].Price;
-                var buySize = buyLevels[i].Size;
-                var sellSize = sellLevels[j].Size;
+                var leg1Price = leg1Levels[i].Price;
+                var leg2Price = leg2Levels[j].Price;
+                var leg1Size = leg1Levels[i].Size;
+                var leg2Size = leg2Levels[j].Size;
 
-                // Calculate spread using leg1/leg2 prices
-                var leg1Price = (buySymbol == symbol1) ? buyPrice : sellPrice;
-                var leg2Price = (buySymbol == symbol2) ? buyPrice : sellPrice;
+                // Calculate spread (no conversion needed!)
                 var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
 
-                // Validate spread meets expected threshold
-                if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
+                // Validate spread
+                if (!ValidateSpread(spreadPct, expectedSpreadPct, leg1IsBuy))
                 {
-                    // Try to find better price on sell side
+                    // Try better price on leg2 side
                     j++;
                     continue;
                 }
 
-                // Calculate matched quantities with market value equality
+                // Calculate matched quantities
                 var remainingUsd = targetUsd - accumulatedUsd;
-                var (matchedBuyQty, matchedSellQty, matchUsd) = CalculateMatchedQuantities(
-                    buyPrice,
-                    sellPrice,
-                    buySize,
-                    sellSize,
+                var (matchedLeg1Qty, matchedLeg2Qty, matchUsd) = CalculateMatchedQuantitiesForLegs(
+                    leg1Price, leg2Price,
+                    leg1Size, leg2Size,
                     remainingUsd,
-                    buyLotSize,
-                    sellLotSize
+                    leg1LotSize, leg2LotSize,
+                    leg1IsBuy
                 );
 
-                // If we got a valid match, record it
-                if (matchUsd > 0 && matchedBuyQty > 0 && matchedSellQty > 0)
+                // Record valid match
+                if (matchUsd > 0 && matchedLeg1Qty > 0 && matchedLeg2Qty > 0)
                 {
-                    // Determine price1 and price2 based on symbol order
-                    var price1 = buySymbol == symbol1 ? buyPrice : sellPrice;
-                    var price2 = buySymbol == symbol2 ? buyPrice : sellPrice;
-                    var qty1 = buySymbol == symbol1 ? matchedBuyQty : matchedSellQty;
-                    var qty2 = buySymbol == symbol2 ? matchedBuyQty : matchedSellQty;
-
                     matchedLevels.Add(new MatchLevel
                     {
-                        Price1 = price1,
-                        Price2 = price2,
-                        Quantity1 = qty1,
-                        Quantity2 = qty2,
+                        Price1 = leg1Price,      // Direct correspondence!
+                        Price2 = leg2Price,      // Direct correspondence!
+                        Quantity1 = matchedLeg1Qty,  // Direct correspondence!
+                        Quantity2 = matchedLeg2Qty,  // Direct correspondence!
                         UsdValue = matchUsd,
                         SpreadPct = spreadPct
                     });
@@ -371,11 +350,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
                     accumulatedUsd += matchUsd;
 
                     // Move pointers based on consumed liquidity
-                    if (matchedBuyQty >= buySize - buyLotSize * 0.1m) // Within 10% of lot size
+                    if (matchedLeg1Qty >= leg1Size - leg1LotSize * 0.1m) // Within 10% of lot size
                     {
                         i++;
                     }
-                    if (matchedSellQty >= sellSize - sellLotSize * 0.1m)
+                    if (matchedLeg2Qty >= leg2Size - leg2LotSize * 0.1m)
                     {
                         j++;
                     }
@@ -387,8 +366,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 }
             }
 
-            // Build and return result
-            return BuildMatchResult(matchedLevels, buySymbol, sellSymbol, symbol1, symbol2, MatchingStrategy.DualOrderbook);
+            // Build and return result (no conversion needed!)
+            return BuildMatchResult(matchedLevels, leg1IsBuy, leg1Symbol, leg2Symbol, MatchingStrategy.DualOrderbook);
         }
 
         /// <summary>
@@ -397,48 +376,55 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         private static MatchResult MatchSingleOrderbook(
             IAlgorithm algorithm,
-            Symbol symbol1,
-            Symbol symbol2,
-            decimal targetUsd,
-            ArbitrageDirection direction,
-            decimal expectedSpreadPct)
+            IArbitragePortfolioTarget target,
+            decimal targetUsd)
         {
-            // Determine which symbol has orderbook
-            var hasOb1 = HasOrderbook(algorithm, symbol1);
-            var hasOb2 = HasOrderbook(algorithm, symbol2);
+            // Extract basic information
+            var leg1Symbol = target.Leg1Symbol;
+            var leg2Symbol = target.Leg2Symbol;
+            var expectedSpreadPct = target.Level.SpreadPct;
+            var leg1IsBuy = IsLeg1Buy(target);
 
-            Symbol orderbookSymbol, priceOnlySymbol;
+            // Determine which leg has orderbook
+            var hasOb1 = HasOrderbook(algorithm, leg1Symbol);
+            var hasOb2 = HasOrderbook(algorithm, leg2Symbol);
+
+            Symbol orderbookSymbol;
+            Symbol priceOnlySymbol;
+            bool orderbookIsLeg1;
+
             if (hasOb1)
             {
-                orderbookSymbol = symbol1;
-                priceOnlySymbol = symbol2;
+                orderbookSymbol = leg1Symbol;
+                priceOnlySymbol = leg2Symbol;
+                orderbookIsLeg1 = true;
             }
             else if (hasOb2)
             {
-                orderbookSymbol = symbol2;
-                priceOnlySymbol = symbol1;
+                orderbookSymbol = leg2Symbol;
+                priceOnlySymbol = leg1Symbol;
+                orderbookIsLeg1 = false;
             }
             else
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = "No orderbook available for either symbol",
+                    RejectReason = "No orderbook available for either leg",
                     UsedStrategy = MatchingStrategy.SingleOrderbook
                 };
             }
 
-            // Determine buy/sell sides
-            var (buySymbol, sellSymbol) = DetermineBuySellSides(symbol1, symbol2, direction);
-
-            // Get orderbook and best price
+            // Get orderbook and price-only security
             var orderbook = GetOrderbook(algorithm, orderbookSymbol);
             var priceOnlySecurity = algorithm.Securities[priceOnlySymbol];
 
-            // Determine which side has orderbook
-            var isOrderbookBuy = (orderbookSymbol == buySymbol);
-            var orderbookLevels = isOrderbookBuy ? orderbook.Asks : orderbook.Bids;
-            var priceOnlyPrice = isOrderbookBuy ? priceOnlySecurity.BidPrice : priceOnlySecurity.AskPrice;
+            // Determine which leg is buy side
+            bool orderbookIsBuy = orderbookIsLeg1 ? leg1IsBuy : !leg1IsBuy;
+
+            // Get corresponding levels and price
+            var orderbookLevels = GetOrderbookLevels(orderbook, orderbookIsBuy);
+            var priceOnlyPrice = GetExecutionPrice(priceOnlySecurity, !orderbookIsBuy);
 
             if (priceOnlyPrice <= 0)
             {
@@ -468,43 +454,43 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 var obPrice = level.Price;
                 var obSize = level.Size;
 
-                // Calculate spread using leg1/leg2 prices
-                var buyPrice = isOrderbookBuy ? obPrice : priceOnlyPrice;
-                var sellPrice = isOrderbookBuy ? priceOnlyPrice : obPrice;
-                var leg1Price = (orderbookSymbol == symbol1) ? obPrice : priceOnlyPrice;
-                var leg2Price = (orderbookSymbol == symbol2) ? obPrice : priceOnlyPrice;
+                // Determine leg1/leg2 prices
+                var leg1Price = orderbookIsLeg1 ? obPrice : priceOnlyPrice;
+                var leg2Price = orderbookIsLeg1 ? priceOnlyPrice : obPrice;
+
+                // Calculate spread
                 var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
 
                 // Validate spread
-                if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
+                if (!ValidateSpread(spreadPct, expectedSpreadPct, leg1IsBuy))
                 {
                     break; // Stop matching if spread no longer favorable
                 }
 
                 // Calculate matched quantities
                 var remainingUsd = targetUsd - accumulatedUsd;
-                var (matchedBuyQty, matchedSellQty, matchUsd) = isOrderbookBuy
-                    ? CalculateMatchedQuantities(buyPrice, sellPrice, obSize, decimal.MaxValue, remainingUsd, obLotSize, poLotSize)
-                    : CalculateMatchedQuantities(buyPrice, sellPrice, decimal.MaxValue, obSize, remainingUsd, poLotSize, obLotSize);
+
+                // Set available sizes based on which leg has orderbook
+                var leg1AvailableSize = orderbookIsLeg1 ? obSize : decimal.MaxValue;
+                var leg2AvailableSize = orderbookIsLeg1 ? decimal.MaxValue : obSize;
+
+                var (matchedLeg1Qty, matchedLeg2Qty, matchUsd) = CalculateMatchedQuantitiesForLegs(
+                    leg1Price, leg2Price,
+                    leg1AvailableSize, leg2AvailableSize,
+                    remainingUsd,
+                    orderbookIsLeg1 ? obLotSize : poLotSize,
+                    orderbookIsLeg1 ? poLotSize : obLotSize,
+                    leg1IsBuy
+                );
 
                 if (matchUsd > 0)
                 {
-                    // Determine price1/price2 and qty1/qty2
-                    var price1 = orderbookSymbol == symbol1 ? obPrice : priceOnlyPrice;
-                    var price2 = orderbookSymbol == symbol2 ? obPrice : priceOnlyPrice;
-                    var qty1 = orderbookSymbol == symbol1
-                        ? (isOrderbookBuy ? matchedBuyQty : matchedSellQty)
-                        : (isOrderbookBuy ? matchedSellQty : matchedBuyQty);
-                    var qty2 = orderbookSymbol == symbol2
-                        ? (isOrderbookBuy ? matchedBuyQty : matchedSellQty)
-                        : (isOrderbookBuy ? matchedSellQty : matchedBuyQty);
-
                     matchedLevels.Add(new MatchLevel
                     {
-                        Price1 = price1,
-                        Price2 = price2,
-                        Quantity1 = qty1,
-                        Quantity2 = qty2,
+                        Price1 = leg1Price,
+                        Price2 = leg2Price,
+                        Quantity1 = matchedLeg1Qty,
+                        Quantity2 = matchedLeg2Qty,
                         UsdValue = matchUsd,
                         SpreadPct = spreadPct
                     });
@@ -513,7 +499,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 }
             }
 
-            return BuildMatchResult(matchedLevels, buySymbol, sellSymbol, symbol1, symbol2, MatchingStrategy.SingleOrderbook);
+            return BuildMatchResult(matchedLevels, leg1IsBuy, leg1Symbol, leg2Symbol, MatchingStrategy.SingleOrderbook);
         }
 
         /// <summary>
@@ -522,50 +508,46 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         private static MatchResult MatchBestPrices(
             IAlgorithm algorithm,
-            Symbol symbol1,
-            Symbol symbol2,
-            decimal targetUsd,
-            ArbitrageDirection direction,
-            decimal expectedSpreadPct)
+            IArbitragePortfolioTarget target,
+            decimal targetUsd)
         {
+            // Extract basic information
+            var leg1Symbol = target.Leg1Symbol;
+            var leg2Symbol = target.Leg2Symbol;
+            var expectedSpreadPct = target.Level.SpreadPct;
+            var leg1IsBuy = IsLeg1Buy(target);
+
             // Get securities
-            if (!algorithm.Securities.ContainsKey(symbol1) || !algorithm.Securities.ContainsKey(symbol2))
+            if (!algorithm.Securities.ContainsKey(leg1Symbol) || !algorithm.Securities.ContainsKey(leg2Symbol))
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = "One or both symbols not found in securities",
+                    RejectReason = "One or both legs not found in securities",
                     UsedStrategy = MatchingStrategy.BestPrices
                 };
             }
 
-            var security1 = algorithm.Securities[symbol1];
-            var security2 = algorithm.Securities[symbol2];
+            var leg1Security = algorithm.Securities[leg1Symbol];
+            var leg2Security = algorithm.Securities[leg2Symbol];
 
-            // Determine buy/sell sides
-            var (buySymbol, sellSymbol) = DetermineBuySellSides(symbol1, symbol2, direction);
-            var buySecurity = buySymbol == symbol1 ? security1 : security2;
-            var sellSecurity = buySymbol == symbol1 ? security2 : security1;
+            // Get execution prices (buy at ask, sell at bid)
+            var leg1Price = GetExecutionPrice(leg1Security, leg1IsBuy);
+            var leg2Price = GetExecutionPrice(leg2Security, !leg1IsBuy);
 
-            // Get best prices
-            var buyPrice = buySecurity.AskPrice; // Buy at ask
-            var sellPrice = sellSecurity.BidPrice; // Sell at bid
-
-            if (buyPrice <= 0 || sellPrice <= 0)
+            if (leg1Price <= 0 || leg2Price <= 0)
             {
                 return new MatchResult
                 {
                     Executable = false,
-                    RejectReason = $"Invalid prices: buy={buyPrice}, sell={sellPrice}",
+                    RejectReason = $"Invalid prices: leg1={leg1Price}, leg2={leg2Price}",
                     UsedStrategy = MatchingStrategy.BestPrices
                 };
             }
 
-            // Calculate spread using leg1/leg2 prices
-            var leg1Price = (buySymbol == symbol1) ? buyPrice : sellPrice;
-            var leg2Price = (buySymbol == symbol2) ? buyPrice : sellPrice;
+            // Calculate spread
             var spreadPct = CalculateSpreadPct(leg1Price, leg2Price);
-            if (!ValidateSpread(spreadPct, expectedSpreadPct, direction))
+            if (!ValidateSpread(spreadPct, expectedSpreadPct, leg1IsBuy))
             {
                 return new MatchResult
                 {
@@ -576,21 +558,19 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             // Get lot sizes
-            var buyLotSize = buySecurity.SymbolProperties.LotSize;
-            var sellLotSize = sellSecurity.SymbolProperties.LotSize;
+            var leg1LotSize = leg1Security.SymbolProperties.LotSize;
+            var leg2LotSize = leg2Security.SymbolProperties.LotSize;
 
-            // Calculate quantities for market value equality
-            var (buyQty, sellQty, matchUsd) = CalculateMatchedQuantities(
-                buyPrice,
-                sellPrice,
-                decimal.MaxValue, // Assume infinite liquidity
-                decimal.MaxValue,
+            // Calculate quantities (assume infinite liquidity)
+            var (leg1Qty, leg2Qty, matchUsd) = CalculateMatchedQuantitiesForLegs(
+                leg1Price, leg2Price,
+                decimal.MaxValue, decimal.MaxValue,
                 targetUsd,
-                buyLotSize,
-                sellLotSize
+                leg1LotSize, leg2LotSize,
+                leg1IsBuy
             );
 
-            if (matchUsd <= 0 || buyQty <= 0 || sellQty <= 0)
+            if (matchUsd <= 0 || leg1Qty <= 0 || leg2Qty <= 0)
             {
                 return new MatchResult
                 {
@@ -600,29 +580,58 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Create match level
-            var price1 = buySymbol == symbol1 ? buyPrice : sellPrice;
-            var price2 = buySymbol == symbol2 ? buyPrice : sellPrice;
-            var qty1 = buySymbol == symbol1 ? buyQty : sellQty;
-            var qty2 = buySymbol == symbol2 ? buyQty : sellQty;
-
+            // Create match level (no conversion needed!)
             var matchedLevels = new List<MatchLevel>
             {
                 new MatchLevel
                 {
-                    Price1 = price1,
-                    Price2 = price2,
-                    Quantity1 = qty1,
-                    Quantity2 = qty2,
+                    Price1 = leg1Price,
+                    Price2 = leg2Price,
+                    Quantity1 = leg1Qty,
+                    Quantity2 = leg2Qty,
                     UsdValue = matchUsd,
                     SpreadPct = spreadPct
                 }
             };
 
-            return BuildMatchResult(matchedLevels, buySymbol, sellSymbol, symbol1, symbol2, MatchingStrategy.BestPrices);
+            return BuildMatchResult(matchedLevels, leg1IsBuy, leg1Symbol, leg2Symbol, MatchingStrategy.BestPrices);
         }
 
         #region Helper Methods
+
+        /// <summary>
+        /// Determine if Leg1 is the buy side based on arbitrage direction
+        /// </summary>
+        /// <param name="target">The arbitrage portfolio target</param>
+        /// <returns>True if Leg1 is buy side (LONG_SPREAD), false if Leg1 is sell side (SHORT_SPREAD)</returns>
+        private static bool IsLeg1Buy(IArbitragePortfolioTarget target)
+        {
+            // LONG_SPREAD: Buy Leg1, Sell Leg2
+            // SHORT_SPREAD: Sell Leg1, Buy Leg2
+            return target.Level.Direction == "LONG_SPREAD";
+        }
+
+        /// <summary>
+        /// Get execution price for a security based on whether we're buying or selling
+        /// </summary>
+        /// <param name="security">The security</param>
+        /// <param name="isBuy">True if buying (use ask), false if selling (use bid)</param>
+        /// <returns>Execution price</returns>
+        private static decimal GetExecutionPrice(Security security, bool isBuy)
+        {
+            return isBuy ? security.AskPrice : security.BidPrice;
+        }
+
+        /// <summary>
+        /// Get orderbook levels for a security based on whether we're buying or selling
+        /// </summary>
+        /// <param name="orderbook">The orderbook depth</param>
+        /// <param name="isBuy">True if buying (use asks), false if selling (use bids)</param>
+        /// <returns>Orderbook levels</returns>
+        private static IReadOnlyList<OrderbookLevel> GetOrderbookLevels(OrderbookDepth orderbook, bool isBuy)
+        {
+            return isBuy ? orderbook.Asks : orderbook.Bids;
+        }
 
         /// <summary>
         /// Check if a symbol has orderbook depth available
@@ -656,21 +665,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Determine which symbol to buy and which to sell based on direction
-        /// </summary>
-        private static (Symbol buy, Symbol sell) DetermineBuySellSides(
-            Symbol symbol1,
-            Symbol symbol2,
-            ArbitrageDirection direction)
-        {
-            // LongSpread: Buy symbol1, sell symbol2 (expect symbol1 cheaper)
-            // ShortSpread: Sell symbol1, buy symbol2 (expect symbol1 more expensive)
-            return direction == ArbitrageDirection.LongSpread
-                ? (symbol1, symbol2)
-                : (symbol2, symbol1);
-        }
-
-        /// <summary>
         /// Calculate spread percentage using unified formula: (Leg1Price - Leg2Price) / Leg1Price
         /// This matches TradingPair spread definition:
         /// - Long Spread: Buy leg1 at ask, sell leg2 at bid → (leg1_ask - leg2_bid) / leg1_ask
@@ -692,7 +686,33 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Validate that actual spread meets expected spread threshold
+        /// Validate that actual spread meets expected spread threshold (using leg1IsBuy flag)
+        /// </summary>
+        /// <param name="actualSpreadPct">Actual spread percentage</param>
+        /// <param name="expectedSpreadPct">Expected spread threshold</param>
+        /// <param name="leg1IsBuy">True if leg1 is buy side (LONG_SPREAD), false if leg1 is sell side (SHORT_SPREAD)</param>
+        /// <returns>True if spread is favorable</returns>
+        private static bool ValidateSpread(
+            decimal actualSpreadPct,
+            decimal expectedSpreadPct,
+            bool leg1IsBuy)
+        {
+            // For LONG_SPREAD (leg1IsBuy = true): We want spread to be LOW (negative is better)
+            //   Spread = (Leg1Price - Leg2Price) / Leg1Price
+            //   If Leg1 cheap, Leg2 expensive → negative spread → we buy cheap Leg1, sell expensive Leg2
+            //   Validate: actualSpread <= expectedSpread (actual should be lower/more negative)
+            //
+            // For SHORT_SPREAD (leg1IsBuy = false): We want spread to be HIGH (positive is better)
+            //   If Leg1 expensive, Leg2 cheap → positive spread → we sell expensive Leg1, buy cheap Leg2
+            //   Validate: actualSpread >= expectedSpread (actual should be higher/more positive)
+
+            return leg1IsBuy
+                ? actualSpreadPct <= expectedSpreadPct  // LONG_SPREAD: Lower is better
+                : actualSpreadPct >= expectedSpreadPct; // SHORT_SPREAD: Higher is better
+        }
+
+        /// <summary>
+        /// Validate that actual spread meets expected spread threshold (using ArbitrageDirection enum)
         /// </summary>
         private static bool ValidateSpread(
             decimal actualSpreadPct,
@@ -725,6 +745,73 @@ namespace QuantConnect.Algorithm.Framework.Execution
 
             // Round down to nearest lot
             return Math.Floor(Math.Abs(quantity) / lotSize) * lotSize * Math.Sign(quantity);
+        }
+
+        /// <summary>
+        /// Calculate matched quantities for leg1 and leg2, ensuring market value equality
+        /// </summary>
+        /// <param name="leg1Price">Price for leg1</param>
+        /// <param name="leg2Price">Price for leg2</param>
+        /// <param name="availableLeg1Size">Available liquidity for leg1</param>
+        /// <param name="availableLeg2Size">Available liquidity for leg2</param>
+        /// <param name="targetUsd">Target USD value to match</param>
+        /// <param name="leg1LotSize">Lot size for leg1</param>
+        /// <param name="leg2LotSize">Lot size for leg2</param>
+        /// <param name="leg1IsBuy">True if leg1 is buy side, false if leg1 is sell side</param>
+        /// <returns>Tuple of (leg1Qty, leg2Qty, matchUsd)</returns>
+        private static (decimal leg1Qty, decimal leg2Qty, decimal matchUsd) CalculateMatchedQuantitiesForLegs(
+            decimal leg1Price,
+            decimal leg2Price,
+            decimal availableLeg1Size,
+            decimal availableLeg2Size,
+            decimal targetUsd,
+            decimal leg1LotSize,
+            decimal leg2LotSize,
+            bool leg1IsBuy)
+        {
+            if (leg1Price <= 0 || leg2Price <= 0)
+            {
+                return (0, 0, 0);
+            }
+
+            // Determine which leg is buy and which is sell
+            decimal buyPrice = leg1IsBuy ? leg1Price : leg2Price;
+            decimal sellPrice = leg1IsBuy ? leg2Price : leg1Price;
+            decimal availableBuySize = leg1IsBuy ? availableLeg1Size : availableLeg2Size;
+            decimal availableSellSize = leg1IsBuy ? availableLeg2Size : availableLeg1Size;
+            decimal buyLotSize = leg1IsBuy ? leg1LotSize : leg2LotSize;
+            decimal sellLotSize = leg1IsBuy ? leg2LotSize : leg1LotSize;
+
+            // Start with buy side
+            var maxBuyQty = Math.Min(availableBuySize, targetUsd / buyPrice);
+            maxBuyQty = RoundToLot(maxBuyQty, buyLotSize);
+
+            if (maxBuyQty <= 0)
+            {
+                return (0, 0, 0);
+            }
+
+            // Calculate sell side for market value equality
+            var buyUsd = maxBuyQty * buyPrice;
+            var sellQty = buyUsd / sellPrice;
+            sellQty = RoundToLot(sellQty, sellLotSize);
+
+            // Check if sell side has enough liquidity
+            if (sellQty > availableSellSize)
+            {
+                // Recalculate based on sell side constraint
+                sellQty = RoundToLot(availableSellSize, sellLotSize);
+                var sellUsd = sellQty * sellPrice;
+                maxBuyQty = sellUsd / buyPrice;
+                maxBuyQty = RoundToLot(maxBuyQty, buyLotSize);
+                buyUsd = maxBuyQty * buyPrice;
+            }
+
+            // Convert back to leg1/leg2
+            var leg1Qty = leg1IsBuy ? maxBuyQty : sellQty;
+            var leg2Qty = leg1IsBuy ? sellQty : maxBuyQty;
+
+            return (leg1Qty, leg2Qty, buyUsd);
         }
 
         /// <summary>
@@ -770,6 +857,87 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             return (maxBuyQty, sellQty, buyUsd);
+        }
+
+        /// <summary>
+        /// Build final match result from matched levels (using leg1/leg2 naming)
+        /// </summary>
+        /// <param name="levels">List of matched orderbook levels</param>
+        /// <param name="leg1IsBuy">True if leg1 is buy side, false if leg1 is sell side</param>
+        /// <param name="leg1Symbol">Symbol for leg1</param>
+        /// <param name="leg2Symbol">Symbol for leg2</param>
+        /// <param name="usedStrategy">The matching strategy used</param>
+        /// <returns>Match result with signed quantities</returns>
+        private static MatchResult BuildMatchResult(
+            List<MatchLevel> levels,
+            bool leg1IsBuy,
+            Symbol leg1Symbol,
+            Symbol leg2Symbol,
+            MatchingStrategy usedStrategy)
+        {
+            if (levels == null || levels.Count == 0)
+            {
+                return new MatchResult
+                {
+                    Executable = false,
+                    RejectReason = "No valid matches found",
+                    UsedStrategy = usedStrategy
+                };
+            }
+
+            // Accumulate all levels
+            decimal totalLeg1Qty = 0;
+            decimal totalLeg2Qty = 0;
+            decimal totalLeg1Usd = 0;
+            decimal totalLeg2Usd = 0;
+            decimal weightedSpreadSum = 0;
+
+            foreach (var level in levels)
+            {
+                // Direct accumulation - no need to determine buy/sell
+                totalLeg1Qty += level.Quantity1;
+                totalLeg2Qty += level.Quantity2;
+                totalLeg1Usd += level.Quantity1 * level.Price1;
+                totalLeg2Usd += level.Quantity2 * level.Price2;
+                weightedSpreadSum += level.SpreadPct * level.UsdValue;
+            }
+
+            // Calculate average prices
+            var avgLeg1Price = totalLeg1Qty > 0 ? totalLeg1Usd / totalLeg1Qty : 0;
+            var avgLeg2Price = totalLeg2Qty > 0 ? totalLeg2Usd / totalLeg2Qty : 0;
+            var avgSpreadPct = (totalLeg1Usd + totalLeg2Usd) > 0
+                ? weightedSpreadSum / (totalLeg1Usd + totalLeg2Usd)
+                : 0;
+
+            // Determine buy/sell average prices and USD
+            var avgBuyPrice = leg1IsBuy ? avgLeg1Price : avgLeg2Price;
+            var avgSellPrice = leg1IsBuy ? avgLeg2Price : avgLeg1Price;
+            var totalBuyUsd = leg1IsBuy ? totalLeg1Usd : totalLeg2Usd;
+            var totalSellUsd = leg1IsBuy ? totalLeg2Usd : totalLeg1Usd;
+
+            // Set signed quantities (buy = positive, sell = negative)
+            var symbol1Qty = leg1IsBuy ? totalLeg1Qty : -totalLeg1Qty;
+            var symbol2Qty = leg1IsBuy ? -totalLeg2Qty : totalLeg2Qty;
+
+            // Diagnostic logging
+            Log.Trace($"[OrderbookMatcher.BuildMatchResult]");
+            Log.Trace($"  → Leg1Symbol={leg1Symbol}, Leg2Symbol={leg2Symbol}, Leg1IsBuy={leg1IsBuy}");
+            Log.Trace($"  → TotalLeg1Qty={totalLeg1Qty}, TotalLeg2Qty={totalLeg2Qty}");
+            Log.Trace($"  → Symbol1Qty={symbol1Qty}, Symbol2Qty={symbol2Qty}");
+
+            return new MatchResult
+            {
+                Symbol1Quantity = symbol1Qty,
+                Symbol2Quantity = symbol2Qty,
+                AvgBuyPrice = avgBuyPrice,
+                AvgSellPrice = avgSellPrice,
+                AvgSpreadPct = avgSpreadPct,
+                TotalBuyUsd = totalBuyUsd,
+                TotalSellUsd = totalSellUsd,
+                Executable = true,
+                MatchedLevels = levels,
+                UsedStrategy = usedStrategy
+            };
         }
 
         /// <summary>
@@ -830,6 +998,13 @@ namespace QuantConnect.Algorithm.Framework.Execution
             // Determine signed quantities for symbol1 and symbol2
             var symbol1Qty = buySymbol == symbol1 ? totalBuyQty : -totalSellQty;
             var symbol2Qty = buySymbol == symbol2 ? totalBuyQty : -totalSellQty;
+
+            // 🔍 DIAGNOSTIC: Log quantity assignment
+            Log.Trace($"[OrderbookMatcher.BuildMatchResult]");
+            Log.Trace($"  → BuySymbol={buySymbol}, SellSymbol={sellSymbol}");
+            Log.Trace($"  → Symbol1={symbol1}, Symbol2={symbol2}");
+            Log.Trace($"  → TotalBuyQty={totalBuyQty}, TotalSellQty={totalSellQty}");
+            Log.Trace($"  → Symbol1Qty={symbol1Qty}, Symbol2Qty={symbol2Qty}");
 
             return new MatchResult
             {

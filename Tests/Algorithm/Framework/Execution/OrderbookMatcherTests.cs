@@ -133,9 +133,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.AutoDetect);
 
             // Assert
@@ -164,9 +166,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.AutoDetect);
 
             // Assert
@@ -191,9 +195,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.AutoDetect);
 
             // Assert
@@ -229,9 +235,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act - LONG_SPREAD: Buy BTCUSD, Sell BTCUSDT
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.DualOrderbook);
 
             // Assert
@@ -259,9 +267,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.DualOrderbook);
 
             // Assert
@@ -294,9 +304,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act - LONG_SPREAD: Buy BTCUSD (has orderbook), Sell BTCUSDT (no orderbook)
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.SingleOrderbook);
 
             // Assert
@@ -322,9 +334,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.SingleOrderbook);
 
             // Assert
@@ -355,9 +369,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.BestPrices);
 
             // Assert
@@ -390,9 +406,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.BestPrices);
 
             // Assert
@@ -424,9 +442,11 @@ namespace QuantConnect.Tests.Algorithm.Framework.Execution
             );
 
             // Act
+            var targetUsd = Math.Abs(target.Leg1Quantity) * _algorithm.Securities[target.Leg1Symbol].Price;
             var result = OrderbookMatcher.MatchPair(
                 _algorithm,
                 target,
+                targetUsd,
                 MatchingStrategy.BestPrices);
 
             // Assert
