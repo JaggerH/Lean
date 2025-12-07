@@ -71,8 +71,7 @@ var levelPair = new GridLevelPair(
     entrySpreadPct: -0.02,
     exitSpreadPct: -0.005,
     direction: "LONG_SPREAD",
-    positionSizePct: 0.25,
-    pairSymbol: (btc, mstr)  // 用于验证，不存储
+    positionSizePct: 0.25
 );
 ```
 
