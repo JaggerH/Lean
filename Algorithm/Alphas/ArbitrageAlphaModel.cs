@@ -117,6 +117,9 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             // Update all trading pairs with latest market data
             aiAlgo.TradingPairs.UpdateAll();
 
+            // Track spread percentage statistics (for debugging signal generation)
+            TrackSpreadStats(aiAlgo);
+
             // Check each trading pair for grid triggers
             foreach (var pair in aiAlgo.TradingPairs)
             {

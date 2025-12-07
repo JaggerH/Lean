@@ -14,6 +14,8 @@
 */
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using QuantConnect.Data;
 using QuantConnect.Interfaces;
 using QuantConnect.Logging;
@@ -24,6 +26,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
     /// Monitoring and performance tracking functionality for ArbitrageAlphaModel.
     /// This partial class handles Slice update rate statistics to help evaluate
     /// whether optimization (filtering by updated symbols) would be beneficial.
+    /// Also tracks spread percentage ranges for debugging and analysis.
     /// </summary>
     public partial class ArbitrageAlphaModel
     {
@@ -51,6 +54,32 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// Interval between statistics reports (default: 5 minutes)
         /// </summary>
         private readonly TimeSpan _statsReportInterval = TimeSpan.FromMinutes(5);
+
+        /// <summary>
+        /// Time of last spread statistics report
+        /// </summary>
+        private DateTime _lastSpreadReport;
+
+        /// <summary>
+        /// Interval between spread statistics reports (default: 1 hour)
+        /// </summary>
+        private readonly TimeSpan _spreadReportInterval = TimeSpan.FromHours(1);
+
+        /// <summary>
+        /// Spread statistics per trading pair (key: pair.Key)
+        /// </summary>
+        private readonly Dictionary<string, SpreadStats> _spreadStatsByPair = new Dictionary<string, SpreadStats>();
+
+        /// <summary>
+        /// Holds min/max spread percentage statistics for a trading pair
+        /// </summary>
+        private class SpreadStats
+        {
+            public decimal MinSpread { get; set; } = decimal.MaxValue;
+            public decimal MaxSpread { get; set; } = decimal.MinValue;
+            public int SampleCount { get; set; }
+            public int ValidPriceCount { get; set; }
+        };
 
         /// <summary>
         /// Tracks Slice update statistics and logs a report every 5 minutes.
@@ -147,6 +176,124 @@ namespace QuantConnect.Algorithm.Framework.Alphas
             _totalSliceUpdates = 0;
             _totalSymbolsUpdated = 0;
             _totalSymbolsAvailable = 0;
+        }
+
+        /// <summary>
+        /// Tracks spread percentage statistics for all trading pairs and logs a report every hour.
+        /// This helps monitor spread volatility and debug signal generation issues.
+        /// </summary>
+        /// <param name="algorithm">The algorithm instance</param>
+        private void TrackSpreadStats(AIAlgorithm algorithm)
+        {
+            // Initialize on first call
+            if (_lastSpreadReport == DateTime.MinValue)
+            {
+                _lastSpreadReport = algorithm.UtcTime;
+                Log.Trace($"TrackSpreadStats: Initialized at {algorithm.UtcTime}");
+            }
+
+            // Collect spread data from all trading pairs (silently)
+            foreach (var pair in algorithm.TradingPairs)
+            {
+                // Get or create stats for this pair
+                if (!_spreadStatsByPair.TryGetValue(pair.Key, out var stats))
+                {
+                    stats = new SpreadStats();
+                    _spreadStatsByPair[pair.Key] = stats;
+                }
+
+                // Increment total sample count
+                stats.SampleCount++;
+
+                // Skip pairs without valid prices (don't log every time to avoid spam)
+                if (!pair.HasValidPrices)
+                {
+                    continue;
+                }
+
+                // Track valid price count
+                stats.ValidPriceCount++;
+
+                // Update min/max spread
+                decimal currentSpread = pair.TheoreticalSpread;
+                if (currentSpread < stats.MinSpread)
+                {
+                    stats.MinSpread = currentSpread;
+                }
+                if (currentSpread > stats.MaxSpread)
+                {
+                    stats.MaxSpread = currentSpread;
+                }
+            }
+
+            // Check if it's time to report
+            if (algorithm.UtcTime - _lastSpreadReport >= _spreadReportInterval)
+            {
+                ReportSpreadStats(algorithm.UtcTime);
+                ResetSpreadStats(algorithm.UtcTime);
+            }
+        }
+
+        /// <summary>
+        /// Logs a comprehensive report of spread percentage ranges for all trading pairs.
+        /// </summary>
+        /// <param name="currentTime">Current UTC time</param>
+        private void ReportSpreadStats(DateTime currentTime)
+        {
+            if (_spreadStatsByPair.Count == 0)
+            {
+                return;
+            }
+
+            // Log the report header
+            Log.Trace($"═══════════════════════════════════════════════════════════════");
+            Log.Trace($"ArbitrageAlphaModel - Spread Percentage Statistics Report");
+            Log.Trace($"═══════════════════════════════════════════════════════════════");
+            Log.Trace($"Report Time: {currentTime:yyyy-MM-dd HH:mm:ss} UTC");
+            Log.Trace($"Time Period: {_spreadReportInterval.TotalMinutes:F0} minutes");
+            Log.Trace($"───────────────────────────────────────────────────────────────");
+
+            // Log stats for each pair
+            foreach (var kvp in _spreadStatsByPair)
+            {
+                var pairKey = kvp.Key;
+                var stats = kvp.Value;
+
+                // Calculate statistics
+                double validPercent = stats.SampleCount > 0
+                    ? (double)stats.ValidPriceCount / stats.SampleCount * 100
+                    : 0;
+
+                Log.Trace($"Pair: {pairKey}");
+                Log.Trace($"  Data Availability: {stats.ValidPriceCount:N0}/{stats.SampleCount:N0} ({validPercent:F1}%)");
+
+                if (stats.ValidPriceCount > 0)
+                {
+                    // Only calculate range if we have valid data (avoid overflow)
+                    decimal range = stats.MaxSpread - stats.MinSpread;
+                    Log.Trace($"  Min Spread: {stats.MinSpread:P4}");
+                    Log.Trace($"  Max Spread: {stats.MaxSpread:P4}");
+                    Log.Trace($"  Range:      {range:P4}");
+                }
+                else
+                {
+                    Log.Trace($"  No valid prices during this period");
+                }
+
+                Log.Trace($"───────────────────────────────────────────────────────────────");
+            }
+
+            Log.Trace($"═══════════════════════════════════════════════════════════════");
+        }
+
+        /// <summary>
+        /// Resets spread statistics for the next reporting period.
+        /// </summary>
+        /// <param name="currentTime">Current UTC time</param>
+        private void ResetSpreadStats(DateTime currentTime)
+        {
+            _lastSpreadReport = currentTime;
+            _spreadStatsByPair.Clear();
         }
     }
 }
