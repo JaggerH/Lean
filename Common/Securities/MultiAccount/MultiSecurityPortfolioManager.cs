@@ -414,7 +414,7 @@ namespace QuantConnect.Securities.MultiAccount
         /// <summary>
         /// Validates if there is sufficient buying power for the given orders by routing to appropriate sub-accounts
         /// </summary>
-        public new HasSufficientBuyingPowerForOrderResult HasSufficientBuyingPowerForOrder(List<Order> orders)
+        public override HasSufficientBuyingPowerForOrderResult HasSufficientBuyingPowerForOrder(List<Order> orders)
         {
             if (orders == null || orders.Count == 0)
             {

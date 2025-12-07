@@ -917,7 +917,7 @@ namespace QuantConnect.Securities
         /// </summary>
         /// <param name="orders">The orders to check</param>
         /// <returns>True if the algorithm has enough buying power available</returns>
-        public HasSufficientBuyingPowerForOrderResult HasSufficientBuyingPowerForOrder(List<Order> orders)
+        public virtual HasSufficientBuyingPowerForOrderResult HasSufficientBuyingPowerForOrder(List<Order> orders)
         {
             if (Positions.TryCreatePositionGroup(orders, out var group))
             {
