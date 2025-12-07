@@ -16,10 +16,10 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Symbol mapping: Gate.io → Kraken LEAN format
+# Symbol mapping: Gate.io → Gate LEAN format
 SYMBOL_MAP = {
-    'AAPLX_USDT': 'AAPLXUSD',
-    'TSLAX_USDT': 'TSLAXUSD',
+    'AAPLX_USDT': 'AAPLXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
+    'TSLAX_USDT': 'TSLAXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
 }
 
 # Configuration

@@ -171,11 +171,11 @@ class GateIOConverter:
 
     DEFAULT_DEPTH_INPUT = "raw_data/gate_orderbook_tick/202509"
     DEFAULT_TRADE_INPUT = "raw_data/gate_trade_tick"
-    DEFAULT_OUTPUT = "Data/crypto/kraken/tick"
+    DEFAULT_OUTPUT = "Data/crypto/gate/tick"  # Fixed: Changed from kraken to gate
 
     SYMBOLS = {
-        '1': ('AAPLX_USDT', 'AAPLXUSD'),
-        '2': ('TSLAX_USDT', 'TSLAXUSD'),
+        '1': ('AAPLX_USDT', 'AAPLXUSDT'),  # Fixed: Added 'T' suffix
+        '2': ('TSLAX_USDT', 'TSLAXUSDT'),  # Fixed: Added 'T' suffix
         '3': ('ALL', 'ALL')
     }
 
