@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Algorithm.Framework.Portfolio;
 using QuantConnect.Data.UniverseSelection;
@@ -29,7 +30,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
     /// Executes both legs of paired positions with Tag-based tracking for per-position management.
     /// This is fundamentally different from standard ExecutionModel which handles IPortfolioTarget.
     /// </summary>
-    public class ArbitrageExecutionModel : IArbitrageExecutionModel
+    public partial class ArbitrageExecutionModel : IArbitrageExecutionModel
     {
         private readonly ArbitragePortfolioTargetCollection _targetsCollection = new ArbitragePortfolioTargetCollection();
 
@@ -100,7 +101,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
             // === Step 2: Single-leg sweep order (highest priority) ===
             if (ShouldSweepOrder(algorithm, target))
             {
-                algorithm.Debug($"ArbitrageExecutionModel: Detected single-leg fill imbalance for {target.Tag}, executing sweep order");
                 SweepOrder(algorithm, target);
                 return;
             }
@@ -128,7 +128,6 @@ namespace QuantConnect.Algorithm.Framework.Execution
             // Validate match result
             if (matchResult == null || !matchResult.Executable)
             {
-                algorithm.Debug($"ArbitrageExecutionModel: Orderbook matching rejected for {target.Tag}: {matchResult?.RejectReason ?? "null result"}");
                 return;
             }
 
@@ -141,23 +140,48 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// </summary>
         private void PlaceMatchedOrders(AQCAlgorithm algorithm, IArbitragePortfolioTarget target, MatchResult matchResult)
         {
+            var leg1Security = algorithm.Securities[target.Leg1Symbol];
+            var leg2Security = algorithm.Securities[target.Leg2Symbol];
+
+            // Build pending orders
+            var pendingOrders = new List<PendingOrder>
+            {
+                new PendingOrder
+                {
+                    Symbol = target.Leg1Symbol,
+                    Quantity = matchResult.Symbol1Quantity
+                },
+                new PendingOrder
+                {
+                    Symbol = target.Leg2Symbol,
+                    Quantity = matchResult.Symbol2Quantity
+                }
+            };
+
+            // Build order context
+            var context = new OrderContext
+            {
+                OrderType = "Matched",
+                Spread = matchResult.AvgSpreadPct,
+                Strategy = matchResult.UsedStrategy.ToString()
+            };
+
+            // Log before placing orders
+            OnPlacingOrders(algorithm, target, pendingOrders, context);
+
             // Place leg1 order
-            var lot1 = algorithm.Securities[target.Leg1Symbol].SymbolProperties.LotSize;
+            var lot1 = leg1Security.SymbolProperties.LotSize;
             if (Math.Abs(matchResult.Symbol1Quantity) >= lot1)
             {
                 algorithm.MarketOrder(target.Leg1Symbol, matchResult.Symbol1Quantity, Asynchronous, target.Tag);
             }
 
             // Place leg2 order
-            var lot2 = algorithm.Securities[target.Leg2Symbol].SymbolProperties.LotSize;
+            var lot2 = leg2Security.SymbolProperties.LotSize;
             if (Math.Abs(matchResult.Symbol2Quantity) >= lot2)
             {
                 algorithm.MarketOrder(target.Leg2Symbol, matchResult.Symbol2Quantity, Asynchronous, target.Tag);
             }
-
-            algorithm.Debug($"ArbitrageExecutionModel: Orderbook-matched orders placed | " +
-                $"{target.Leg1Symbol}={matchResult.Symbol1Quantity:F4} {target.Leg2Symbol}={matchResult.Symbol2Quantity:F4} | " +
-                $"spread={matchResult.AvgSpreadPct:P2} strategy={matchResult.UsedStrategy} tag={target.Tag}");
         }
 
         /// <summary>
@@ -339,9 +363,28 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 var leg1Qty = OrderSizing.AdjustByLotSize(leg1Security, leg1Remaining);
                 if (Math.Abs(leg1Qty) >= lot1)
                 {
+                    // Build pending order
+                    var pendingOrders = new List<PendingOrder>
+                    {
+                        new PendingOrder
+                        {
+                            Symbol = target.Leg1Symbol,
+                            Quantity = leg1Qty,
+                            Remaining = leg1Remaining
+                        }
+                    };
+
+                    // Build order context
+                    var context = new OrderContext
+                    {
+                        OrderType = "Sweep",
+                        Reason = $"{target.Leg2Symbol} filled"
+                    };
+
+                    // Log before placing order
+                    OnPlacingOrders(algorithm, target, pendingOrders, context);
+
                     algorithm.MarketOrder(target.Leg1Symbol, leg1Qty, Asynchronous, target.Tag);
-                    algorithm.Debug($"ArbitrageExecutionModel: Sweep order | {target.Leg1Symbol}={leg1Qty:F4} | " +
-                        $"Reason: {target.Leg2Symbol} filled | Tag={target.Tag}");
                 }
             }
 
@@ -351,9 +394,28 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 var leg2Qty = OrderSizing.AdjustByLotSize(leg2Security, leg2Remaining);
                 if (Math.Abs(leg2Qty) >= lot2)
                 {
+                    // Build pending order
+                    var pendingOrders = new List<PendingOrder>
+                    {
+                        new PendingOrder
+                        {
+                            Symbol = target.Leg2Symbol,
+                            Quantity = leg2Qty,
+                            Remaining = leg2Remaining
+                        }
+                    };
+
+                    // Build order context
+                    var context = new OrderContext
+                    {
+                        OrderType = "Sweep",
+                        Reason = $"{target.Leg1Symbol} filled"
+                    };
+
+                    // Log before placing order
+                    OnPlacingOrders(algorithm, target, pendingOrders, context);
+
                     algorithm.MarketOrder(target.Leg2Symbol, leg2Qty, Asynchronous, target.Tag);
-                    algorithm.Debug($"ArbitrageExecutionModel: Sweep order | {target.Leg2Symbol}={leg2Qty:F4} | " +
-                        $"Reason: {target.Leg1Symbol} filled | Tag={target.Tag}");
                 }
             }
         }
