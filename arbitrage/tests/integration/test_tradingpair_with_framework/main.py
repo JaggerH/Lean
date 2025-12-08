@@ -47,7 +47,7 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         """Initialize the algorithm"""
         # === 1. Set backtest parameters ===
         self.SetStartDate(2025, 9, 4)
-        self.SetEndDate(2025, 9, 10)
+        self.SetEndDate(2025, 9, 28)
         self.SetTimeZone("UTC")
         self.SetBenchmark(lambda x: 0)
 
@@ -73,6 +73,13 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         self.Debug(f"Added {len(self.Securities)} securities")
         self.Debug(f"  Gate crypto securities will use GateBrokerageModel (leverage, fees, etc.)")
         self.Debug(f"  USA equity securities will use InteractiveBrokersBrokerageModel")
+
+        # Log security details
+        for symbol in self.Securities.Keys:
+            security = self.Securities[symbol]
+            self.Debug(f"  {symbol}: Type={symbol.SecurityType}, Leverage={security.Leverage}, " +
+                      f"BuyingPowerModel={type(security.BuyingPowerModel).__name__}")
+
         self.Debug("=" * 60)
 
         # === 4. Setup ArbitrageAlphaModel FIRST (before adding pairs) ===
@@ -87,7 +94,7 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         alpha = ArbitrageAlphaModel(
             insightPeriod=timedelta(minutes=5),  # Insights valid for 5 minutes
             confidence=1.0,                       # 100% confidence
-            requireValidPrices=True               # Require valid bid/ask prices
+            requireValidPrices=True              # Require valid bid/ask prices
         )
 
         self.SetAlpha(alpha)
@@ -143,7 +150,7 @@ class TradingPairFrameworkTest(AQCAlgorithm):
         self.Debug("=" * 60)
 
         # Subscribe to InsightsGenerated event
-        self.InsightsGenerated += self.OnInsightsGenerated
+        # self.InsightsGenerated += self.OnInsightsGenerated
 
     def OnInsightsGenerated(self, sender, insights_collection):
         """Handle newly generated insights"""
