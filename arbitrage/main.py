@@ -105,13 +105,13 @@ class Arbitrage(AQCAlgorithm):
                     try:
                         # Add securities without manual leverage/fee configuration
                         crypto_sec = self.AddCrypto(
-                            crypto_symbol,
+                            crypto_symbol.Value,
                             Resolution.ORDERBOOK,
                             Market.Gate
                         )
 
                         stock_sec = self.AddEquity(
-                            equity_symbol,
+                            equity_symbol.Value,
                             Resolution.TICK,
                             Market.USA,
                             extendedMarketHours=self.extended_market_hours
