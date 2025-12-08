@@ -38,21 +38,20 @@ class SubscriptionHelper:
         leg1_symbol: Symbol,
         leg2_symbol: Symbol,
         pair_type: str,
-        resolution: Tuple[Resolution, Resolution] = (Resolution.TICK, Resolution.TICK),
-        fee_model: Tuple = None,
-        leverage: Tuple[float, float] = (5.0, 5.0),
+        resolution: Tuple[Resolution, Resolution] = (Resolution.ORDERBOOK, Resolution.TICK),
         extended_market_hours: bool = False
     ) -> Tuple[Security, Security]:
         """
         Subscribe to a trading pair
 
+        Note: Leverage and fee models are automatically configured by RoutedBrokerageModel
+        based on the multi-account-config in config.json. Manual configuration is no longer needed.
+
         Args:
             leg1_symbol: First leg symbol
             leg2_symbol: Second leg symbol
             pair_type: Pair type (REQUIRED) - "spot_future", "crypto_stock", "cryptofuture_stock"
-            resolution: (leg1_resolution, leg2_resolution)
-            fee_model: (leg1_fee, leg2_fee) or None for defaults
-            leverage: (leg1_leverage, leg2_leverage)
+            resolution: (leg1_resolution, leg2_resolution) - default (ORDERBOOK, TICK)
             extended_market_hours: Extended market hours for Equity (default: False)
 
         Returns:
@@ -64,24 +63,17 @@ class SubscriptionHelper:
         """
         # Parse tuple parameters
         leg1_res, leg2_res = resolution
-        leg1_lev, leg2_lev = leverage
-        leg1_fee = fee_model[0] if fee_model else None
-        leg2_fee = fee_model[1] if fee_model else None
 
         # Subscribe both legs using unified logic
         leg1_sec = self._subscribe_leg(
             leg1_symbol,
             leg1_res,
-            leg1_lev,
-            leg1_fee,
             extended_market_hours
         )
 
         leg2_sec = self._subscribe_leg(
             leg2_symbol,
             leg2_res,
-            leg2_lev,
-            leg2_fee,
             extended_market_hours
         )
 
@@ -94,18 +86,17 @@ class SubscriptionHelper:
         self,
         symbol: Symbol,
         resolution: Resolution,
-        leverage: float,
-        fee_model,
         extended_market_hours: bool
     ) -> Security:
         """
         Subscribe to a single security with unified logic
 
+        Note: Leverage and fee models are automatically configured by RoutedBrokerageModel.
+        Manual configuration has been removed to support the framework architecture.
+
         Args:
             symbol: Security symbol
             resolution: Data resolution
-            leverage: Leverage multiplier
-            fee_model: Fee model instance or None
             extended_market_hours: Extended market hours (only for Equity)
 
         Returns:
@@ -129,26 +120,20 @@ class SubscriptionHelper:
             security = self.algorithm.AddCrypto(
                 symbol.Value,
                 resolution,
-                symbol.ID.Market,
-                True,  # fillForward
-                leverage
+                symbol.ID.Market
             )
         elif sec_type == SecurityType.CryptoFuture:
             security = self.algorithm.AddCryptoFuture(
                 symbol.Value,
                 resolution,
-                symbol.ID.Market,
-                True,  # fillForward
-                leverage
+                symbol.ID.Market
             )
         elif sec_type == SecurityType.Equity:
             security = self.algorithm.AddEquity(
                 symbol.Value,
                 resolution,
                 symbol.ID.Market,
-                True,  # fillForward
-                leverage,
-                extended_market_hours
+                extendedMarketHours=extended_market_hours
             )
         else:
             raise ValueError(
@@ -157,10 +142,6 @@ class SubscriptionHelper:
             )
 
         # Configure security properties
-        security.DataNormalizationMode = DataNormalizationMode.RAW
-        security.SetBuyingPowerModel(SecurityMarginModel(leverage))
-
-        if fee_model is not None:
-            security.FeeModel = fee_model
+        # Note: Only set DataNormalizationMode - RoutedBrokerageModel handles leverage and fees
 
         return security

@@ -370,14 +370,14 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                         entrySpreadPct: -0.02m,      // Entry at -2% spread
                         exitSpreadPct: 0.01m,         // Exit at +1% spread
                         direction: "LONG_SPREAD",
-                        positionSizePct: 1.5m         // 80% position size
+                        positionSizePct: 0.8m         // 80% position size
                     ),
                     // SHORT_SPREAD: Short crypto when overpriced vs stock
                     () => new GridLevelPair(
                         entrySpreadPct: 0.03m,        // Entry at +3% spread
                         exitSpreadPct: -0.005m,       // Exit at -0.5% spread
                         direction: "SHORT_SPREAD",
-                        positionSizePct: 1.5m         // 80% position size
+                        positionSizePct: 0.8m         // 80% position size
                     )
                 },
 
