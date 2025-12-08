@@ -55,11 +55,6 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private readonly bool _requireValidPrices;
 
         /// <summary>
-        /// Whether to enable debug tracking (spread statistics)
-        /// </summary>
-        private readonly bool _debug;
-
-        /// <summary>
         /// Grid level templates for auto-configuration by pair type.
         /// Key: pairType (e.g., "crypto_stock", "spot_future")
         /// Value: Factory functions that create GridLevelPair instances
@@ -72,19 +67,16 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         /// <param name="insightPeriod">How long insights remain valid (default: 5 minutes)</param>
         /// <param name="confidence">Confidence level for insights, 0-1 (default: 1.0)</param>
         /// <param name="requireValidPrices">Whether to require valid prices before generating signals (default: true)</param>
-        /// <param name="debug">Enable debug tracking such as spread statistics (default: false)</param>
         /// <param name="gridTemplates">Optional custom grid templates by pair type. Merges with or overrides default templates.</param>
         public ArbitrageAlphaModel(
             TimeSpan? insightPeriod = null,
             double confidence = 1.0,
             bool requireValidPrices = true,
-            bool debug = false,
             Dictionary<string, List<Func<GridLevelPair>>> gridTemplates = null)
         {
             _insightPeriod = insightPeriod ?? TimeSpan.FromMinutes(5);
             _confidence = confidence;
             _requireValidPrices = requireValidPrices;
-            _debug = debug;
 
             if (_confidence < 0 || _confidence > 1)
             {
@@ -378,14 +370,14 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                         entrySpreadPct: -0.02m,      // Entry at -2% spread
                         exitSpreadPct: 0.01m,         // Exit at +1% spread
                         direction: "LONG_SPREAD",
-                        positionSizePct: 0.8m         // 80% position size
+                        positionSizePct: 1.5m         // 80% position size
                     ),
                     // SHORT_SPREAD: Short crypto when overpriced vs stock
                     () => new GridLevelPair(
                         entrySpreadPct: 0.03m,        // Entry at +3% spread
                         exitSpreadPct: -0.005m,       // Exit at -0.5% spread
                         direction: "SHORT_SPREAD",
-                        positionSizePct: 0.8m         // 80% position size
+                        positionSizePct: 1.5m         // 80% position size
                     )
                 },
 

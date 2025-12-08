@@ -187,7 +187,7 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         private void TrackSpreadStats(AIAlgorithm algorithm)
         {
             // Skip if debug mode is not enabled
-            if (!_debug)
+            if (!((QCAlgorithm)algorithm).DebugMode)
             {
                 return;
             }

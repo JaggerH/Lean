@@ -77,7 +77,7 @@ namespace QuantConnect.Algorithm.Framework.Portfolio
                 .OrderByDescending(x => x.GeneratedTimeUtc)
                 .ToList();
 
-            if (activeInsights.Count != 0)
+            if (((QCAlgorithm)algorithm).DebugMode && activeInsights.Count != 0)
             {
                 Log.Trace($"ArbitragePortfolioConstructionModel.GetTargetInsights: " +
                          $"Total active insights = {activeInsights.Count}");
