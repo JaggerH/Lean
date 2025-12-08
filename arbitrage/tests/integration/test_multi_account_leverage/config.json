@@ -1,0 +1,66 @@
+{
+  "comment": "Multi-Account Leverage Verification Test - Gate Margin Mode",
+  "comment2": "Gate Account: $50,000 with Margin mode (expected 5x leverage for Crypto)",
+
+  "environment": "backtesting",
+  "algorithm-type-name": "MultiAccountLeverageTest",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/integration/test_multi_account_leverage/main.py",
+  "data-folder": "../../../Data/",
+
+  "close-automatically": true,
+
+  "debugging": false,
+  "debugging-method": "LocalCmdline",
+
+  "log-handler": "QuantConnect.Logging.CompositeLogHandler",
+  "messaging-handler": "QuantConnect.Messaging.Messaging",
+  "job-queue-handler": "QuantConnect.Queues.JobQueue",
+  "api-handler": "QuantConnect.Api.Api",
+  "map-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskMapFileProvider",
+  "factor-file-provider": "QuantConnect.Data.Auxiliary.LocalDiskFactorFileProvider",
+  "data-provider": "QuantConnect.Lean.Engine.DataFeeds.DefaultDataProvider",
+  "data-channel-provider": "DataChannelProvider",
+  "object-store": "QuantConnect.Lean.Engine.Storage.LocalObjectStore",
+  "data-aggregator": "QuantConnect.Lean.Engine.DataFeeds.AggregationManager",
+  "setup-handler": "QuantConnect.Lean.Engine.Setup.MultiAccount.BacktestingSetupHandler",
+
+  "symbol-minute-limit": 10000,
+  "symbol-second-limit": 10000,
+  "symbol-tick-limit": 10000,
+
+  "show-missing-data-logs": false,
+  "maximum-data-points-per-chart-series": 1000000,
+  "maximum-chart-series": 30,
+
+  "comment3": "Multi-Account Configuration - Market-Based Routing",
+  "multi-account-config": {
+    "accounts": {
+      "Gate": {
+        "cash": 50000,
+        "brokerage": "BacktestingBrokerage",
+        "currency": "USDT",
+        "market": "Gate",
+        "brokerage-params": {
+          "brokerageModelType": "GateBrokerageModel",
+          "accountType": "Margin"
+        }
+      }
+    },
+    "router": {
+      "type": "Market",
+      "mappings": {
+        "Gate": "Gate"
+      },
+      "default": "Gate"
+    }
+  },
+
+  "backtesting": {
+    "name": "Gate Leverage Verification Test",
+    "comment": "Gate Account: $50,000 with Margin mode (5x leverage for Crypto)",
+    "cash": {"USDT": 50000},
+    "start-date": "2025-09-04",
+    "end-date": "2025-09-10"
+  }
+}
