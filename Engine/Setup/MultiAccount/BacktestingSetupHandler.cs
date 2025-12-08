@@ -24,6 +24,7 @@ using QuantConnect.Configuration;
 using System.Collections.Generic;
 using QuantConnect.AlgorithmFactory;
 using QuantConnect.Lean.Engine.DataFeeds;
+using QuantConnect.Brokerages;
 using QuantConnect.Brokerages.Backtesting;
 using QuantConnect.Orders;
 using QuantConnect.Securities;
@@ -194,6 +195,14 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                             multiConfig.Router);
 
                         Log.Trace("BacktestingSetupHandler.CreateBrokerage(): Portfolio replaced with MultiSecurityPortfolioManager");
+
+                        // Set BrokerageModel to RoutedBrokerageModel for multi-account scenarios
+                        if (multiConfig.MarketToBrokerageModel != null && multiConfig.MarketToBrokerageModel.Count > 0)
+                        {
+                            var routedBrokerageModel = new RoutedBrokerageModel(multiConfig.MarketToBrokerageModel);
+                            uninitializedAlgorithm.SetBrokerageModel(routedBrokerageModel);
+                            Log.Trace($"BacktestingSetupHandler.CreateBrokerage(): Set RoutedBrokerageModel with {multiConfig.MarketToBrokerageModel.Count} market mappings");
+                        }
                     }
                 }
                 catch (Exception ex)

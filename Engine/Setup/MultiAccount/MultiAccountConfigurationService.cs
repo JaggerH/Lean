@@ -125,6 +125,17 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 // Extract brokerage-params (optional)
                 var brokerageParams = accountConfig["brokerage-params"] as JObject;
 
+                // Check if brokerageModelType is specified in brokerage-params
+                string brokerageModelTypeName = null;
+                if (brokerageParams != null)
+                {
+                    var modelTypeToken = brokerageParams["brokerageModelType"];
+                    if (modelTypeToken != null)
+                    {
+                        brokerageModelTypeName = modelTypeToken.Value<string>();
+                    }
+                }
+
                 // Create BrokerageModel with custom parameters
                 try
                 {
@@ -135,7 +146,7 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                     IBrokerageModel brokerageModel;
                     if (brokerageParams != null && brokerageParams.HasValues)
                     {
-                        brokerageModel = CreateBrokerageModelWithParams(brokerageFactory, brokerageParams, uninitializedAlgorithm.Transactions, accountName);
+                        brokerageModel = CreateBrokerageModelWithParams(brokerageFactory, brokerageParams, uninitializedAlgorithm.Transactions, accountName, brokerageModelTypeName);
                     }
                     else
                     {
@@ -321,18 +332,44 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
         /// <param name="brokerageParams">Parameters from config.json</param>
         /// <param name="transactions">SecurityTransactionManager</param>
         /// <param name="accountName">Account name for logging</param>
+        /// <param name="brokerageModelTypeName">Optional: specific BrokerageModel type name to create</param>
         /// <returns>BrokerageModel instance</returns>
         private IBrokerageModel CreateBrokerageModelWithParams(
             IBrokerageFactory brokerageFactory,
             JObject brokerageParams,
             Securities.SecurityTransactionManager transactions,
-            string accountName)
+            string accountName,
+            string brokerageModelTypeName = null)
         {
-            // Get the BrokerageModel type from the factory
-            var defaultModel = brokerageFactory.GetBrokerageModel(transactions);
-            var brokerageModelType = defaultModel.GetType();
+            // Determine the BrokerageModel type
+            Type brokerageModelType;
+            if (!string.IsNullOrEmpty(brokerageModelTypeName))
+            {
+                // Use specified type name
+                try
+                {
+                    brokerageModelType = AppDomain.CurrentDomain.GetAssemblies()
+                        .SelectMany(a => a.GetTypes())
+                        .FirstOrDefault(t => t.Name.Equals(brokerageModelTypeName, StringComparison.OrdinalIgnoreCase) &&
+                                            typeof(IBrokerageModel).IsAssignableFrom(t));
 
-            Log.Trace($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Creating {brokerageModelType.Name} with custom parameters for account '{accountName}'");
+                    if (brokerageModelType == null)
+                    {
+                        throw new ArgumentException($"Could not find BrokerageModel type: {brokerageModelTypeName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Failed to find type '{brokerageModelTypeName}': {ex.Message}");
+                    throw;
+                }
+            }
+            else
+            {
+                // Get the BrokerageModel type from the factory
+                var defaultModel = brokerageFactory.GetBrokerageModel(transactions);
+                brokerageModelType = defaultModel.GetType();
+            }
 
             // Find constructors
             var constructors = brokerageModelType.GetConstructors();
@@ -399,9 +436,22 @@ namespace QuantConnect.Lean.Engine.Setup.MultiAccount
                 }
             }
 
-            // If no matching constructor found, use default
-            Log.Trace($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): No matching constructor found, using default");
-            return defaultModel;
+            // If no matching constructor found, create with default constructor
+            try
+            {
+                var instance = Activator.CreateInstance(brokerageModelType) as IBrokerageModel;
+                if (instance != null)
+                {
+                    return instance;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"MultiAccountConfigurationService.CreateBrokerageModelWithParams(): Failed to create default instance: {ex.Message}");
+            }
+
+            // Final fallback: use factory default
+            return brokerageFactory.GetBrokerageModel(transactions);
         }
 
         /// <summary>
