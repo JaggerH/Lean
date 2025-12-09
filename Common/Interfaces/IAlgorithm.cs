@@ -33,6 +33,7 @@ using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Algorithm.Framework.Alphas;
 using QuantConnect.Algorithm.Framework.Alphas.Analysis;
 using QuantConnect.Commands;
+using Common.Util;
 
 namespace QuantConnect.Interfaces
 {
@@ -839,9 +840,23 @@ namespace QuantConnect.Interfaces
         /// Get the last known price using the history provider.
         /// Useful for seeding securities with the correct price
         /// </summary>
-        /// <param name="security"><see cref="Security"/> object for which to retrieve historical data</param>
+        /// <param name="symbol">The symbol for which to retrieve historical data</param>
         /// <returns>A single <see cref="BaseData"/> object with the last known price</returns>
-        BaseData GetLastKnownPrice(Security security);
+        BaseData GetLastKnownPrice(Symbol symbol);
+
+        /// <summary>
+        /// Yields data to warmup a security for all it's subscribed data types
+        /// </summary>
+        /// <param name="symbol">The symbol for which to retrieve historical data</param>
+        /// <returns>Securities historical data</returns>
+        IEnumerable<BaseData> GetLastKnownPrices(Symbol symbol);
+
+        /// <summary>
+        /// Yields data to warm up multiple securities for all their subscribed data types
+        /// </summary>
+        /// <param name="symbols">The symbols we want to get seed data for</param>
+        /// <returns>Securities historical data</returns>
+        DataDictionary<IEnumerable<BaseData>> GetLastKnownPrices(IEnumerable<Symbol> symbols);
 
         /// <summary>
         /// Set the runtime error

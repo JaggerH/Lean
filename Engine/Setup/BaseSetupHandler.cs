@@ -29,7 +29,6 @@ using QuantConnect.AlgorithmFactory;
 using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Data.UniverseSelection;
 using QuantConnect.Lean.Engine.DataFeeds.WorkScheduling;
-using HistoryRequest = QuantConnect.Data.HistoryRequest;
 using QuantConnect.Securities;
 using QuantConnect.Securities.CurrencyConversion;
 using QuantConnect.Securities.MultiAccount;
@@ -42,6 +41,11 @@ namespace QuantConnect.Lean.Engine.Setup
     /// </summary>
     public static class BaseSetupHandler
     {
+        /// <summary>
+        /// Get the maximum time that the initialization of an algorithm can take
+        /// </summary>
+        public static TimeSpan InitializationTimeout { get; } = TimeSpan.FromSeconds(Config.GetDouble("initialization-timeout", 300));
+
         /// <summary>
         /// Get the maximum time that the creation of an algorithm can take
         /// </summary>
@@ -169,162 +173,11 @@ namespace QuantConnect.Lean.Engine.Setup
                 .Distinct()
                 .ToList();
 
-            // Log diagnostic information for currency conversion setup
-            if (cashToUpdate.Any())
-            {
-                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
-                    $"Attempting to update conversion rates for {cashToUpdate.Count} currencies: " +
-                    $"{string.Join(", ", cashToUpdate.Select(c => $"{c.Symbol} ({c.Amount})"))}");
-
-                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
-                    $"Required conversion securities: " +
-                    $"{string.Join(", ", securitiesToUpdate.Select(s => s.Symbol.Value))}");
-            }
-
-            var historyRequestFactory = new HistoryRequestFactory(algorithm);
-            var historyRequests = new List<HistoryRequest>();
-            foreach (var security in securitiesToUpdate)
-            {
-                // Only request history if security doesn't have a price yet
-                // With your brokerage implementation, subscriptions already provide initial prices
-                if (security.Price == 0)
-                {
-                    var configs = algorithm
-                        .SubscriptionManager
-                        .SubscriptionDataConfigService
-                        .GetSubscriptionDataConfigs(security.Symbol,
-                            includeInternalConfigs: true);
-
-                    // we need to order and select a specific configuration type
-                    // so the conversion rate is deterministic
-                    var configToUse = configs.OrderBy(x => x.TickType).First();
-                    var hours = security.Exchange.Hours;
-
-                    var resolution = configs.GetHighestResolution();
-                    var startTime = historyRequestFactory.GetStartTimeAlgoTz(
-                        security.Symbol,
-                        60,
-                        resolution,
-                        hours,
-                        configToUse.DataTimeZone,
-                        configToUse.Type);
-                    var endTime = algorithm.Time;
-
-                    historyRequests.Add(historyRequestFactory.CreateHistoryRequest(
-                        configToUse,
-                        startTime,
-                        endTime,
-                        security.Exchange.Hours,
-                        resolution));
-                }
-                else
-                {
-                    Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
-                        $"{security.Symbol} already has price {security.Price}, skipping history request");
-                }
-            }
-
-            // Attempt to get history for these requests and update cash
-            var slices = algorithm.HistoryProvider.GetHistory(historyRequests, algorithm.TimeZone);
-            slices.PushThrough(data =>
-            {
-                foreach (var security in securitiesToUpdate.Where(x => x.Symbol == data.Symbol))
-                {
-                    security.SetMarketPrice(data);
-                }
-            });
+            AlgorithmUtils.SeedSecurities(securitiesToUpdate, algorithm);
 
             foreach (var cash in cashToUpdate)
             {
                 cash.Update();
-            }
-
-            // Log conversion results
-            var successfulConversions = cashToUpdate.Where(c => c.ConversionRate > 0).ToList();
-            var failedConversions = cashToUpdate.Where(c => c.ConversionRate == 0).ToList();
-
-            if (successfulConversions.Any())
-            {
-                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
-                    $"Successfully updated {successfulConversions.Count} conversion rates: " +
-                    $"{string.Join(", ", successfulConversions.Select(c => $"{c.Symbol}={c.ConversionRate:F4}"))}");
-            }
-
-            if (failedConversions.Any())
-            {
-                Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): " +
-                    $"WARNING: {failedConversions.Count} currencies still have zero conversion rate: " +
-                    $"{string.Join(", ", failedConversions.Select(c => c.Symbol))}");
-            }
-
-            // Any remaining unassigned cash will attempt to fall back to a daily resolution history request to resolve
-            var unassignedCash = cashToUpdate.Where(x => x.ConversionRate == 0).ToList();
-            if (unassignedCash.Any())
-            {
-                Log.Trace(
-                    $"Failed to assign conversion rates for the following cash: {string.Join(",", unassignedCash.Select(x => x.Symbol))}." +
-                    $" Attempting to request daily resolution history to resolve conversion rate");
-
-                var unassignedCashSymbols = unassignedCash
-                    .SelectMany(x => x.SecuritySymbols)
-                    .ToHashSet();
-
-                var replacementHistoryRequests = new List<HistoryRequest>();
-                foreach (var request in historyRequests.Where(x =>
-                    unassignedCashSymbols.Contains(x.Symbol) && x.Resolution < Resolution.Daily))
-                {
-                    var newRequest = new HistoryRequest(request.EndTimeUtc.AddDays(-10), request.EndTimeUtc,
-                        request.DataType,
-                        request.Symbol, Resolution.Daily, request.ExchangeHours, request.DataTimeZone,
-                        request.FillForwardResolution,
-                        request.IncludeExtendedMarketHours, request.IsCustomData, request.DataNormalizationMode,
-                        request.TickType);
-
-                    replacementHistoryRequests.Add(newRequest);
-                }
-
-                slices = algorithm.HistoryProvider.GetHistory(replacementHistoryRequests, algorithm.TimeZone);
-                slices.PushThrough(data =>
-                {
-                    foreach (var security in securitiesToUpdate.Where(x => x.Symbol == data.Symbol))
-                    {
-                        security.SetMarketPrice(data);
-                    }
-                });
-
-                foreach (var cash in unassignedCash)
-                {
-                    cash.Update();
-                }
-            }
-
-            // For multi-account mode: Add Identity conversions for USD-pegged stablecoins
-            // Rationale: Main portfolio may aggregate from sub-accounts using different stablecoins
-            // (e.g., Gate.io uses USDT, Coinbase uses USDC), requiring Identity conversions
-            if (algorithm.Portfolio is MultiSecurityPortfolioManager)
-            {
-                var mainCashBook = algorithm.Portfolio.CashBook;
-                var accountCurrency = mainCashBook.AccountCurrency;
-
-                foreach (var cashKvp in mainCashBook)
-                {
-                    var currency = cashKvp.Key;
-                    var cash = cashKvp.Value;
-
-                    // Skip if already has conversion or is the account currency
-                    if (cash.CurrencyConversion != null || currency == accountCurrency)
-                    {
-                        continue;
-                    }
-
-                    // Check if this is a USD-pegged stablecoin that needs Identity conversion
-                    if (UsdPeggedStablecoinRegistry.IsUsdPegged(currency))
-                    {
-                        Log.Trace($"BaseSetupHandler.SetupCurrencyConversions(): Adding {currency}→{accountCurrency} Identity conversion for multi-account mode");
-                        cash.CurrencyConversion = ConstantCurrencyConversion.Identity(currency, accountCurrency);
-                        cash.Update();
-                    }
-                }
             }
 
             Log.Trace($"BaseSetupHandler.SetupCurrencyConversions():{Environment.NewLine}" +
@@ -342,10 +195,11 @@ namespace QuantConnect.Lean.Engine.Setup
         {
             var isolator = new Isolator();
             return isolator.ExecuteWithTimeLimit(TimeSpan.FromMinutes(5),
-                () => {
+                () =>
+                {
                     DebuggerHelper.Initialize(algorithmNodePacket.Language, out var workersInitializationCallback);
 
-                    if(workersInitializationCallback != null)
+                    if (workersInitializationCallback != null)
                     {
                         // initialize workers for debugging if required
                         WeightedWorkScheduler.Instance.AddSingleCallForAll(workersInitializationCallback);

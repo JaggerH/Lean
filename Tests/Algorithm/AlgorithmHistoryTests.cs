@@ -522,6 +522,7 @@ def getTickHistory(algorithm, symbol, start, end):
         public void TimeSpanHistoryRequestIsCorrectlyBuilt(Resolution resolution, Language language, bool symbolAlreadyAdded)
         {
             _algorithm.SetStartDate(2013, 10, 07);
+            _algorithm.Settings.SeedInitialPrices = false;
 
             var symbol = Symbols.SPY;
             if (symbolAlreadyAdded)
@@ -618,6 +619,7 @@ def getTickHistory(algorithm, symbol, start, end):
             bool symbolAlreadyAdded, DateTime dateTime, Resolution? defaultResolution, bool multiSymbol)
         {
             _algorithm.SetStartDate(dateTime);
+            _algorithm.Settings.SeedInitialPrices = false;
 
             if (symbolAlreadyAdded)
             {
@@ -695,6 +697,7 @@ def getTickHistory(algorithm, symbol, start, end):
         public void TickHistoryRequestIgnoresFillForward(Language language, bool symbolAlreadyAdded)
         {
             _algorithm.SetStartDate(2013, 10, 07);
+            _algorithm.Settings.SeedInitialPrices = false;
 
             var symbol = Symbols.SPY;
             if (symbolAlreadyAdded)
@@ -895,9 +898,10 @@ class Test(PythonData):
             var option = algorithm.AddOptionContract(Symbols.CreateOptionSymbol("AAPL", OptionRight.Call, 250m, new DateTime(2016, 01, 15)));
 
             var lastKnownPrices = algorithm.GetLastKnownPrices(option).ToList();
-            Assert.AreEqual(2, lastKnownPrices.Count);
+            Assert.AreEqual(3, lastKnownPrices.Count);
             Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(TradeBar)));
             Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(QuoteBar)));
+            Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(OpenInterest)));
         }
 
         [Test]
@@ -919,9 +923,10 @@ class Test(PythonData):
             var future = algorithm.AddSecurity(Symbols.CreateFutureSymbol(Futures.Indices.SP500EMini, new DateTime(2013, 12, 20)));
 
             var lastKnownPrices = algorithm.GetLastKnownPrices(future).ToList();
-            Assert.AreEqual(2, lastKnownPrices.Count);
+            Assert.AreEqual(3, lastKnownPrices.Count);
             Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(TradeBar)));
             Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(QuoteBar)));
+            Assert.AreEqual(1, lastKnownPrices.Count(data => data.GetType() == typeof(OpenInterest)));
         }
 
         [TestCase(Language.CSharp)]
@@ -3942,6 +3947,27 @@ def get_history(algorithm, symbol):
             Assert.AreEqual(10, algorithm.History(Symbols.SPY, 10, Resolution.Daily).Count());
         }
 
+        [Test]
+        public void DailyFuturesHistoryDoesNotIncludeSundaysAndReturnsCorrectSliceCountForPeriod([Values] bool extendedMarketHours)
+        {
+            var algorithm = GetAlgorithm(new DateTime(2013, 10, 28));
+            var future = algorithm.AddFuture(Futures.Indices.SP500EMini);
+            var history = algorithm.History([future.Symbol], 15, Resolution.Daily, fillForward: true, extendedMarketHours: extendedMarketHours).ToList();
+
+            // Five business days per week, 3 weeks from Monday 2013/10/07 to Friday 2013/10/25, Sundays are only open for extended hours
+            Assert.AreEqual(15, history.Count);
+            Assert.AreEqual(new DateTime(2013, 10, 07), history[0].Time.Date);
+
+            foreach (var slice in history)
+            {
+                foreach (var data in slice.AllData)
+                {
+                    Assert.AreNotEqual(DayOfWeek.Saturday, data.Time.DayOfWeek);
+                    Assert.AreNotEqual(DayOfWeek.Sunday, data.Time.DayOfWeek);
+                }
+            }
+        }
+
         public class CustomFundamentalTestData : BaseData
         {
             private static DateTime _currentDate;
@@ -4138,7 +4164,7 @@ def get_history(algorithm, symbol):
 
             // Initialize the object store for the algorithm
             using var store = new LocalObjectStore();
-            store.Initialize(0, 0, "", new Controls() { PersistenceIntervalSeconds = -1 });
+            store.Initialize(0, 0, "", new Controls() { PersistenceIntervalSeconds = -1 }, AlgorithmMode.Backtesting);
             algorithm.SetObjectStore(store);
 
             algorithm.SubscriptionManager.SetDataManager(new DataManagerStub(algorithm));
