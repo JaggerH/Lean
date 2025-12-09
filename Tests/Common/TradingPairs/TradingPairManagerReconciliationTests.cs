@@ -2394,12 +2394,16 @@ namespace QuantConnect.Tests.Common.TradingPairs
 
         public event EventHandler<ObjectStoreErrorRaisedEventArgs> ErrorRaised;
 
+        public long MaxSize => long.MaxValue;
+
+        public int MaxFiles => int.MaxValue;
+
         public InMemoryObjectStore(Dictionary<string, string> storage)
         {
             _storage = storage;
         }
 
-        public void Initialize(int userId, int projectId, string userToken, QuantConnect.Packets.Controls controls)
+        public void Initialize(int userId, int projectId, string userToken, QuantConnect.Packets.Controls controls, AlgorithmMode algorithmMode)
         {
             // No-op for testing
         }
