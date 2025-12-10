@@ -387,18 +387,18 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                 {
                     // LONG_SPREAD: Long spot when basis is negative
                     () => new GridLevelPair(
-                        entrySpreadPct: -0.015m,      // Entry at -1.5% basis
-                        exitSpreadPct: 0.008m,        // Exit at +0.8% basis
+                        entrySpreadPct: -0.01m,      // Entry at -1% basis
+                        exitSpreadPct: 0m,        // Exit at 0% basis
                         direction: "LONG_SPREAD",
-                        positionSizePct: 0.3m         // 30% position size
+                        positionSizePct: 0.6m         // 30% position size
                     ),
                     // SHORT_SPREAD: Short spot when basis is positive
-                    () => new GridLevelPair(
-                        entrySpreadPct: 0.025m,       // Entry at +2.5% basis
-                        exitSpreadPct: -0.008m,       // Exit at -0.8% basis
-                        direction: "SHORT_SPREAD",
-                        positionSizePct: 0.3m         // 30% position size
-                    )
+                    // () => new GridLevelPair(
+                    //     entrySpreadPct: 0.025m,       // Entry at +2.5% basis
+                    //     exitSpreadPct: -0.008m,       // Exit at -0.8% basis
+                    //     direction: "SHORT_SPREAD",
+                    //     positionSizePct: 0.3m         // 30% position size
+                    // )
                 }
 
                 // Note: "spread" type has no default template
