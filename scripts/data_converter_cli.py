@@ -182,10 +182,14 @@ class GateIOConverter:
     def __init__(self):
         self.depth_input = None
         self.trade_input = None
+        self.funding_apply_input = None
         self.output_dir = None
         self.data_type = None
         self.symbols = []
         self.market_type = 'crypto'  # Default to crypto (spot)
+        self.depth_enabled = False
+        self.trade_enabled = False
+        self.funding_apply_enabled = False
 
     def detect_market_type(self, base_dir: str) -> str:
         """
@@ -239,18 +243,32 @@ class GateIOConverter:
         print("  [1] Depth + Trade (深度 + 交易)")
         print("  [2] Depth only (仅深度)")
         print("  [3] Trade only (仅交易)")
+        print("  [4] Funding Apply only (仅资金费率，仅合约)")
+        print("  [5] All (深度 + 交易 + 资金费率)")
 
-        type_choice = get_choice("请选择", ['1', '2', '3'], '1')
+        type_choice = get_choice("请选择", ['1', '2', '3', '4', '5'], '1')
 
         if type_choice == '1':
-            self.data_type = 'all'
+            self.data_type = 'all'  # depth + trade
+            self.depth_enabled = True
+            self.trade_enabled = True
         elif type_choice == '2':
             self.data_type = 'depth'
-        else:
+            self.depth_enabled = True
+        elif type_choice == '3':
             self.data_type = 'trade'
+            self.trade_enabled = True
+        elif type_choice == '4':
+            self.data_type = 'funding_apply'
+            self.funding_apply_enabled = True
+        else:  # '5'
+            self.data_type = 'all_including_funding'  # depth + trade + funding_apply
+            self.depth_enabled = True
+            self.trade_enabled = True
+            self.funding_apply_enabled = True
 
         # Depth 输入目录
-        if self.data_type in ['depth', 'all']:
+        if self.depth_enabled:
             while True:
                 base_depth_input = get_input("Depth 数据路径", "raw_data/gate_orderbook_tick")
 
@@ -287,7 +305,7 @@ class GateIOConverter:
                     break
 
         # Trade 输入目录
-        if self.data_type in ['trade', 'all']:
+        if self.trade_enabled:
             while True:
                 # Auto-suggest trade path based on depth path structure
                 if hasattr(self, 'depth_input') and self.depth_input:
@@ -335,8 +353,76 @@ class GateIOConverter:
                         continue
                     break
 
+        # Funding Apply 输入目录
+        if self.funding_apply_enabled:
+            while True:
+                # Auto-suggest funding apply path
+                # Try to find the most recent month directory
+                from pathlib import Path
+                base_funding_path = Path("raw_data/gate_funding_apply")
+                default_funding = None
+
+                # If we have trade or depth input, extract market_type and month
+                if hasattr(self, 'trade_input') and self.trade_input:
+                    trade_path = Path(self.trade_input)
+                    if len(trade_path.parts) >= 2:
+                        market_and_month = '/'.join(trade_path.parts[-2:])
+                        default_funding = f"raw_data/gate_funding_apply/{market_and_month}"
+                elif hasattr(self, 'depth_input') and self.depth_input:
+                    depth_path = Path(self.depth_input)
+                    if len(depth_path.parts) >= 2:
+                        market_and_month = '/'.join(depth_path.parts[-2:])
+                        default_funding = f"raw_data/gate_funding_apply/{market_and_month}"
+
+                # If still no default, try to auto-detect
+                if not default_funding:
+                    # Check for cryptofuture subdirectory with month folders
+                    cryptofuture_path = base_funding_path / 'cryptofuture'
+                    if cryptofuture_path.exists():
+                        # Find month directories
+                        month_dirs = sorted([d for d in cryptofuture_path.iterdir() if d.is_dir()])
+                        if month_dirs:
+                            # Use most recent month
+                            default_funding = str(month_dirs[-1])
+                        else:
+                            default_funding = str(cryptofuture_path)
+                    else:
+                        default_funding = "raw_data/gate_funding_apply/cryptofuture"
+
+                self.funding_apply_input = get_input("Funding Apply 数据路径", default_funding)
+
+                # Detect market type from funding apply path if not already detected
+                if not self.depth_enabled and not self.trade_enabled:
+                    from pathlib import Path
+                    funding_path = Path(self.funding_apply_input)
+
+                    # Check if path contains 'cryptofuture'
+                    if 'cryptofuture' in funding_path.parts:
+                        self.market_type = 'cryptofuture'
+                        print_info("检测到市场类型: cryptofuture (USDT永续合约)")
+                    else:
+                        # Funding apply is only for cryptofuture
+                        self.market_type = 'cryptofuture'
+                        print_info("资金费率数据默认为: cryptofuture (USDT永续合约)")
+
+                file_count = scan_directory(self.funding_apply_input, "*.csv.gz")
+                if file_count > 0:
+                    print_info(f"找到 {file_count} 个 Funding Apply 数据文件")
+                    break
+                else:
+                    print_warning(f"未找到 Funding Apply 数据文件 (*.csv.gz)")
+                    if not confirm("继续使用此路径?", False):
+                        continue
+                    break
+
         # 输出目录 - use market type in default path
-        default_output = f"Data/{self.market_type}/gate/tick"
+        # Funding apply goes to margin_interest, others go to tick
+        if self.funding_apply_enabled and not self.depth_enabled and not self.trade_enabled:
+            # Funding apply only
+            default_output = f"Data/{self.market_type}/gate/margin_interest"
+        else:
+            # Depth and/or Trade
+            default_output = f"Data/{self.market_type}/gate/tick"
         self.output_dir = get_input("输出路径", default_output)
         if not validate_directory(self.output_dir, create_if_missing=True):
             return False
@@ -349,7 +435,7 @@ class GateIOConverter:
         detected_symbols = set()
 
         # Detect from depth files if available
-        if self.data_type in ['depth', 'all'] and self.depth_input:
+        if self.depth_enabled and self.depth_input:
             depth_path = Path(self.depth_input)
             for file in depth_path.glob("*.csv.gz"):
                 # Parse filename: SYMBOL-YYYYMMDDHH.csv.gz
@@ -358,10 +444,19 @@ class GateIOConverter:
                     detected_symbols.add(match.group(1))
 
         # Detect from trade files if available
-        if self.data_type in ['trade', 'all'] and self.trade_input:
+        if self.trade_enabled and self.trade_input:
             trade_path = Path(self.trade_input)
             for file in trade_path.glob("*.csv.gz"):
                 # Parse filename: SYMBOL-YYYYMM.csv.gz
+                match = re.match(r"(.+)-\d{6}\.csv\.gz", file.name)
+                if match:
+                    detected_symbols.add(match.group(1))
+
+        # Detect from funding apply files if available
+        if self.funding_apply_enabled and self.funding_apply_input:
+            funding_path = Path(self.funding_apply_input)
+            for file in funding_path.glob("*.csv.gz"):
+                # Parse filename: SYMBOL-YYYYMM.csv.gz (same as trade)
                 match = re.match(r"(.+)-\d{6}\.csv\.gz", file.name)
                 if match:
                     detected_symbols.add(match.group(1))
@@ -445,13 +540,17 @@ class GateIOConverter:
             print(f"  Depth 输入: {Colors.CYAN}{self.depth_input}{Colors.ENDC}")
         if self.trade_input:
             print(f"  Trade 输入: {Colors.CYAN}{self.trade_input}{Colors.ENDC}")
+        if self.funding_apply_input:
+            print(f"  Funding Apply 输入: {Colors.CYAN}{self.funding_apply_input}{Colors.ENDC}")
 
         print(f"  输出路径: {Colors.CYAN}{self.output_dir}{Colors.ENDC}")
 
         type_str = {
             'all': 'Depth + Trade',
             'depth': 'Depth only',
-            'trade': 'Trade only'
+            'trade': 'Trade only',
+            'funding_apply': 'Funding Apply only',
+            'all_including_funding': 'Depth + Trade + Funding Apply'
         }[self.data_type]
         print(f"  数据格式: {Colors.CYAN}{type_str}{Colors.ENDC}")
         print(f"  目标符号: {Colors.CYAN}{', '.join([s[1] for s in self.symbols])}{Colors.ENDC}")
@@ -465,7 +564,7 @@ class GateIOConverter:
         """
         try:
             # Import converters
-            from converters import gateio_depth_convertor, gateio_trade_convertor
+            from converters import gateio_depth_convertor, gateio_trade_convertor, gateio_funding_apply_convertor
 
             print_header("开始转换 Gate.io 数据")
 
@@ -473,7 +572,7 @@ class GateIOConverter:
                 print_info(f"\n处理符号: {gate_symbol} → {lean_symbol}")
 
                 # Convert Depth data
-                if self.data_type in ['depth', 'all']:
+                if self.depth_enabled:
                     print_info(f"  转换 Depth 数据...")
                     gateio_depth_convertor.main_convert(
                         input_dir=self.depth_input,
@@ -483,11 +582,23 @@ class GateIOConverter:
                     )
 
                 # Convert Trade data
-                if self.data_type in ['trade', 'all']:
+                if self.trade_enabled:
                     print_info(f"  转换 Trade 数据...")
                     gateio_trade_convertor.main_convert(
                         input_dir=self.trade_input,
                         output_dir=self.output_dir,
+                        symbol=gate_symbol if gate_symbol != 'ALL' else None,
+                        market_type=self.market_type
+                    )
+
+                # Convert Funding Apply data
+                if self.funding_apply_enabled:
+                    print_info(f"  转换 Funding Apply 数据...")
+                    # Funding apply output goes to margin_interest directory
+                    funding_output = f"Data/{self.market_type}/gate/margin_interest"
+                    gateio_funding_apply_convertor.main_convert(
+                        input_dir=self.funding_apply_input,
+                        output_dir=funding_output,
                         symbol=gate_symbol if gate_symbol != 'ALL' else None,
                         market_type=self.market_type
                     )
