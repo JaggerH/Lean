@@ -10223,9 +10223,11 @@ kraken,VTIXUSD,crypto,VTIx/USD,USD,1,0.01,0.00000001,VTIxUSD,0.5,,
 kraken,VXUSD,crypto,Vx/USD,USD,1,0.01,0.00000001,VxUSD,0.5,,
 kraken,XOMXUSD,crypto,XOMx/USD,USD,1,0.01,0.00000001,XOMxUSD,0.5,,
 gate,BTCUSDT,crypto,BTCUSDT,USDT,1,0.01,0.00001,BTC_USDT,5
-gate,ETHUSDT,crypto,ETHUSDT,USDT,1,0.01,0.0001,ETH_USDT,5
 gate,BTCUSDT,cryptofuture,BTC_USDTPerpetual,USDT,0.0001,0.1,1,BTC_USDT,1
+gate,ETHUSDT,crypto,ETHUSDT,USDT,1,0.01,0.0001,ETH_USDT,5
 gate,ETHUSDT,cryptofuture,ETH_USDTPerpetual,USDT,0.001,0.01,1,ETH_USDT,1
+gate,BNBUSDT,crypto,Binance Coin,USDT,1,0.1,0.001,BNB_USDT,3,,
+gate,BNBUSDT,cryptofuture,BNB Perpetual,USDT,0.001,0.05,1,BNB_USDT,,,
 gate,COINXUSDT,crypto,Coinbase xStock,USDT,1,0.01,0.001,COINX_USDT,3,,
 gate,ACNONUSDT,crypto,Accenture Ondo Tokenized,USDT,1,0.01,0.001,ACNON_USDT,3,,
 gate,ACNXUSDT,crypto,Accenture xStock,USDT,1,0.01,0.001,ACNX_USDT,3,,
@@ -10347,3 +10349,4 @@ gate,SLVONUSDT,crypto,iShares Silver Trust Ondo Tokenized,USDT,1,0.01,0.01,SLVON
 gate,CVXONUSDT,crypto,Chevron Ondo Tokenized,USDT,1,0.01,0.001,CVXON_USDT,3,,
 gate,TLTONUSDT,crypto,iShares 20+ Year Treasury Bond ETF Ondo Tokenized,USDT,1,0.01,0.01,TLTON_USDT,3,,
 gate,AMDONUSDT,crypto,AMD Ondo Tokenized,USDT,1,0.01,0.001,AMDON_USDT,3,,
+
