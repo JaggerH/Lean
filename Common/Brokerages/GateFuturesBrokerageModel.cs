@@ -20,6 +20,7 @@ using QuantConnect.Benchmarks;
 using QuantConnect.Orders;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
+using QuantConnect.Securities.CryptoFuture;
 using QuantConnect.Util;
 
 namespace QuantConnect.Brokerages
@@ -89,6 +90,57 @@ namespace QuantConnect.Brokerages
         public override IFeeModel GetFeeModel(Security security)
         {
             return new GateFuturesFeeModel();
+        }
+
+        /// <summary>
+        /// Gets a new buying power model for the security
+        /// </summary>
+        /// <param name="security">The security to get a buying power model for</param>
+        /// <returns>The buying power model for this brokerage/security</returns>
+        public override IBuyingPowerModel GetBuyingPowerModel(Security security)
+        {
+            if (security.Type == SecurityType.CryptoFuture)
+            {
+                // Use CryptoFutureMarginModel with Gate.io specific parameters
+                // Gate.io uses similar margin calculation to Binance
+                // Default leverage: 10x (configurable via SetLeverage)
+                // Maintenance margin rate: 5% (can vary by leverage tier)
+                return new CryptoFutureMarginModel(
+                    leverage: GetLeverage(security),
+                    maintenanceMarginRate: 0.05m,
+                    maintenanceAmount: 0
+                );
+            }
+
+            return base.GetBuyingPowerModel(security);
+        }
+
+        /// <summary>
+        /// Gets the margin interest rate model for Gate.io Futures
+        /// </summary>
+        /// <param name="security">The security to get a margin interest rate model for</param>
+        /// <returns>The margin interest rate model for this brokerage</returns>
+        public override IMarginInterestRateModel GetMarginInterestRateModel(Security security)
+        {
+            // Only applies for perpetual futures (securities with no expiration date)
+            if (security.Type == SecurityType.CryptoFuture &&
+                security.Symbol.ID.Date == SecurityIdentifier.DefaultDate)
+            {
+                return new GateFutureMarginInterestRateModel();
+            }
+
+            return base.GetMarginInterestRateModel(security);
+        }
+
+        /// <summary>
+        /// Get the benchmark for this model
+        /// </summary>
+        /// <param name="securities">SecurityService to create the security with if needed</param>
+        /// <returns>The benchmark for this brokerage</returns>
+        public override IBenchmark GetBenchmark(SecurityManager securities)
+        {
+            var symbol = Symbol.Create("BTCUSDT", SecurityType.CryptoFuture, Market.Gate);
+            return SecurityBenchmark.CreateInstance(securities, symbol);
         }
 
         /// <summary>
