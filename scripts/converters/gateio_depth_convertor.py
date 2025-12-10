@@ -426,7 +426,7 @@ def convert_daily_orderbook_depth(date_files, dst_root, lean_symbol, date_str):
     logger.info(f"  ✅ Created: {zip_path} ({len(out_df)} snapshots)")
 
 
-def main_convert(input_dir=None, output_dir=None, symbol=None):
+def main_convert(input_dir=None, output_dir=None, symbol=None, market_type='crypto'):
     """
     Main conversion function (can be called from other scripts)
 
@@ -434,12 +434,13 @@ def main_convert(input_dir=None, output_dir=None, symbol=None):
         input_dir: Input directory containing Gate.io CSV files
         output_dir: Output directory for LEAN data
         symbol: Specific symbol to convert (Gate.io format)
+        market_type: Market type - 'crypto' (spot) or 'cryptofuture' (futures_usdt)
     """
     # Use defaults if not provided
     if input_dir is None:
         input_dir = 'raw_data/gate_orderbook_tick/202509'
     if output_dir is None:
-        output_dir = 'Data/crypto/kraken/tick'
+        output_dir = f'Data/{market_type}/gate/tick'
 
     # Determine target symbols
     if symbol:

@@ -185,6 +185,45 @@ class GateIOConverter:
         self.output_dir = None
         self.data_type = None
         self.symbols = []
+        self.market_type = 'crypto'  # Default to crypto (spot)
+
+    def detect_market_type(self, base_dir: str) -> str:
+        """
+        Auto-detect market type from directory structure
+
+        Checks for crypto/ and cryptofuture/ subdirectories.
+        If both exist, asks user to select.
+        If neither exist, assumes legacy flat structure (crypto).
+
+        Args:
+            base_dir: Base directory to check (e.g., 'raw_data/gate_orderbook_tick')
+
+        Returns:
+            'crypto' or 'cryptofuture'
+        """
+        from pathlib import Path
+
+        base_path = Path(base_dir)
+        has_crypto = (base_path / 'crypto').exists()
+        has_cryptofuture = (base_path / 'cryptofuture').exists()
+
+        if has_crypto and has_cryptofuture:
+            # Both exist - ask user
+            print_info("\n检测到多种市场类型:")
+            print("  [1] crypto (现货)")
+            print("  [2] cryptofuture (USDT永续合约)")
+            choice = get_choice("请选择市场类型", ['1', '2'], '1')
+            return 'crypto' if choice == '1' else 'cryptofuture'
+        elif has_crypto:
+            print_info(f"检测到市场类型: crypto (现货)")
+            return 'crypto'
+        elif has_cryptofuture:
+            print_info(f"检测到市场类型: cryptofuture (USDT永续合约)")
+            return 'cryptofuture'
+        else:
+            # Neither exists - legacy flat structure or empty directory
+            print_info("未检测到市场类型子目录，假定为 crypto (现货)")
+            return 'crypto'
 
     def configure(self) -> bool:
         """
@@ -213,7 +252,29 @@ class GateIOConverter:
         # Depth 输入目录
         if self.data_type in ['depth', 'all']:
             while True:
-                self.depth_input = get_input("Depth 数据路径", self.DEFAULT_DEPTH_INPUT)
+                base_depth_input = get_input("Depth 数据路径", "raw_data/gate_orderbook_tick")
+
+                # Detect market type from directory structure
+                self.market_type = self.detect_market_type(base_depth_input)
+
+                # Build full path with market type and month subdirectories
+                # For new structure: raw_data/gate_orderbook_tick/crypto/202509
+                # For legacy: raw_data/gate_orderbook_tick/202509
+                from pathlib import Path
+                base_path = Path(base_depth_input)
+
+                # Check if new structure exists
+                if (base_path / self.market_type).exists():
+                    # Find month subdirectories
+                    month_dirs = sorted([d for d in (base_path / self.market_type).iterdir() if d.is_dir()])
+                    if month_dirs:
+                        # Use most recent month directory
+                        self.depth_input = str(month_dirs[-1])
+                    else:
+                        self.depth_input = str(base_path / self.market_type)
+                else:
+                    # Legacy flat structure
+                    self.depth_input = base_depth_input
 
                 file_count = scan_directory(self.depth_input, "*.csv.gz")
                 if file_count > 0:
@@ -228,7 +289,41 @@ class GateIOConverter:
         # Trade 输入目录
         if self.data_type in ['trade', 'all']:
             while True:
-                self.trade_input = get_input("Trade 数据路径", self.DEFAULT_TRADE_INPUT)
+                # Auto-suggest trade path based on depth path structure
+                if hasattr(self, 'depth_input') and self.depth_input:
+                    # If depth input is like "raw_data/gate_orderbook_tick/crypto/202510"
+                    # Suggest "raw_data/gate_trade_tick/crypto/202510"
+                    from pathlib import Path
+                    depth_path = Path(self.depth_input)
+
+                    # Try to extract market_type and month from depth path
+                    if len(depth_path.parts) >= 2:
+                        # Get last two parts (e.g., crypto/202510)
+                        market_and_month = '/'.join(depth_path.parts[-2:])
+                        default_trade = f"raw_data/gate_trade_tick/{market_and_month}"
+                    else:
+                        default_trade = self.DEFAULT_TRADE_INPUT
+                else:
+                    default_trade = self.DEFAULT_TRADE_INPUT
+
+                self.trade_input = get_input("Trade 数据路径", default_trade)
+
+                # Detect market type from trade path if not already detected from depth
+                if self.data_type == 'trade':  # Trade-only mode
+                    # Extract market type from path if present
+                    from pathlib import Path
+                    trade_path = Path(self.trade_input)
+
+                    # Check if path contains 'crypto' or 'cryptofuture'
+                    if 'cryptofuture' in trade_path.parts:
+                        self.market_type = 'cryptofuture'
+                        print_info("检测到市场类型: cryptofuture (USDT永续合约)")
+                    elif 'crypto' in trade_path.parts:
+                        self.market_type = 'crypto'
+                        print_info("检测到市场类型: crypto (现货)")
+                    else:
+                        # Fallback: detect from base directory
+                        self.market_type = self.detect_market_type(str(trade_path.parent.parent))
 
                 file_count = scan_directory(self.trade_input, "*.csv.gz")
                 if file_count > 0:
@@ -240,23 +335,104 @@ class GateIOConverter:
                         continue
                     break
 
-        # 输出目录
-        self.output_dir = get_input("输出路径", self.DEFAULT_OUTPUT)
+        # 输出目录 - use market type in default path
+        default_output = f"Data/{self.market_type}/gate/tick"
+        self.output_dir = get_input("输出路径", default_output)
         if not validate_directory(self.output_dir, create_if_missing=True):
             return False
 
-        # 选择符号
-        print_info("\n目标符号:")
-        for key, (gate_symbol, lean_symbol) in self.SYMBOLS.items():
-            print(f"  [{key}] {gate_symbol} → {lean_symbol}")
+        # 选择符号 - detect from actual files
+        print_info("\n检测符号...")
+        from pathlib import Path
+        import re
 
-        choice = get_choice("请选择", list(self.SYMBOLS.keys()), '3')
+        detected_symbols = set()
 
-        gate_symbol, lean_symbol = self.SYMBOLS[choice]
-        if gate_symbol == 'ALL':
-            self.symbols = [self.SYMBOLS['1'], self.SYMBOLS['2']]
+        # Detect from depth files if available
+        if self.data_type in ['depth', 'all'] and self.depth_input:
+            depth_path = Path(self.depth_input)
+            for file in depth_path.glob("*.csv.gz"):
+                # Parse filename: SYMBOL-YYYYMMDDHH.csv.gz
+                match = re.match(r"(.+)-\d{10}\.csv\.gz", file.name)
+                if match:
+                    detected_symbols.add(match.group(1))
+
+        # Detect from trade files if available
+        if self.data_type in ['trade', 'all'] and self.trade_input:
+            trade_path = Path(self.trade_input)
+            for file in trade_path.glob("*.csv.gz"):
+                # Parse filename: SYMBOL-YYYYMM.csv.gz
+                match = re.match(r"(.+)-\d{6}\.csv\.gz", file.name)
+                if match:
+                    detected_symbols.add(match.group(1))
+
+        if detected_symbols:
+            # Build dynamic symbol list
+            from converters.gateio_trade_convertor import SYMBOL_MAP
+
+            symbol_choices = {}
+            idx = 1
+            print_info("\n检测到的符号:")
+            for gate_symbol in sorted(detected_symbols):
+                # Get LEAN symbol from converter's mapping, or construct default
+                if gate_symbol in SYMBOL_MAP:
+                    lean_symbol = SYMBOL_MAP[gate_symbol]
+                else:
+                    # Default: remove underscore (e.g., BTC_USDT -> BTCUSDT)
+                    lean_symbol = gate_symbol.replace('_', '')
+
+                symbol_choices[str(idx)] = (gate_symbol, lean_symbol)
+                print(f"  [{idx}] {gate_symbol} → {lean_symbol}")
+                idx += 1
+
+            # Add "ALL" option
+            symbol_choices[str(idx)] = ('ALL', 'ALL')
+            print(f"  [{idx}] ALL → 全部")
+
+            # Support multi-select: user can enter "1,2,3" or "1 2 3" or just "1"
+            print_info("\n提示: 可以选择多个符号，用逗号或空格分隔（例如: 1,2 或 1 2 3）")
+            user_input = get_input("请选择", str(idx)).strip()
+
+            # Parse input - split by comma or space
+            import re
+            choices = re.split(r'[,\s]+', user_input)
+            choices = [c.strip() for c in choices if c.strip()]
+
+            # Validate and collect selected symbols
+            selected_symbols = []
+            for choice in choices:
+                if choice not in symbol_choices:
+                    print_warning(f"无效选择: {choice}，已忽略")
+                    continue
+
+                gate_symbol, lean_symbol = symbol_choices[choice]
+                if gate_symbol == 'ALL':
+                    # If "ALL" is selected, use all symbols
+                    selected_symbols = [(s, l) for s, l in symbol_choices.values() if s != 'ALL']
+                    break
+                else:
+                    selected_symbols.append((gate_symbol, lean_symbol))
+
+            if not selected_symbols:
+                # Default to ALL if nothing valid selected
+                print_warning("未选择有效符号，使用全部符号")
+                selected_symbols = [(s, l) for s, l in symbol_choices.values() if s != 'ALL']
+
+            self.symbols = selected_symbols
         else:
-            self.symbols = [(gate_symbol, lean_symbol)]
+            # Fallback to hardcoded symbols if no files detected
+            print_warning("未检测到符号，使用默认符号列表")
+            print_info("\n目标符号:")
+            for key, (gate_symbol, lean_symbol) in self.SYMBOLS.items():
+                print(f"  [{key}] {gate_symbol} → {lean_symbol}")
+
+            choice = get_choice("请选择", list(self.SYMBOLS.keys()), '3')
+
+            gate_symbol, lean_symbol = self.SYMBOLS[choice]
+            if gate_symbol == 'ALL':
+                self.symbols = [self.SYMBOLS['1'], self.SYMBOLS['2']]
+            else:
+                self.symbols = [(gate_symbol, lean_symbol)]
 
         return True
 
@@ -302,7 +478,8 @@ class GateIOConverter:
                     gateio_depth_convertor.main_convert(
                         input_dir=self.depth_input,
                         output_dir=self.output_dir,
-                        symbol=gate_symbol if gate_symbol != 'ALL' else None
+                        symbol=gate_symbol if gate_symbol != 'ALL' else None,
+                        market_type=self.market_type
                     )
 
                 # Convert Trade data
@@ -311,7 +488,8 @@ class GateIOConverter:
                     gateio_trade_convertor.main_convert(
                         input_dir=self.trade_input,
                         output_dir=self.output_dir,
-                        symbol=gate_symbol if gate_symbol != 'ALL' else None
+                        symbol=gate_symbol if gate_symbol != 'ALL' else None,
+                        market_type=self.market_type
                     )
 
             print_success("\n✓ Gate.io 数据转换完成!")

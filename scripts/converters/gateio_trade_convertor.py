@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 SYMBOL_MAP = {
     'AAPLX_USDT': 'AAPLXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
     'TSLAX_USDT': 'TSLAXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
+    'BTC_USDT': 'BTCUSDT',      # Bitcoin
+    'ETH_USDT': 'ETHUSDT',      # Ethereum
+    'BNB_USDT': 'BNBUSDT',      # Binance Coin
 }
 
 
@@ -156,7 +159,7 @@ def convert_trade_file(src_file, dst_root, lean_symbol):
         logger.info(f"  ✅ Created: {zip_path} ({len(out_df)} trades)")
 
 
-def main_convert(input_dir=None, output_dir=None, symbol=None):
+def main_convert(input_dir=None, output_dir=None, symbol=None, market_type='crypto'):
     """
     Main conversion function (can be called from other scripts)
 
@@ -164,12 +167,13 @@ def main_convert(input_dir=None, output_dir=None, symbol=None):
         input_dir: Input directory containing Gate.io CSV files
         output_dir: Output directory for LEAN data
         symbol: Specific symbol to convert (Gate.io format)
+        market_type: Market type - 'crypto' (spot) or 'cryptofuture' (futures_usdt)
     """
     # Use defaults if not provided
     if input_dir is None:
         input_dir = 'raw_data/gate_trade_tick'
     if output_dir is None:
-        output_dir = 'Data/crypto/kraken/tick'
+        output_dir = f'Data/{market_type}/gate/tick'
 
     # Determine target symbols
     if symbol:
