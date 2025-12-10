@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 SYMBOL_MAP = {
     'AAPLX_USDT': 'AAPLXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
     'TSLAX_USDT': 'TSLAXUSDT',  # Fixed: Added 'T' suffix for correct LEAN symbol
+    'BTC_USDT': 'BTCUSDT',      # Bitcoin
+    'ETH_USDT': 'ETHUSDT',      # Ethereum
+    'BNB_USDT': 'BNBUSDT',      # Binance Coin
 }
 
 # Configuration
@@ -267,19 +270,39 @@ def process_hourly_file(src_file, base_date):
         list: List of snapshot rows, or None if error
     """
     # Read Gate.io data (no header in CSV)
+    # Spot format (7 columns): timestamp,side,action,price,amount,begin_id,merged (side: 1=ask, 2=bid)
+    # Future format (6 columns): timestamp,action,price,size,begin_id,merged (size: positive=bid, negative=ask)
     try:
         with gzip.open(src_file, 'rt') as f:
-            df = pd.read_csv(
-                f,
-                header=None,
-                names=['Timestamp', 'Side', 'Action', 'Price', 'Amount', 'Begin_Id', 'Merged']
-            )
+            df_raw = pd.read_csv(f, header=None)
     except Exception as e:
         logger.error(f"Failed to read {src_file.name}: {e}")
         return None
 
-    if df.empty:
+    if df_raw.empty:
         logger.warning(f"No data in {src_file.name}")
+        return None
+
+    # Detect format based on column count
+    num_cols = len(df_raw.columns)
+
+    if num_cols == 7:
+        # Spot format: timestamp,side,action,price,amount,begin_id,merged
+        df_raw.columns = ['Timestamp', 'Side', 'Action', 'Price', 'Amount', 'Begin_Id', 'Merged']
+        logger.debug(f"  Detected spot format (7 columns)")
+        df = df_raw.copy()
+    elif num_cols == 6:
+        # Future format: timestamp,action,price,size,begin_id,merged (signed size)
+        df_raw.columns = ['Timestamp', 'Action', 'Price', 'Size', 'Begin_Id', 'Merged']
+        logger.debug(f"  Detected future format (6 columns)")
+
+        # Convert signed size to amount + side
+        df = df_raw.copy()
+        df['Amount'] = df['Size'].abs()
+        # Positive size = bid (side=2), negative size = ask (side=1)
+        df['Side'] = (df['Size'] > 0).astype(int) + 1  # True->2, False->1
+    else:
+        logger.error(f"Unexpected column count: {num_cols}, expected 6 or 7")
         return None
 
     # Build orderbook and collect snapshots

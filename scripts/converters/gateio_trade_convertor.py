@@ -91,24 +91,41 @@ def convert_trade_file(src_file, dst_root, lean_symbol):
     logger.info(f"Processing trade file: {src_file.name}")
 
     # Read Gate.io trade data (no header in CSV)
-    # Format: timestamp,id,price,amount,side
-    # Side: 1 = sell (ask), 2 = buy (bid)
+    # Spot format (5 columns): timestamp,id,price,amount,side (side: 1=sell, 2=buy)
+    # Future format (4 columns): timestamp,id,price,size (size: positive=buy, negative=sell)
     try:
         with gzip.open(src_file, 'rt') as f:
-            df = pd.read_csv(
-                f,
-                header=None,
-                names=['Timestamp', 'ID', 'Price', 'Amount', 'Side']
-            )
+            # First, read without column names to detect format
+            df_raw = pd.read_csv(f, header=None)
     except Exception as e:
         logger.error(f"Failed to read {src_file.name}: {e}")
         return
 
-    if df.empty:
+    if df_raw.empty:
         logger.warning(f"No data in {src_file.name}")
         return
 
-    logger.info(f"  Loaded {len(df)} trades")
+    # Detect format based on column count
+    num_cols = len(df_raw.columns)
+
+    if num_cols == 5:
+        # Spot format: timestamp,id,price,amount,side
+        df_raw.columns = ['Timestamp', 'ID', 'Price', 'Amount', 'Side']
+        logger.info(f"  Detected spot format (5 columns), loaded {len(df_raw)} trades")
+        df = df_raw.copy()
+    elif num_cols == 4:
+        # Future format: timestamp,id,price,size (signed)
+        df_raw.columns = ['Timestamp', 'ID', 'Price', 'Size']
+        logger.info(f"  Detected future format (4 columns), loaded {len(df_raw)} trades")
+
+        # Convert signed size to amount + side
+        df = df_raw.copy()
+        df['Amount'] = df['Size'].abs()
+        # Positive size = buy (side=2), negative size = sell (side=1)
+        df['Side'] = (df['Size'] > 0).astype(int) + 1  # True->2, False->1
+    else:
+        logger.error(f"Unexpected column count: {num_cols}, expected 4 or 5")
+        return
 
     # Convert timestamp to datetime
     df['DateTime'] = pd.to_datetime(df['Timestamp'], unit='s', utc=True)
