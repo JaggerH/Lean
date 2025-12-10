@@ -110,12 +110,14 @@ class GateCollector:
     # Note: trade data type differs between markets:
     #   - crypto (spot): uses 'deals'
     #   - cryptofuture (futures_usdt): uses 'trades'
+    # Note: funding_apply is only available for cryptofuture
     DATA_TYPE_MAP = {
         'orderbook': 'orderbooks',
         'trade': {
             'crypto': 'deals',
             'cryptofuture': 'trades'
-        }
+        },
+        'funding_apply': 'funding_applies'  # Only for cryptofuture
     }
 
     # Retry configuration
@@ -151,6 +153,10 @@ class GateCollector:
         if self.config.data_type not in self.DATA_TYPE_MAP:
             raise ValueError(f"Invalid data_type: {self.config.data_type}. "
                            f"Must be one of: {list(self.DATA_TYPE_MAP.keys())}")
+
+        # funding_apply is only available for cryptofuture
+        if self.config.data_type == 'funding_apply' and self.config.market_type != 'cryptofuture':
+            raise ValueError("funding_apply data type is only available for cryptofuture market")
 
         if not self.config.symbols:
             raise ValueError("symbols list cannot be empty")
@@ -210,7 +216,7 @@ class GateCollector:
             if day is None or hour is None:
                 raise ValueError("day and hour are required for orderbook data")
             filename = f"{symbol}-{year:04d}{month:02d}{day:02d}{hour:02d}.csv.gz"
-        else:  # trade
+        else:  # trade or funding_apply
             # Monthly files
             filename = f"{symbol}-{year_month}.csv.gz"
 
@@ -288,7 +294,7 @@ class GateCollector:
                             )
                             tasks.append(task)
 
-                else:  # trade
+                else:  # trade or funding_apply
                     # Monthly files - one file per symbol per month
                     url = self.build_url(symbol, year, month)
                     filename = f"{symbol}-{year_month}.csv.gz"

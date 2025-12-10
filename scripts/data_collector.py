@@ -51,7 +51,8 @@ class GateDataCollectorCLI:
     DATA_TYPES = {
         '1': ('orderbook', 'Orderbook (Incremental Depth Updates - Hourly)'),
         '2': ('trade', 'Trade (Transaction Records - Monthly)'),
-        '3': ('both', 'Both Orderbook and Trade')
+        '3': ('funding_apply', 'Funding Apply (Funding Rate Records - Monthly, Futures Only)'),
+        '4': ('all', 'All Data Types (Orderbook + Trade + Funding Apply)')
     }
 
     # Default configuration
@@ -60,6 +61,7 @@ class GateDataCollectorCLI:
     DEFAULT_CONCURRENT_WORKERS = 5
     DEFAULT_ORDERBOOK_OUTPUT = 'raw_data/gate_orderbook_tick'
     DEFAULT_TRADE_OUTPUT = 'raw_data/gate_trade_tick'
+    DEFAULT_FUNDING_APPLY_OUTPUT = 'raw_data/gate_funding_apply'
 
     def __init__(self):
         """Initialize CLI"""
@@ -71,6 +73,7 @@ class GateDataCollectorCLI:
         self.concurrent_workers = self.DEFAULT_CONCURRENT_WORKERS
         self.orderbook_output = self.DEFAULT_ORDERBOOK_OUTPUT
         self.trade_output = self.DEFAULT_TRADE_OUTPUT
+        self.funding_apply_output = self.DEFAULT_FUNDING_APPLY_OUTPUT
 
     def print_header(self, text: str, width: int = 60):
         """Print formatted header"""
@@ -131,20 +134,20 @@ class GateDataCollectorCLI:
             print(f"  [{key}] {desc}")
 
         while True:
-            choice = self.get_input("\nPlease select (1-3)").strip()
+            choice = self.get_input("\nPlease select (1-4)").strip()
 
             if choice in self.DATA_TYPES:
                 data_type, desc = self.DATA_TYPES[choice]
 
-                if data_type == 'both':
-                    self.data_types_selected = ['orderbook', 'trade']
+                if data_type == 'all':
+                    self.data_types_selected = ['orderbook', 'trade', 'funding_apply']
                 else:
                     self.data_types_selected = [data_type]
 
                 print(f"Selected: {desc}")
                 return True
             else:
-                print("Invalid selection. Please choose 1, 2, or 3.")
+                print("Invalid selection. Please choose 1-4.")
 
     def configure_symbols(self) -> bool:
         """
@@ -267,6 +270,14 @@ class GateDataCollectorCLI:
             )
             print(f"Trade output: {self.trade_output}")
 
+        # Funding Apply output (if needed)
+        if 'funding_apply' in self.data_types_selected:
+            self.funding_apply_output = self.get_input(
+                "Funding Apply output directory",
+                self.DEFAULT_FUNDING_APPLY_OUTPUT
+            )
+            print(f"Funding Apply output: {self.funding_apply_output}")
+
         return True
 
     def show_summary(self):
@@ -306,6 +317,12 @@ class GateDataCollectorCLI:
                 year_month = self.start_date.strftime('%Y%m')
                 print(f"  - Trade ({market_type}): {self.trade_output}/{market_type}/{year_month}/")
 
+        if 'funding_apply' in self.data_types_selected:
+            # Funding apply is only for cryptofuture
+            if 'cryptofuture' in self.market_types_selected:
+                year_month = self.start_date.strftime('%Y%m')
+                print(f"  - Funding Apply (cryptofuture): {self.funding_apply_output}/cryptofuture/{year_month}/")
+
         print()
 
     def confirm_download(self) -> bool:
@@ -331,7 +348,7 @@ class GateDataCollectorCLI:
 
         Args:
             market_type: 'crypto' or 'cryptofuture'
-            data_type: 'orderbook' or 'trade'
+            data_type: 'orderbook', 'trade', or 'funding_apply'
 
         Returns:
             DownloadStats from the download operation
@@ -339,8 +356,10 @@ class GateDataCollectorCLI:
         # Determine output directory
         if data_type == 'orderbook':
             output_dir = self.orderbook_output
-        else:
+        elif data_type == 'trade':
             output_dir = self.trade_output
+        else:  # funding_apply
+            output_dir = self.funding_apply_output
 
         # Create configuration
         config = DownloadConfig(
@@ -396,6 +415,11 @@ class GateDataCollectorCLI:
 
         for market_type in self.market_types_selected:
             for data_type in self.data_types_selected:
+                # Skip funding_apply for crypto market (only available for cryptofuture)
+                if data_type == 'funding_apply' and market_type != 'cryptofuture':
+                    print(f"\n⚠️  Skipping funding_apply for {market_type} (only available for cryptofuture)")
+                    continue
+
                 stats = self.execute_download(market_type, data_type)
                 all_stats.append((market_type, data_type, stats))
 
