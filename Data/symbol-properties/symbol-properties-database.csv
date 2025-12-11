@@ -10349,4 +10349,7 @@ gate,SLVONUSDT,crypto,iShares Silver Trust Ondo Tokenized,USDT,1,0.01,0.01,SLVON
 gate,CVXONUSDT,crypto,Chevron Ondo Tokenized,USDT,1,0.01,0.001,CVXON_USDT,3,,
 gate,TLTONUSDT,crypto,iShares 20+ Year Treasury Bond ETF Ondo Tokenized,USDT,1,0.01,0.01,TLTON_USDT,3,,
 gate,AMDONUSDT,crypto,AMD Ondo Tokenized,USDT,1,0.01,0.001,AMDON_USDT,3,,
-
+gate,PEPEUSDT,crypto,Pepe,USDT,1,1e-09,1,PEPE_USDT,3,,
+gate,DOGEUSDT,crypto,DogeCoin,USDT,1,1e-05,0.01,DOGE_USDT,3,,
+gate,PEPEUSDT,cryptofuture,PEPE Perpetual,USDT,10000000,0.000000001,1,PEPE_USDT,,,
+gate,DOGEUSDT,cryptofuture,DOGE Perpetual,USDT,10,0.00001,1,DOGE_USDT,,,

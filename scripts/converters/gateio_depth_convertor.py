@@ -503,15 +503,16 @@ def main_convert(input_dir=None, output_dir=None, symbol=None, market_type='cryp
         if target_symbols and gate_symbol not in target_symbols:
             continue
 
-        # Check if we have a mapping for this symbol
-        if gate_symbol not in SYMBOL_MAP:
-            continue
-
         files_by_symbol_date[gate_symbol][date_str].append(file)
 
     # Process each symbol-date combination
     for gate_symbol in sorted(files_by_symbol_date.keys()):
-        lean_symbol = SYMBOL_MAP[gate_symbol]
+        # Get LEAN symbol: use SYMBOL_MAP if exists, otherwise auto-generate by removing underscore
+        if gate_symbol in SYMBOL_MAP:
+            lean_symbol = SYMBOL_MAP[gate_symbol]
+        else:
+            # Auto-generate: BTC_USDT -> BTCUSDT
+            lean_symbol = gate_symbol.replace('_', '').upper()
         logger.info(f"\n{'='*60}")
         logger.info(f"Symbol: {gate_symbol} → {lean_symbol}")
         logger.info(f"{'='*60}")
