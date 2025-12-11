@@ -66,7 +66,8 @@ namespace QuantConnect.Orders.Fees
 
             // Calculate the fee amount
             // For futures, fee is based on notional value (contract size * price)
-            var orderValue = order.GetValue(security);
+            // Use AbsoluteQuantity to ensure fee is always positive regardless of order direction
+            var orderValue = order.AbsoluteQuantity * security.Price * security.SymbolProperties.ContractMultiplier;
             var feeAmount = feeRate * orderValue;
 
             // Gate.io futures fees are charged in the quote currency (USDT)

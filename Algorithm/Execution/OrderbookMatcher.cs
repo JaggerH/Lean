@@ -297,9 +297,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Get lot sizes
+            // Get lot sizes and contract multipliers
             var leg1LotSize = algorithm.Securities[leg1Symbol].SymbolProperties.LotSize;
             var leg2LotSize = algorithm.Securities[leg2Symbol].SymbolProperties.LotSize;
+            var leg1ContractMultiplier = algorithm.Securities[leg1Symbol].SymbolProperties.ContractMultiplier;
+            var leg2ContractMultiplier = algorithm.Securities[leg2Symbol].SymbolProperties.ContractMultiplier;
 
             // Two-pointer matching algorithm
             int i = 0, j = 0;
@@ -331,6 +333,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
                     leg1Size, leg2Size,
                     remainingUsd,
                     leg1LotSize, leg2LotSize,
+                    leg1ContractMultiplier, leg2ContractMultiplier,
                     leg1IsBuy
                 );
 
@@ -436,9 +439,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Get lot sizes
+            // Get lot sizes and contract multipliers
             var obLotSize = algorithm.Securities[orderbookSymbol].SymbolProperties.LotSize;
             var poLotSize = algorithm.Securities[priceOnlySymbol].SymbolProperties.LotSize;
+            var obContractMultiplier = algorithm.Securities[orderbookSymbol].SymbolProperties.ContractMultiplier;
+            var poContractMultiplier = algorithm.Securities[priceOnlySymbol].SymbolProperties.ContractMultiplier;
 
             // Iterate through orderbook levels
             decimal accumulatedUsd = 0;
@@ -480,6 +485,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
                     remainingUsd,
                     orderbookIsLeg1 ? obLotSize : poLotSize,
                     orderbookIsLeg1 ? poLotSize : obLotSize,
+                    orderbookIsLeg1 ? obContractMultiplier : poContractMultiplier,
+                    orderbookIsLeg1 ? poContractMultiplier : obContractMultiplier,
                     leg1IsBuy
                 );
 
@@ -557,9 +564,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 };
             }
 
-            // Get lot sizes
+            // Get lot sizes and contract multipliers
             var leg1LotSize = leg1Security.SymbolProperties.LotSize;
             var leg2LotSize = leg2Security.SymbolProperties.LotSize;
+            var leg1ContractMultiplier = leg1Security.SymbolProperties.ContractMultiplier;
+            var leg2ContractMultiplier = leg2Security.SymbolProperties.ContractMultiplier;
 
             // Calculate quantities (assume infinite liquidity)
             var (leg1Qty, leg2Qty, matchUsd) = CalculateMatchedQuantitiesForLegs(
@@ -567,6 +576,7 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 decimal.MaxValue, decimal.MaxValue,
                 targetUsd,
                 leg1LotSize, leg2LotSize,
+                leg1ContractMultiplier, leg2ContractMultiplier,
                 leg1IsBuy
             );
 
@@ -748,7 +758,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
         }
 
         /// <summary>
-        /// Calculate matched quantities for leg1 and leg2, ensuring market value equality
+        /// Calculate matched quantities for leg1 and leg2, ensuring market value equality.
+        /// Accounts for contract multipliers (for futures contracts).
         /// </summary>
         /// <param name="leg1Price">Price for leg1</param>
         /// <param name="leg2Price">Price for leg2</param>
@@ -757,6 +768,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
         /// <param name="targetUsd">Target USD value to match</param>
         /// <param name="leg1LotSize">Lot size for leg1</param>
         /// <param name="leg2LotSize">Lot size for leg2</param>
+        /// <param name="leg1ContractMultiplier">Contract multiplier for leg1 (1 for spot, varies for futures)</param>
+        /// <param name="leg2ContractMultiplier">Contract multiplier for leg2 (1 for spot, varies for futures)</param>
         /// <param name="leg1IsBuy">True if leg1 is buy side, false if leg1 is sell side</param>
         /// <returns>Tuple of (leg1Qty, leg2Qty, matchUsd)</returns>
         private static (decimal leg1Qty, decimal leg2Qty, decimal matchUsd) CalculateMatchedQuantitiesForLegs(
@@ -767,6 +780,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
             decimal targetUsd,
             decimal leg1LotSize,
             decimal leg2LotSize,
+            decimal leg1ContractMultiplier,
+            decimal leg2ContractMultiplier,
             bool leg1IsBuy)
         {
             if (leg1Price <= 0 || leg2Price <= 0)
@@ -774,16 +789,22 @@ namespace QuantConnect.Algorithm.Framework.Execution
                 return (0, 0, 0);
             }
 
+            // Calculate effective unit prices (price per contract, accounting for contract multiplier)
+            // For crypto spot: contractMultiplier = 1, so effectivePrice = price
+            // For crypto futures: contractMultiplier > 1, so effectivePrice = price × multiplier
+            var leg1EffectivePrice = leg1Price * leg1ContractMultiplier;
+            var leg2EffectivePrice = leg2Price * leg2ContractMultiplier;
+
             // Determine which leg is buy and which is sell
-            decimal buyPrice = leg1IsBuy ? leg1Price : leg2Price;
-            decimal sellPrice = leg1IsBuy ? leg2Price : leg1Price;
+            decimal buyEffectivePrice = leg1IsBuy ? leg1EffectivePrice : leg2EffectivePrice;
+            decimal sellEffectivePrice = leg1IsBuy ? leg2EffectivePrice : leg1EffectivePrice;
             decimal availableBuySize = leg1IsBuy ? availableLeg1Size : availableLeg2Size;
             decimal availableSellSize = leg1IsBuy ? availableLeg2Size : availableLeg1Size;
             decimal buyLotSize = leg1IsBuy ? leg1LotSize : leg2LotSize;
             decimal sellLotSize = leg1IsBuy ? leg2LotSize : leg1LotSize;
 
             // Start with buy side
-            var maxBuyQty = Math.Min(availableBuySize, targetUsd / buyPrice);
+            var maxBuyQty = Math.Min(availableBuySize, targetUsd / buyEffectivePrice);
             maxBuyQty = RoundToLot(maxBuyQty, buyLotSize);
 
             if (maxBuyQty <= 0)
@@ -792,8 +813,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
             }
 
             // Calculate sell side for market value equality
-            var buyUsd = maxBuyQty * buyPrice;
-            var sellQty = buyUsd / sellPrice;
+            var buyUsd = maxBuyQty * buyEffectivePrice;
+            var sellQty = buyUsd / sellEffectivePrice;
             sellQty = RoundToLot(sellQty, sellLotSize);
 
             // Check if sell side has enough liquidity
@@ -801,10 +822,10 @@ namespace QuantConnect.Algorithm.Framework.Execution
             {
                 // Recalculate based on sell side constraint
                 sellQty = RoundToLot(availableSellSize, sellLotSize);
-                var sellUsd = sellQty * sellPrice;
-                maxBuyQty = sellUsd / buyPrice;
+                var sellUsd = sellQty * sellEffectivePrice;
+                maxBuyQty = sellUsd / buyEffectivePrice;
                 maxBuyQty = RoundToLot(maxBuyQty, buyLotSize);
-                buyUsd = maxBuyQty * buyPrice;
+                buyUsd = maxBuyQty * buyEffectivePrice;
             }
 
             // Convert back to leg1/leg2

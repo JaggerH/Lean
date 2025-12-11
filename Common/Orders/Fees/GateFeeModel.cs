@@ -53,7 +53,8 @@ namespace QuantConnect.Orders.Fees
             }
 
             // Calculate the fee amount
-            var orderValue = order.GetValue(security);
+            // Use AbsoluteQuantity to ensure fee is always positive regardless of order direction
+            var orderValue = order.AbsoluteQuantity * security.Price * security.SymbolProperties.ContractMultiplier;
             var feeAmount = fee * orderValue;
 
             // Gate fees are charged in the quote currency

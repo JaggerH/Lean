@@ -101,7 +101,8 @@ namespace QuantConnect.Algorithm.Framework.Execution
             foreach (var order in ordersList)
             {
                 var security = algorithm.Securities[order.Symbol];
-                var orderMv = Math.Abs(order.Quantity) * security.Price;
+                // IMPORTANT: Must account for ContractMultiplier for futures contracts
+                var orderMv = Math.Abs(order.Quantity) * security.Price * security.SymbolProperties.ContractMultiplier;
 
                 var orderInfo = $"{order.Symbol}={security.Price:F2}x{order.Quantity:F2}(${orderMv:F0})";
                 if (order.Remaining.HasValue)

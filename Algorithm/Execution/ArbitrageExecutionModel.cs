@@ -111,10 +111,11 @@ namespace QuantConnect.Algorithm.Framework.Execution
 
             // Calculate market values for both legs and take the minimum
             // This ensures we only attempt to match what's actually remaining
+            // IMPORTANT: Must account for ContractMultiplier for futures contracts
             var leg1Security = algorithm.Securities[target.Leg1Symbol];
             var leg2Security = algorithm.Securities[target.Leg2Symbol];
-            var leg1RemainingMv = Math.Abs(leg1Remaining) * leg1Security.Price;
-            var leg2RemainingMv = Math.Abs(leg2Remaining) * leg2Security.Price;
+            var leg1RemainingMv = Math.Abs(leg1Remaining) * leg1Security.Price * leg1Security.SymbolProperties.ContractMultiplier;
+            var leg2RemainingMv = Math.Abs(leg2Remaining) * leg2Security.Price * leg2Security.SymbolProperties.ContractMultiplier;
             var targetUsd = Math.Min(leg1RemainingMv, leg2RemainingMv);
 
             // Use OrderbookMatcher to calculate executable quantities
