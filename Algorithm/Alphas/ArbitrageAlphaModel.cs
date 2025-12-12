@@ -361,8 +361,8 @@ namespace QuantConnect.Algorithm.Framework.Alphas
         {
             return new Dictionary<string, List<Func<GridLevelPair>>>
             {
-                // crypto_stock: Cryptocurrency vs Stock pairs
-                // Typical for tokenized stock arbitrage
+                // crypto_stock: Cryptocurrency Spot vs Stock pairs
+                // Only LONG_SPREAD for spot tokenized stock arbitrage
                 ["crypto_stock"] = new List<Func<GridLevelPair>>
                 {
                     // LONG_SPREAD: Long crypto when underpriced vs stock
@@ -371,8 +371,22 @@ namespace QuantConnect.Algorithm.Framework.Alphas
                         exitSpreadPct: 0.01m,         // Exit at +1% spread
                         direction: "LONG_SPREAD",
                         positionSizePct: 0.8m         // 80% position size
+                    )
+                    // SHORT_SPREAD removed - spot pairs are long-bias only
+                },
+
+                // cryptofuture_stock: CryptoFuture vs Stock pairs
+                // Both directions for futures tokenized stock arbitrage
+                ["cryptofuture_stock"] = new List<Func<GridLevelPair>>
+                {
+                    // LONG_SPREAD: Long crypto futures when underpriced vs stock
+                    () => new GridLevelPair(
+                        entrySpreadPct: -0.02m,      // Entry at -2% spread
+                        exitSpreadPct: 0.01m,         // Exit at +1% spread
+                        direction: "LONG_SPREAD",
+                        positionSizePct: 0.8m         // 80% position size
                     ),
-                    // SHORT_SPREAD: Short crypto when overpriced vs stock
+                    // SHORT_SPREAD: Short crypto futures when overpriced vs stock
                     () => new GridLevelPair(
                         entrySpreadPct: 0.03m,        // Entry at +3% spread
                         exitSpreadPct: -0.005m,       // Exit at -0.5% spread

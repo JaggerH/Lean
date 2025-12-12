@@ -666,29 +666,21 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with "crypto_stock" type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
 
-            // Manually trigger OnTradingPairsChanged (framework would do this automatically)
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
-
-            // Assert - Should have 2 grid levels (LONG_SPREAD + SHORT_SPREAD)
+            // Assert - Should have 1 grid level (LONG_SPREAD only for spot pairs)
             var levelPairs = pair.LevelPairs.ToList();
-            Assert.AreEqual(2, levelPairs.Count, "crypto_stock should auto-configure 2 grid levels");
+            Assert.AreEqual(1, levelPairs.Count, "crypto_stock should auto-configure 1 grid level (LONG_SPREAD only)");
 
             // Verify LONG_SPREAD level
             var longLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "LONG_SPREAD");
             Assert.IsNotNull(longLevel, "Should have LONG_SPREAD level");
             Assert.AreEqual(-0.02m, longLevel.Entry.SpreadPct, "LONG_SPREAD entry should be -2%");
             Assert.AreEqual(0.01m, longLevel.Exit.SpreadPct, "LONG_SPREAD exit should be +1%");
-            Assert.AreEqual(0.5m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 50%");
+            Assert.AreEqual(0.8m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 80%");
 
-            // Verify SHORT_SPREAD level
-            var shortLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "SHORT_SPREAD");
-            Assert.IsNotNull(shortLevel, "Should have SHORT_SPREAD level");
-            Assert.AreEqual(0.03m, shortLevel.Entry.SpreadPct, "SHORT_SPREAD entry should be +3%");
-            Assert.AreEqual(-0.005m, shortLevel.Exit.SpreadPct, "SHORT_SPREAD exit should be -0.5%");
-            Assert.AreEqual(0.5m, shortLevel.Entry.PositionSizePct, "SHORT_SPREAD size should be 50%");
+            // crypto_stock no longer has SHORT_SPREAD (spot pairs are long-bias only)
         }
 
         [Test]
@@ -702,29 +694,21 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with "spot_future" type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "spot_future");
 
-            // Manually trigger OnTradingPairsChanged
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
-
-            // Assert - Should have 2 grid levels (LONG_SPREAD + SHORT_SPREAD)
+            // Assert - Should have 1 grid level (LONG_SPREAD only, SHORT_SPREAD commented out)
             var levelPairs = pair.LevelPairs.ToList();
-            Assert.AreEqual(2, levelPairs.Count, "spot_future should auto-configure 2 grid levels");
+            Assert.AreEqual(1, levelPairs.Count, "spot_future should auto-configure 1 grid level");
 
             // Verify LONG_SPREAD level
             var longLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "LONG_SPREAD");
             Assert.IsNotNull(longLevel, "Should have LONG_SPREAD level");
-            Assert.AreEqual(-0.015m, longLevel.Entry.SpreadPct, "LONG_SPREAD entry should be -1.5%");
-            Assert.AreEqual(0.008m, longLevel.Exit.SpreadPct, "LONG_SPREAD exit should be +0.8%");
-            Assert.AreEqual(0.3m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 30%");
+            Assert.AreEqual(-0.01m, longLevel.Entry.SpreadPct, "LONG_SPREAD entry should be -1%");
+            Assert.AreEqual(0m, longLevel.Exit.SpreadPct, "LONG_SPREAD exit should be 0%");
+            Assert.AreEqual(0.6m, longLevel.Entry.PositionSizePct, "LONG_SPREAD size should be 60%");
 
-            // Verify SHORT_SPREAD level
-            var shortLevel = levelPairs.FirstOrDefault(lp => lp.Entry.Direction == "SHORT_SPREAD");
-            Assert.IsNotNull(shortLevel, "Should have SHORT_SPREAD level");
-            Assert.AreEqual(0.025m, shortLevel.Entry.SpreadPct, "SHORT_SPREAD entry should be +2.5%");
-            Assert.AreEqual(-0.008m, shortLevel.Exit.SpreadPct, "SHORT_SPREAD exit should be -0.8%");
-            Assert.AreEqual(0.3m, shortLevel.Entry.PositionSizePct, "SHORT_SPREAD size should be 30%");
+            // spot_future no longer has SHORT_SPREAD by default (commented out in template)
         }
 
         [Test]
@@ -738,11 +722,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with "spread" type (no template available)
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "spread");
-
-            // Manually trigger OnTradingPairsChanged
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
 
             // Assert - Should have 0 grid levels (no auto-configuration for "spread" type)
             var levelPairs = pair.LevelPairs.ToList();
@@ -761,11 +742,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with unknown type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "unknown_type");
-
-            // Manually trigger OnTradingPairsChanged
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
 
             // Assert - Should have 0 grid levels (no template for unknown type)
             var levelPairs = pair.LevelPairs.ToList();
@@ -798,11 +776,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with "crypto_stock" type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
-
-            // Manually trigger OnTradingPairsChanged
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
 
             // Assert - Should use custom template (1 level instead of 2)
             var levelPairs = pair.LevelPairs.ToList();
@@ -837,11 +812,8 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.SetAlpha(_alphaModel);
 
             // Act - Add pair with custom "crypto_crypto" type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_crypto");
-
-            // Manually trigger OnTradingPairsChanged
-            var changes = new TradingPairChanges(new[] { pair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes);
 
             // Assert - Should auto-configure using custom template
             var levelPairs = pair.LevelPairs.ToList();
@@ -868,26 +840,19 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             _algorithm.AddSecurity(ethSymbol);
 
             // Act - Add two pairs with same type
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
             var pair1 = _algorithm.TradingPairs.AddPair(_btcSymbol, _mstrSymbol, "crypto_stock");
             var pair2 = _algorithm.TradingPairs.AddPair(ethSymbol, _mstrSymbol, "crypto_stock");
-
-            // Manually trigger OnTradingPairsChanged for both pairs
-            var changes1 = new TradingPairChanges(new[] { pair1 }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes1);
-            var changes2 = new TradingPairChanges(new[] { pair2 }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes2);
 
             // Assert - Each pair should have its own GridLevelPair instances
             var pair1Levels = pair1.LevelPairs.ToList();
             var pair2Levels = pair2.LevelPairs.ToList();
 
-            Assert.AreEqual(2, pair1Levels.Count);
-            Assert.AreEqual(2, pair2Levels.Count);
+            Assert.AreEqual(1, pair1Levels.Count, "crypto_stock now has 1 level (LONG_SPREAD only)");
+            Assert.AreEqual(1, pair2Levels.Count, "crypto_stock now has 1 level (LONG_SPREAD only)");
 
             // Verify they are different instances (not shared references)
             Assert.AreNotSame(pair1Levels[0], pair2Levels[0],
-                "Factory should create new instances, not share references");
-            Assert.AreNotSame(pair1Levels[1], pair2Levels[1],
                 "Factory should create new instances, not share references");
         }
 
@@ -920,11 +885,7 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
             var spotFuturePair = _algorithm.TradingPairs.AddPair(
                 ethSymbol, _mstrSymbol, "spot_future");
 
-            // Manually trigger OnTradingPairsChanged for both pairs
-            var changes1 = new TradingPairChanges(new[] { cryptoStockPair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes1);
-            var changes2 = new TradingPairChanges(new[] { spotFuturePair }, new TradingPair[0]);
-            _alphaModel.OnTradingPairsChanged(_algorithm, changes2);
+            // Note: AddPair automatically triggers OnTradingPairsChanged via CollectionChanged event
 
             // Assert - crypto_stock should use custom template
             var cryptoStockLevels = cryptoStockPair.LevelPairs.ToList();
@@ -934,10 +895,10 @@ namespace QuantConnect.Tests.Algorithm.Framework.Alphas
 
             // Assert - spot_future should use default template
             var spotFutureLevels = spotFuturePair.LevelPairs.ToList();
-            Assert.AreEqual(2, spotFutureLevels.Count,
-                "spot_future should use default template (2 levels)");
+            Assert.AreEqual(1, spotFutureLevels.Count,
+                "spot_future should use default template (1 level, SHORT_SPREAD commented out)");
             Assert.IsTrue(spotFutureLevels.Any(lp =>
-                lp.Entry.SpreadPct == -0.015m), "Should have default -1.5% entry level");
+                lp.Entry.SpreadPct == -0.01m), "Should have default -1% entry level");
         }
 
         #endregion

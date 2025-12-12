@@ -103,12 +103,24 @@ class Arbitrage(AQCAlgorithm):
                 # Subscribe each pair
                 for crypto_symbol, equity_symbol in trade_pairs:
                     try:
-                        # Add securities without manual leverage/fee configuration
-                        crypto_sec = self.AddCrypto(
-                            crypto_symbol.Value,
-                            Resolution.ORDERBOOK,
-                            Market.Gate
-                        )
+                        # Use correct Add method based on SecurityType
+                        if crypto_symbol.SecurityType == SecurityType.Crypto:
+                            crypto_sec = self.AddCrypto(
+                                crypto_symbol.Value,
+                                Resolution.ORDERBOOK,
+                                Market.Gate
+                            )
+                            pair_type = "crypto_stock"
+                        elif crypto_symbol.SecurityType == SecurityType.CryptoFuture:
+                            crypto_sec = self.AddCryptoFuture(
+                                crypto_symbol.Value,
+                                Resolution.ORDERBOOK,
+                                Market.Gate
+                            )
+                            pair_type = "cryptofuture_stock"
+                        else:
+                            self.debug(f"❌ Unsupported SecurityType: {crypto_symbol.SecurityType}")
+                            continue
 
                         stock_sec = self.AddEquity(
                             equity_symbol.Value,
@@ -117,14 +129,14 @@ class Arbitrage(AQCAlgorithm):
                             extendedMarketHours=self.extended_market_hours
                         )
 
-                        # Add to framework (auto-configures grid levels)
+                        # Add to framework with correct pair type
                         pair = self.TradingPairs.AddPair(
                             crypto_sec.Symbol,
                             stock_sec.Symbol,
-                            "crypto_stock"
+                            pair_type
                         )
 
-                        self.debug(f"✅ Added pair: {crypto_symbol} ↔ {equity_symbol}")
+                        self.debug(f"✅ Added {pair_type} pair: {crypto_symbol.Value} ↔ {equity_symbol.Value}")
 
                     except Exception as e:
                         self.debug(f"❌ Failed to subscribe {crypto_symbol}/{equity_symbol}: {e}")

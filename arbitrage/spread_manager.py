@@ -699,8 +699,8 @@ class PairSubscriptionManager:
         支持的组合：
         1. (Crypto, CryptoFuture) -> 'spot_future'
         2. (CryptoFuture, Crypto) -> 'spot_future'（自动翻转）
-        3. (Crypto, Equity) -> 'crypto_stock'
-        4. (CryptoFuture, Equity) -> 'cryptofuture_stock'
+        3. (Crypto, Equity) -> 'crypto_stock' (SPOT tokenized stocks)
+        4. (CryptoFuture, Equity) -> 'cryptofuture_stock' (FUTURES tokenized stocks)
 
         Args:
             leg1_symbol: 第一条腿的 Symbol
