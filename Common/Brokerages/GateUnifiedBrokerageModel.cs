@@ -82,11 +82,19 @@ namespace QuantConnect.Brokerages
         /// <summary>
         /// Gets the leverage for the specified security
         /// Returns different leverage based on security type:
-        /// - Spot (Crypto): 3.3x (Gate.io margin trading limit)
-        /// - Futures (CryptoFuture): 25x (default, adjustable up to 100x for BTC/ETH)
+        /// - Spot (Crypto): 1x (NO leverage, cash-only trading)
+        ///   Note: Spot holdings serve as collateral for futures but cannot borrow for spot trading
+        /// - Futures (CryptoFuture): 5x (configurable via SetLeverage, max 100x for major pairs)
         /// </summary>
         /// <param name="security">The security to get leverage for</param>
         /// <returns>The leverage to use for this security</returns>
+        /// <remarks>
+        /// Simplified Implementation:
+        /// - Spot margin trading (borrowing) is NOT supported
+        /// - Spot leverage is always 1x (cash-only)
+        /// - Only futures can use leverage (default 5x)
+        /// - Spot assets contribute to futures margin with currency-specific discounts
+        /// </remarks>
         public override decimal GetLeverage(Security security)
         {
             if (AccountType == AccountType.Cash || security.IsInternalFeed() || security.Type == SecurityType.Base)
@@ -96,8 +104,8 @@ namespace QuantConnect.Brokerages
 
             return security.Type switch
             {
-                SecurityType.Crypto => 5m,        // Spot margin trading leverage
-                SecurityType.CryptoFuture => 5m,   // Futures default leverage (can be adjusted via SetLeverage)
+                SecurityType.Crypto => 1m,         // Spot: NO leverage (cash-only, no borrowing)
+                SecurityType.CryptoFuture => 5m,   // Futures: 5x default leverage (adjustable via SetLeverage)
                 _ => throw new ArgumentException(
                     $"Gate.io Unified Account does not support security type {security.Type}. " +
                     $"Only Crypto (Spot) and CryptoFuture are supported.",
@@ -133,17 +141,18 @@ namespace QuantConnect.Brokerages
         {
             if (security.Type == SecurityType.CryptoFuture)
             {
-                // Futures use margin-based buying power with cross-margin support
-                // Spot balances contribute to available margin for futures positions
-                return new CryptoFutureMarginModel(
+                // Futures use unified account margin model with cross-margin support
+                // Spot crypto balances contribute as collateral for futures positions
+                // with currency-specific discount rates (haircuts)
+                return new UnifiedAccountMarginModel(
                     leverage: GetLeverage(security),
-                    maintenanceMarginRate: 0.05m,  // 5% maintenance margin (varies by leverage tier)
+                    defaultMaintenanceRate: 0.02m,  // 2% mid-tier maintenance margin
                     maintenanceAmount: 0
                 );
             }
 
             // Spot trading uses cash-based buying power
-            // In unified account, spot balances also serve as collateral
+            // In unified account, spot balances also serve as collateral for futures
             return base.GetBuyingPowerModel(security);
         }
 
