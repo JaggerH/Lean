@@ -2,14 +2,15 @@
 Spread Monitor - 价差监控适配器
 
 将价差数据和交易对配对映射写入监控后端（Redis）的适配器层。
-从核心业务逻辑 (SpreadManager) 中解耦监控实现细节。
+使用Framework的TradingPair对象。
+
+更新内容 (2025-12-13):
+- 改用 TradingPair 对象（替代已废弃的 SpreadSignal）
+- write_spread() 现在接受 TradingPair 对象
 """
 from AlgorithmImports import *
-from typing import Optional, TYPE_CHECKING
-
-# 避免循环导入，仅用于类型检查
-if TYPE_CHECKING:
-    from spread_manager import SpreadSignal
+from QuantConnect.TradingPairs import TradingPair, MarketState
+from typing import Optional
 
 
 class RedisSpreadMonitor:
@@ -23,11 +24,11 @@ class RedisSpreadMonitor:
     使用方式:
         monitor = RedisSpreadMonitor(algorithm, redis_client)
         monitor.write_pair_mapping(crypto, stock)
-        monitor.write_spread(signal)  # signal: SpreadSignal 对象
+        monitor.write_spread(pair)  # pair: TradingPair 对象
 
-    重构历史 (2025-10-23):
-    - write_spread() 参数从 (pair_symbol, spread_pct) 改为 SpreadSignal 对象
-    - 新增字段: market_state, executable_spread, direction
+    重构历史:
+    - 2025-10-23: write_spread() 参数从 (pair_symbol, spread_pct) 改为 SpreadSignal 对象
+    - 2025-12-13: 改用 TradingPair 对象（Framework API）
     """
 
     def __init__(self, algorithm: QCAlgorithm, redis_client):
@@ -113,48 +114,56 @@ class RedisSpreadMonitor:
                 import traceback
                 self.algorithm.Debug(f"   详细错误:\n{traceback.format_exc()}")
 
-    def write_spread(self, signal: 'SpreadSignal'):
+    def write_spread(self, pair: TradingPair):
         """
-        将价差数据写入 Redis（重构版 - 使用 SpreadSignal）
+        将价差数据写入 Redis（Framework版本 - 使用 TradingPair）
 
-        重构变更 (2025-10-23):
-        - 参数改为 SpreadSignal 对象，包含完整的价差信息
-        - 添加市场状态、可执行价差、交易方向字段
-        - 保持向后兼容：spread_pct → signal.theoretical_spread
+        重构变更:
+        - 2025-10-23: 参数改为 SpreadSignal 对象，包含完整的价差信息
+        - 2025-12-13: 改用 TradingPair 对象（Framework API）
 
         Args:
-            signal: SpreadSignal 对象，包含：
-                - pair_symbol: (crypto_symbol, stock_symbol) 交易对
-                - theoretical_spread: 理论价差（始终有值，用于监控可视化）
-                - market_state: 市场状态（CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY）
-                - executable_spread: 可执行价差（仅在 CROSSED 市场时非 None）
-                - direction: 交易方向（"LONG_SPREAD" / "SHORT_SPREAD" / None）
+            pair: TradingPair 对象，包含：
+                - Leg1Symbol / Leg2Symbol: 交易对的两个标的
+                - TheoreticalSpread: 理论价差（始终有值，用于监控可视化）
+                - MarketState: 市场状态（Crossed / LimitOpportunity / NoOpportunity）
+                - ExecutableSpread: 可执行价差（可能为 None）
+                - Direction: 交易方向
         """
         try:
-            # 从 SpreadSignal 中解构数据
-            crypto_symbol, stock_symbol = signal.pair_symbol
+            # 从 TradingPair 中获取数据
+            crypto_symbol = pair.Leg1Symbol  # Assuming Leg1 is crypto
+            stock_symbol = pair.Leg2Symbol   # Assuming Leg2 is stock
 
             # 获取 Security 对象以访问当前价格
-            crypto_security = self.algorithm.securities[crypto_symbol]
-            stock_security = self.algorithm.securities[stock_symbol]
+            crypto_security = self.algorithm.Securities[crypto_symbol]
+            stock_security = self.algorithm.Securities[stock_symbol]
 
             # 构建交易对标识 (如 "BTCUSDx<->BTC")
             pair_key = f"{crypto_symbol.Value}<->{stock_symbol.Value}"
 
-            # 构建价差数据（包含新增字段）
+            # 将MarketState枚举转换为字符串值
+            if pair.MarketState == MarketState.Crossed:
+                market_state_str = "crossed"
+            elif pair.MarketState == MarketState.LimitOpportunity:
+                market_state_str = "limit"
+            else:  # NoOpportunity
+                market_state_str = "none"
+
+            # 构建价差数据
             spread_data = {
                 'pair': pair_key,
                 'crypto_symbol': crypto_symbol.Value,
                 'stock_symbol': stock_symbol.Value,
 
                 # 原有字段（向后兼容）
-                'spread_pct': float(signal.theoretical_spread),
+                'spread_pct': float(pair.TheoreticalSpread),
 
-                # 新增字段（2025-10-23 重构）
-                'market_state': signal.market_state.value,  # "crossed" / "limit" / "none"
-                'theoretical_spread': float(signal.theoretical_spread),
-                'executable_spread': float(signal.executable_spread) if signal.executable_spread is not None else None,
-                'direction': signal.direction,  # "LONG_SPREAD" / "SHORT_SPREAD" / None
+                # 新增字段（使用Framework数据）
+                'market_state': market_state_str,  # "crossed" / "limit" / "none"
+                'theoretical_spread': float(pair.TheoreticalSpread),
+                'executable_spread': float(pair.ExecutableSpread) if pair.ExecutableSpread is not None else None,
+                'direction': pair.Direction,  # Direction from TradingPair
 
                 # 价格信息
                 'crypto_bid': float(crypto_security.Cache.BidPrice),

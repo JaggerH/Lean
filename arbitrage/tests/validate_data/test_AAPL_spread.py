@@ -1,11 +1,12 @@
 """
-AAPL 价差分析 - 可视化 AAPLUSD vs AAPL 价差走势（重构版）
+AAPL 价差分析 - 可视化 AAPLUSD vs AAPL 价差走势（Framework版本）
 
-重构内容 (2025-10-23):
-- 使用 SpreadManager 的 observer 模式
-- 使用新的两层价差信号系统（理论价差 + 可执行价差）
-- 区分三种市场状态: CROSSED / LIMIT_OPPORTUNITY / NO_OPPORTUNITY
-- 同时绘制理论价差（连续）和可执行价差（稀疏标记）
+更新内容 (2025-12-13):
+- 改用 TradingPair Framework API
+- 继承自 AQCAlgorithm
+- 直接访问 TradingPair.TheoreticalSpread 和 TradingPair.ExecutableSpread
+- 使用 TradingPair.MarketState 获取市场状态
+- 保留原有的可视化功能
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
@@ -22,9 +23,8 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from AlgorithmImports import *
-# Import C# OrderbookDepth type
-from QuantConnect.Data.Market import OrderbookDepth
-from spread_manager import SpreadManager, MarketState, SpreadSignal
+from QuantConnect.Algorithm import AQCAlgorithm
+from QuantConnect.TradingPairs import MarketState
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -33,7 +33,7 @@ import matplotlib.dates as mdates
 
 class SpreadCollector:
     """
-    价差数据收集器（重构版）- 作为 SpreadManager 的 Observer
+    价差数据收集器（Framework版本）
 
     收集两类数据：
     1. 理论价差（连续，用于可视化）
@@ -51,126 +51,134 @@ class SpreadCollector:
 
         # 市场状态统计
         self.state_counts = {
-            MarketState.CROSSED: 0,
-            MarketState.LIMIT_OPPORTUNITY: 0,
-            MarketState.NO_OPPORTUNITY: 0
+            MarketState.Crossed: 0,
+            MarketState.LimitOpportunity: 0,
+            MarketState.NoOpportunity: 0
         }
 
-    def on_spread_update(self, pair_symbol, signal: SpreadSignal):
+    def collect_spread_data(self, pair):
         """
-        SpreadManager 的 observer 回调
+        从 TradingPair 对象收集价差数据
 
         Args:
-            pair_symbol: (crypto_symbol, stock_symbol)
-            signal: SpreadSignal 对象（包含理论价差和可执行价差）
+            pair: TradingPair 对象
         """
-        timestamp = self.algorithm.time
+        if not pair.HasValidPrices:
+            return
+
+        timestamp = self.algorithm.Time
 
         # 1. 记录理论价差（连续）
-        self.theoretical_spread_data.append((timestamp, signal.theoretical_spread))
+        self.theoretical_spread_data.append((timestamp, pair.TheoreticalSpread))
 
         # 2. 记录可执行价差（只在有机会时）
-        if signal.executable_spread is not None:
+        if pair.ExecutableSpread is not None:
             self.executable_spread_data.append((
                 timestamp,
-                signal.executable_spread,
-                signal.market_state,
-                signal.direction
+                pair.ExecutableSpread,
+                pair.MarketState,
+                pair.Direction
             ))
 
         # 3. 更新市场状态统计
-        self.state_counts[signal.market_state] += 1
+        self.state_counts[pair.MarketState] += 1
 
 
-class AAPLSpreadAnalysis(QCAlgorithm):
-    """AAPL价差分析算法（重构版 - 使用 SpreadManager）"""
+class AAPLSpreadAnalysis(AQCAlgorithm):
+    """AAPL价差分析算法（Framework版本）"""
 
-    def initialize(self):
+    def Initialize(self):
         """初始化算法"""
         # 设置回测时间范围
-        self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 27)
-        self.set_cash(100000)
+        self.SetStartDate(2025, 9, 2)
+        self.SetEndDate(2025, 9, 27)
+        self.SetCash(100000)
 
         # 设置 Kraken Brokerage Model（确保 Crypto 市场映射到 Kraken）
-        self.set_brokerage_model(BrokerageName.Kraken, AccountType.Cash)
+        self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
 
         # 禁用基准（benchmark）以避免查找 BTCUSD trade 数据
-        self.set_benchmark(lambda x: 0)
+        self.SetBenchmark(lambda x: 0)
 
         # 设置时区为UTC
-        self.set_time_zone("UTC")
+        self.SetTimeZone("UTC")
 
-        # === 1. 创建 SpreadManager ===
-        self.debug("📊 Initializing SpreadManager...")
-        self.spread_manager = SpreadManager(self)
-
-        # === 2. 创建 SpreadCollector 并注册为 observer ===
-        self.debug("📊 Initializing Spread Collector...")
+        # === 1. 创建 SpreadCollector ===
+        self.Debug("📊 Initializing Spread Collector...")
         self.collector = SpreadCollector(self)
-        self.spread_manager.register_observer(self.collector.on_spread_update)
 
-        # === 3. 订阅交易对（使用 SpreadManager 的统一接口）===
-        self.debug("📈 Subscribing AAPL/AAPLxUSD trading pair...")
+        # === 2. 添加证券 ===
+        self.Debug("📈 Adding securities...")
 
         # 创建 Symbol
-        crypto_symbol = Symbol.create("AAPLxUSD", SecurityType.CRYPTO, Market.KRAKEN)
-        stock_symbol = Symbol.create("AAPL", SecurityType.EQUITY, Market.USA)
+        crypto_symbol = Symbol.Create("AAPLxUSD", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("AAPL", SecurityType.Equity, Market.USA)
 
-        # 使用 SpreadManager 订阅交易对
-        self.aapl_crypto, self.aapl_stock = self.spread_manager.subscribe_trading_pair(
-            pair_symbol=(crypto_symbol, stock_symbol),
-            resolution=(Resolution.ORDERBOOK, Resolution.TICK),  # Crypto用Orderbook，Stock用Tick
-            extended_market_hours=False
+        # 添加证券（使用Framework推荐的Resolution）
+        self.aapl_crypto = self.AddCrypto("AAPLxUSD", Resolution.Orderbook, Market.Kraken)
+        self.aapl_stock = self.AddEquity("AAPL", Resolution.Tick, Market.USA, extendedMarketHours=False)
+
+        self.Debug(f"   Crypto: {self.aapl_crypto.Symbol}")
+        self.Debug(f"   Stock: {self.aapl_stock.Symbol}")
+
+        # === 3. 添加交易对到 TradingPairs 集合 ===
+        self.Debug("📊 Adding trading pair to TradingPairs...")
+        self.aapl_pair = self.TradingPairs.AddPair(
+            crypto_symbol,
+            stock_symbol,
+            "crypto_stock"  # pair type
         )
 
-        self.debug(f"   Crypto: {self.aapl_crypto.Symbol}")
-        self.debug(f"   Stock: {self.aapl_stock.Symbol}")
+        self.Debug(f"   Pair: {self.aapl_pair.Key}")
 
         # === 4. 数据追踪 ===
         self.last_log_time = None
 
-        self.debug("✅ Initialization complete!")
+        self.Debug("✅ Initialization complete!")
 
-    def on_data(self, data: Slice):
-        """处理数据 - 委托给 SpreadManager"""
+    def OnData(self, data: Slice):
+        """处理数据 - 调用base class来更新TradingPairs，然后收集spread数据"""
         try:
-            # 将数据传递给 SpreadManager，它会自动计算价差并通知 observers
-            self.spread_manager.on_data(data)
+            # CRITICAL: 调用base class的OnData来触发Framework更新
+            # 这会自动更新TradingPairs的spread计算
+            super().OnData(data)
+
+            # 从TradingPair收集spread数据
+            self.collector.collect_spread_data(self.aapl_pair)
 
             # 每小时输出一次状态
             if len(self.collector.theoretical_spread_data) > 0:
-                if self.last_log_time is None or (self.time - self.last_log_time).total_seconds() >= 3600:
+                if self.last_log_time is None or (self.Time - self.last_log_time).total_seconds() >= 3600:
                     _, theoretical_spread = self.collector.theoretical_spread_data[-1]
                     executable_count = len(self.collector.executable_spread_data)
 
-                    self.debug(
-                        f"📊 {self.time} | "
+                    self.Debug(
+                        f"📊 {self.Time} | "
                         f"Theoretical Spread: {theoretical_spread*100:.2f}% | "
                         f"Executable Opportunities: {executable_count:,}"
                     )
-                    self.last_log_time = self.time
+                    self.last_log_time = self.Time
 
         except Exception as e:
-            self.error(f"❌ Error in on_data: {str(e)}")
+            self.Error(f"❌ Error in OnData: {str(e)}")
             import traceback
-            self.debug(traceback.format_exc())
+            self.Debug(traceback.format_exc())
 
-    def on_end_of_algorithm(self):
-        """算法结束 - 绘制价差走势图（重构版）"""
-        self.debug("\n" + "="*60)
-        self.debug("📊 价差分析统计（重构版 - 两层价差系统）")
-        self.debug("="*60)
+    def OnEndOfAlgorithm(self):
+        """算法结束 - 绘制价差走势图（Framework版本）"""
+        self.Debug("\n" + "="*60)
+        self.Debug("📊 价差分析统计（Framework版本）")
+        self.Debug("="*60)
 
         # 1. 基本统计
         theoretical_count = len(self.collector.theoretical_spread_data)
         executable_count = len(self.collector.executable_spread_data)
 
-        self.debug(f"理论价差数据点数: {theoretical_count:,}")
-        self.debug(f"可执行机会数量: {executable_count:,}")
+        self.Debug(f"理论价差数据点数: {theoretical_count:,}")
+        self.Debug(f"可执行机会数量: {executable_count:,}")
 
         if theoretical_count == 0:
-            self.debug("⚠️ 无价差数据，无法绘图")
+            self.Debug("⚠️ 无价差数据，无法绘图")
             return
 
         # 2. 理论价差统计
@@ -179,40 +187,41 @@ class AAPLSpreadAnalysis(QCAlgorithm):
         max_spread = max(theoretical_spreads)
         avg_spread = sum(theoretical_spreads) / len(theoretical_spreads)
 
-        self.debug(f"\n理论价差统计:")
-        self.debug(f"  最小价差: {min_spread:.2f}%")
-        self.debug(f"  最大价差: {max_spread:.2f}%")
-        self.debug(f"  平均价差: {avg_spread:.2f}%")
+        self.Debug(f"\n理论价差统计:")
+        self.Debug(f"  最小价差: {min_spread:.2f}%")
+        self.Debug(f"  最大价差: {max_spread:.2f}%")
+        self.Debug(f"  平均价差: {avg_spread:.2f}%")
 
         # 3. 市场状态统计
         total_signals = sum(self.collector.state_counts.values())
-        self.debug(f"\n市场状态分布 (总信号数: {total_signals:,}):")
+        self.Debug(f"\n市场状态分布 (总信号数: {total_signals:,}):")
         for state, count in self.collector.state_counts.items():
             percentage = (count / total_signals * 100) if total_signals > 0 else 0
-            self.debug(f"  {state.value.upper()}: {count:,} ({percentage:.1f}%)")
+            state_name = str(state).split('.')[-1]  # Get enum name
+            self.Debug(f"  {state_name}: {count:,} ({percentage:.1f}%)")
 
         # 4. 可执行机会详细统计
         if executable_count > 0:
             crossed_count = sum(1 for _, _, state, _ in self.collector.executable_spread_data
-                              if state == MarketState.CROSSED)
+                              if state == MarketState.Crossed)
             limit_count = sum(1 for _, _, state, _ in self.collector.executable_spread_data
-                            if state == MarketState.LIMIT_OPPORTUNITY)
+                            if state == MarketState.LimitOpportunity)
 
-            self.debug(f"\n可执行机会详细:")
-            self.debug(f"  CROSSED Market: {crossed_count:,} ({crossed_count/executable_count*100:.1f}%)")
-            self.debug(f"  LIMIT_OPPORTUNITY: {limit_count:,} ({limit_count/executable_count*100:.1f}%)")
+            self.Debug(f"\n可执行机会详细:")
+            self.Debug(f"  CROSSED Market: {crossed_count:,} ({crossed_count/executable_count*100:.1f}%)")
+            self.Debug(f"  LIMIT_OPPORTUNITY: {limit_count:,} ({limit_count/executable_count*100:.1f}%)")
 
         # 5. 绘制价差走势图
-        self.debug("\n📈 绘制价差走势图...")
+        self.Debug("\n📈 绘制价差走势图...")
         self._plot_spread_chart()
 
-        self.debug("="*60)
-        self.debug("✅ 价差分析完成")
-        self.debug("="*60)
+        self.Debug("="*60)
+        self.Debug("✅ 价差分析完成")
+        self.Debug("="*60)
 
     def _plot_spread_chart(self):
         """
-        绘制价差走势图（简化版 - 两条线）
+        绘制价差走势图（Framework版本）
 
         图表包含：
         1. 理论价差线（连续，灰色）
@@ -228,7 +237,7 @@ class AAPLSpreadAnalysis(QCAlgorithm):
             crossed_timestamps = []
             crossed_spreads = []
             for timestamp, spread_pct, market_state, direction in self.collector.executable_spread_data:
-                if market_state == MarketState.CROSSED:
+                if market_state == MarketState.Crossed:
                     crossed_timestamps.append(timestamp)
                     crossed_spreads.append(spread_pct * 100)
 
@@ -267,7 +276,7 @@ class AAPLSpreadAnalysis(QCAlgorithm):
             ax.set_xlabel('Time (UTC)', fontsize=12)
             ax.set_ylabel('Spread %', fontsize=12)
             ax.set_title(
-                'AAPLxUSD vs AAPL Spread Analysis\n'
+                'AAPLxUSD vs AAPL Spread Analysis (Framework API)\n'
                 'Gray: Theoretical Spread | Red: CROSSED Market Executable Spread',
                 fontsize=14, fontweight='bold'
             )
@@ -278,13 +287,13 @@ class AAPLSpreadAnalysis(QCAlgorithm):
             plt.tight_layout()
 
             # 11. 保存图表 - 使用绝对路径
-            output_path = Path(r"C:\Users\Jagger\Documents\Code\Lean\arbitrage\tests\validate_data\AAPL_spread_analysis_v2.png")
+            output_path = Path(r"C:\Users\Jagger\Documents\Code\Lean\arbitrage\tests\validate_data\AAPL_spread_analysis_framework.png")
             plt.savefig(str(output_path), dpi=150, bbox_inches='tight')
             plt.close()
 
-            self.debug(f"✅ 图表已保存至: {output_path}")
+            self.Debug(f"✅ 图表已保存至: {output_path}")
 
         except Exception as e:
-            self.debug(f"❌ 绘图失败: {str(e)}")
+            self.Debug(f"❌ 绘图失败: {str(e)}")
             import traceback
-            self.debug(traceback.format_exc())
+            self.Debug(traceback.format_exc())

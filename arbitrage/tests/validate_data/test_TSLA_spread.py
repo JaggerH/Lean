@@ -1,5 +1,11 @@
 """
-TSLA 价差分析 - 可视化 TSLAUSD vs TSLA 价差走势
+TSLA 价差分析 - 可视化 TSLAUSD vs TSLA 价差走势（Framework版本）
+
+更新内容 (2025-12-13):
+- 改用 TradingPair Framework API
+- 继承自 AQCAlgorithm
+- 直接访问 TradingPair.TheoreticalSpread
+- 保留原有的可视化功能
 
 测试场景:
 - 数据源: Databento (股票) + Kraken (加密货币)
@@ -16,7 +22,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from AlgorithmImports import *
-from spread_manager import SpreadManager
+from QuantConnect.Algorithm import AQCAlgorithm
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -24,106 +30,125 @@ import matplotlib.dates as mdates
 
 
 class SpreadCollector:
-    """简单的策略 - 仅收集价差数据用于分析"""
+    """简单的数据收集器 - 仅收集价差数据用于分析（Framework版本）"""
 
     def __init__(self, algorithm: QCAlgorithm):
         self.algorithm = algorithm
         self.spread_data = []  # [(timestamp, spread_pct)]
 
-    def on_spread_update(self, crypto_symbol: Symbol, stock_symbol: Symbol,
-                        spread_pct: float, crypto_quote, stock_quote,
-                        crypto_bid_price: float, crypto_ask_price: float):
+    def collect_spread_data(self, pair):
         """
-        接收价差更新并收集数据
+        从 TradingPair 对象收集价差数据
 
         Args:
-            crypto_symbol: Crypto Symbol
-            stock_symbol: Stock Symbol
-            spread_pct: Spread百分比 (已经计算好的)
-            crypto_quote: Crypto报价 (未使用)
-            stock_quote: Stock报价 (未使用)
-            crypto_bid_price: 我们的卖出限价 (未使用)
-            crypto_ask_price: 我们的买入限价 (未使用)
+            pair: TradingPair 对象
         """
-        # 记录价差数据 (只需要时间戳和价差百分比)
-        self.spread_data.append((self.algorithm.Time, spread_pct))
+        if not pair.HasValidPrices:
+            return
+
+        timestamp = self.algorithm.Time
+
+        # 记录理论价差
+        self.spread_data.append((timestamp, pair.TheoreticalSpread))
 
 
-class TSLASpreadAnalysis(QCAlgorithm):
-    """TSLA价差分析算法"""
+class TSLASpreadAnalysis(AQCAlgorithm):
+    """TSLA价差分析算法（Framework版本）"""
 
-    def initialize(self):
+    def Initialize(self):
         """初始化算法"""
         # 设置回测时间范围
-        self.set_start_date(2025, 9, 2)
-        self.set_end_date(2025, 9, 5)
-        self.set_cash(100000)
+        self.SetStartDate(2025, 9, 2)
+        self.SetEndDate(2025, 9, 5)
+        self.SetCash(100000)
+
+        # 设置 Kraken Brokerage Model
+        self.SetBrokerageModel(BrokerageName.Kraken, AccountType.Cash)
+
+        # 禁用基准
+        self.SetBenchmark(lambda x: 0)
 
         # 设置时区为UTC
-        self.set_time_zone("UTC")
+        self.SetTimeZone("UTC")
 
-        # === 1. 添加股票数据 (Databento) ===
-        self.debug("📈 Adding Stock Data (Databento)...")
-        self.tsla_stock = self.add_equity("TSLA", Resolution.TICK, Market.USA, extended_market_hours=False)
-        self.tsla_stock.data_normalization_mode = DataNormalizationMode.RAW
-
-        # === 2. 添加加密货币数据 (Kraken) ===
-        self.debug("🪙 Adding Crypto Data (Kraken)...")
-        self.tsla_crypto = self.add_crypto("TSLAUSD", Resolution.TICK, Market.Kraken)
-        self.tsla_crypto.data_normalization_mode = DataNormalizationMode.RAW
-
-        # === 3. 初始化 SpreadManager 和策略 ===
-        self.debug("📊 Initializing SpreadManager...")
-
-        # 创建SpreadCollector策略
+        # === 1. 创建 SpreadCollector ===
+        self.Debug("📊 Initializing Spread Collector...")
         self.collector = SpreadCollector(self)
 
-        # 创建SpreadManager并链接策略
-        self.spread_manager = SpreadManager(
-            algorithm=self,
-            strategy=self.collector
+        # === 2. 添加证券 ===
+        self.Debug("📈 Adding securities...")
+
+        # 创建 Symbol
+        crypto_symbol = Symbol.Create("TSLAUSD", SecurityType.Crypto, Market.Kraken)
+        stock_symbol = Symbol.Create("TSLA", SecurityType.Equity, Market.USA)
+
+        # 添加证券（使用Framework推荐的Resolution）
+        self.tsla_crypto = self.AddCrypto("TSLAUSD", Resolution.Tick, Market.Kraken)
+        self.tsla_stock = self.AddEquity("TSLA", Resolution.Tick, Market.USA, extendedMarketHours=False)
+
+        # Set raw normalization
+        self.tsla_crypto.DataNormalizationMode = DataNormalizationMode.Raw
+        self.tsla_stock.DataNormalizationMode = DataNormalizationMode.Raw
+
+        self.Debug(f"   Crypto: {self.tsla_crypto.Symbol}")
+        self.Debug(f"   Stock: {self.tsla_stock.Symbol}")
+
+        # === 3. 添加交易对到 TradingPairs 集合 ===
+        self.Debug("📊 Adding trading pair to TradingPairs...")
+        self.tsla_pair = self.TradingPairs.AddPair(
+            crypto_symbol,
+            stock_symbol,
+            "crypto_stock"  # pair type
         )
 
-        # 注册交易对
-        self.debug("🔗 Registering TSLA trading pair...")
-        self.spread_manager.add_pair(self.tsla_crypto, self.tsla_stock)
+        self.Debug(f"   Pair: {self.tsla_pair.Key}")
 
         # === 4. 数据追踪 ===
         self.tick_count = 0
         self.last_log_time = None
 
-        self.debug("✅ Initialization complete!")
+        self.Debug("✅ Initialization complete!")
 
-    def on_data(self, data: Slice):
-        """处理数据 - 委托给SpreadManager"""
-        if not data.ticks or len(data.ticks) == 0:
+    def OnData(self, data: Slice):
+        """处理数据 - 调用base class来更新TradingPairs，然后收集spread数据"""
+        if not data.Ticks or len(data.Ticks) == 0:
             return
 
         self.tick_count += 1
 
-        # 委托给SpreadManager处理数据并监控价差
-        self.spread_manager.on_data(data)
+        try:
+            # CRITICAL: 调用base class的OnData来触发Framework更新
+            # 这会自动更新TradingPairs的spread计算
+            super().OnData(data)
 
-        # 每小时输出一次状态
-        if len(self.collector.spread_data) > 0:
-            if self.last_log_time is None or (self.time - self.last_log_time).total_seconds() >= 3600:
-                timestamp, spread_pct = self.collector.spread_data[-1]
-                self.debug(
-                    f"📊 {self.time} | Ticks: {self.tick_count:,} | "
-                    f"Spread: {spread_pct*100:.2f}%"
-                )
-                self.last_log_time = self.time
+            # 从TradingPair收集spread数据
+            self.collector.collect_spread_data(self.tsla_pair)
 
-    def on_end_of_algorithm(self):
-        """算法结束 - 绘制价差走势图"""
-        self.debug("\n" + "="*60)
-        self.debug("📊 价差分析统计")
-        self.debug("="*60)
-        self.debug(f"总Tick数: {self.tick_count:,}")
-        self.debug(f"价差数据点数: {len(self.collector.spread_data):,}")
+            # 每小时输出一次状态
+            if len(self.collector.spread_data) > 0:
+                if self.last_log_time is None or (self.Time - self.last_log_time).total_seconds() >= 3600:
+                    timestamp, spread_pct = self.collector.spread_data[-1]
+                    self.Debug(
+                        f"📊 {self.Time} | Ticks: {self.tick_count:,} | "
+                        f"Spread: {spread_pct*100:.2f}%"
+                    )
+                    self.last_log_time = self.Time
+
+        except Exception as e:
+            self.Error(f"❌ Error in OnData: {str(e)}")
+            import traceback
+            self.Debug(traceback.format_exc())
+
+    def OnEndOfAlgorithm(self):
+        """算法结束 - 绘制价差走势图（Framework版本）"""
+        self.Debug("\n" + "="*60)
+        self.Debug("📊 价差分析统计（Framework版本）")
+        self.Debug("="*60)
+        self.Debug(f"总Tick数: {self.tick_count:,}")
+        self.Debug(f"价差数据点数: {len(self.collector.spread_data):,}")
 
         if len(self.collector.spread_data) == 0:
-            self.debug("⚠️ 无价差数据，无法绘图")
+            self.Debug("⚠️ 无价差数据，无法绘图")
             return
 
         # 计算统计数据
@@ -132,30 +157,30 @@ class TSLASpreadAnalysis(QCAlgorithm):
         max_spread = max(spreads)
         avg_spread = sum(spreads) / len(spreads)
 
-        self.debug(f"\n价差统计:")
-        self.debug(f"  最小价差: {min_spread:.2f}%")
-        self.debug(f"  最大价差: {max_spread:.2f}%")
-        self.debug(f"  平均价差: {avg_spread:.2f}%")
+        self.Debug(f"\n价差统计:")
+        self.Debug(f"  最小价差: {min_spread:.2f}%")
+        self.Debug(f"  最大价差: {max_spread:.2f}%")
+        self.Debug(f"  平均价差: {avg_spread:.2f}%")
 
         # 统计价差分布
         below_neg1 = sum(1 for s in spreads if s <= -1.0)
         above_0 = sum(1 for s in spreads if s >= 0.0)
         total = len(spreads)
 
-        self.debug(f"\n价差分布:")
-        self.debug(f"  Spread <= -1%: {below_neg1:,} ({below_neg1/total*100:.1f}%) - 开仓机会")
-        self.debug(f"  Spread >= 0%: {above_0:,} ({above_0/total*100:.1f}%) - 平仓机会")
+        self.Debug(f"\n价差分布:")
+        self.Debug(f"  Spread <= -1%: {below_neg1:,} ({below_neg1/total*100:.1f}%) - 开仓机会")
+        self.Debug(f"  Spread >= 0%: {above_0:,} ({above_0/total*100:.1f}%) - 平仓机会")
 
         # 绘制价差走势图
-        self.debug("\n📈 绘制价差走势图...")
+        self.Debug("\n📈 绘制价差走势图...")
         self._plot_spread_chart()
 
-        self.debug("="*60)
-        self.debug("✅ 价差分析完成")
-        self.debug("="*60)
+        self.Debug("="*60)
+        self.Debug("✅ 价差分析完成")
+        self.Debug("="*60)
 
     def _plot_spread_chart(self):
-        """绘制价差走势图"""
+        """绘制价差走势图（Framework版本）"""
         try:
             # 准备数据
             timestamps = [s[0] for s in self.collector.spread_data]
@@ -186,7 +211,7 @@ class TSLASpreadAnalysis(QCAlgorithm):
             # 设置标签和标题
             ax.set_xlabel('Time (UTC)', fontsize=12)
             ax.set_ylabel('Spread %', fontsize=12)
-            ax.set_title('TSLAUSD vs TSLA Spread Analysis (2025-09-02 to 2025-09-27)', fontsize=14, fontweight='bold')
+            ax.set_title('TSLAUSD vs TSLA Spread Analysis (Framework API)', fontsize=14, fontweight='bold')
             ax.grid(True, alpha=0.3)
             ax.legend(loc='best')
 
@@ -194,13 +219,13 @@ class TSLASpreadAnalysis(QCAlgorithm):
             plt.tight_layout()
 
             # 保存图表 - 使用绝对路径
-            output_path = Path(r"C:\Users\Jagger\Documents\Code\Lean\arbitrage\tests\validate_data\TSLA_spread_analysis.png")
+            output_path = Path(r"C:\Users\Jagger\Documents\Code\Lean\arbitrage\tests\validate_data\TSLA_spread_analysis_framework.png")
             plt.savefig(str(output_path), dpi=150, bbox_inches='tight')
             plt.close()
 
-            self.debug(f"✅ 图表已保存至: {output_path}")
+            self.Debug(f"✅ 图表已保存至: {output_path}")
 
         except Exception as e:
-            self.debug(f"❌ 绘图失败: {str(e)}")
+            self.Debug(f"❌ 绘图失败: {str(e)}")
             import traceback
-            self.debug(traceback.format_exc())
+            self.Debug(traceback.format_exc())

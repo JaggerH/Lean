@@ -3,29 +3,43 @@ Monitoring Context - 统一的监控组件管理器
 
 提供监控组件的统一初始化和访问接口，解耦监控逻辑和业务逻辑。
 
+更新内容 (2025-12-13):
+- 移除了对已废弃的 strategy.execution_models 模块的依赖
+- 定义本地 ExecutionStatus 枚举用于监控目的
+- 保持向后兼容的监控接口
+
 使用方式:
     # 在算法中创建监控上下文
     monitoring = MonitoringContext(self, mode='auto')
 
-    # 初始化组件时注入监控
-    spread_manager = SpreadManager(
-        algorithm=self,
-        monitor_adapter=monitoring.get_spread_monitor()
-    )
-
-    strategy = LongCryptoStrategy(
-        algorithm=self,
-        state_persistence=monitoring.get_state_persistence()
-    )
-
-    order_tracker = monitoring.create_order_tracker(strategy)
+    # 使用监控组件
+    spread_monitor = monitoring.get_spread_monitor()
+    state_persistence = monitoring.get_state_persistence()
+    order_tracker = monitoring.create_order_tracker()
 """
 
 from typing import Optional
+from enum import Enum
 from .redis_writer import TradingRedis
 from .spread_monitor import RedisSpreadMonitor
 from .state_persistence import StatePersistence
 from .order_tracker import OrderTracker
+
+
+class ExecutionStatus(Enum):
+    """
+    执行状态枚举（本地定义，用于监控目的）
+
+    Note: 这是为了兼容旧代码定义的本地枚举。
+    在新的Framework中，执行状态由Framework管理。
+    """
+    New = "New"
+    Submitted = "Submitted"
+    PartiallyFilled = "PartiallyFilled"
+    Filled = "Filled"
+    Canceled = "Canceled"
+    Invalid = "Invalid"
+    Failed = "Failed"
 
 
 class MonitoringContext:
@@ -270,10 +284,10 @@ class MonitoringContext:
         try:
             # ✅ 1. OrderTracker 追踪（所有模式都执行）
             if self.order_tracker:
-                from strategy.execution_models import ExecutionStatus
-                if target.status == ExecutionStatus.New:
+                # 检查 target.status 属性（如果存在）
+                if hasattr(target, 'status') and target.status == ExecutionStatus.New:
                     self.order_tracker.on_execution_target_registered(target)
-                else:
+                elif hasattr(target, 'status'):
                     self.order_tracker.on_execution_target_update(target)
 
             # ✅ 2. StatePersistence 持久化（仅 Live 模式）
