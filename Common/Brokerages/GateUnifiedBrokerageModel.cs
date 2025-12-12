@@ -30,8 +30,38 @@ namespace QuantConnect.Brokerages
     /// Supports simultaneous trading of both Spot (Crypto) and Futures (CryptoFuture) markets
     /// </summary>
     /// <remarks>
-    /// Gate.io Unified Account allows users to trade spot and futures with shared margin.
-    /// Spot balances serve as collateral for futures positions, enabling cross-margin functionality.
+    /// <para><strong>Gate.io Unified Account - Simplified Implementation</strong></para>
+    ///
+    /// <para><strong>Supported Features:</strong></para>
+    /// <list type="bullet">
+    /// <item>Spot holdings (BTC, ETH, etc.) serve as collateral for futures positions</item>
+    /// <item>Currency-specific discount rates (haircuts) applied to spot collateral</item>
+    /// <item>Cross-margin across all futures sharing the same collateral currency</item>
+    /// <item>Tiered maintenance margin rates based on position size</item>
+    /// <item>Futures trading with up to 5x leverage (configurable)</item>
+    /// </list>
+    ///
+    /// <para><strong>Limitations (Simplifications vs Official Gate.io):</strong></para>
+    /// <list type="bullet">
+    /// <item><strong>NO spot margin trading</strong> - spot cannot borrow funds (no USDT/crypto borrowing)</item>
+    /// <item><strong>NO interest payments</strong> - since no borrowing is supported</item>
+    /// <item>Spot leverage is always 1x (cash-only trading)</item>
+    /// <item>3-tier maintenance margin system instead of official 7-tier</item>
+    /// <item>Fixed leverage (no automatic position-size adjustment)</item>
+    /// </list>
+    ///
+    /// <para><strong>Use Case:</strong></para>
+    /// <para>
+    /// User holds spot crypto assets + USDT. Spot assets contribute to futures margin
+    /// with currency-specific discounts. Futures can be traded with leverage. No borrowing involved.
+    /// </para>
+    ///
+    /// <para><strong>Example:</strong></para>
+    /// <code>
+    /// Holdings: $10,000 USDT + 1 BTC ($50,000)
+    /// Total Collateral: $10,000 + ($50,000 × 0.95 discount) = $57,500
+    /// Futures Buying Power: $57,500 × 5x leverage = $287,500
+    /// </code>
     /// </remarks>
     public class GateUnifiedBrokerageModel : DefaultBrokerageModel
     {
@@ -137,6 +167,33 @@ namespace QuantConnect.Brokerages
         /// </summary>
         /// <param name="security">The security to get a buying power model for</param>
         /// <returns>The buying power model for this brokerage/security</returns>
+        /// <remarks>
+        /// <para><strong>Futures (CryptoFuture):</strong></para>
+        /// <list type="bullet">
+        /// <item>Uses UnifiedAccountMarginModel with cross-margin support</item>
+        /// <item>Spot crypto balances contribute as collateral with currency-specific discounts</item>
+        /// <item>Supports up to 5x leverage (configurable via SetLeverage)</item>
+        /// <item>Tiered maintenance margin rates based on position size</item>
+        /// </list>
+        ///
+        /// <para><strong>Spot (Crypto):</strong></para>
+        /// <list type="bullet">
+        /// <item>Uses default cash-based buying power model (NO leverage)</item>
+        /// <item>NO margin trading / NO borrowing supported (simplified implementation)</item>
+        /// <item>Spot holdings serve ONLY as collateral for futures positions</item>
+        /// <item>Leverage is always 1x (cash-only trading)</item>
+        /// </list>
+        ///
+        /// <para><strong>Why Spot Doesn't Use UnifiedAccountMarginModel:</strong></para>
+        /// <para>
+        /// Implementing spot margin trading (borrowing) requires:
+        /// 1. Negative cash balance management (borrowing USDT/crypto)
+        /// 2. Interest payment mechanism for borrowed funds
+        /// 3. Borrow limit checks (exchange liquidity)
+        /// 4. Interest rate fluctuation handling in backtesting
+        /// These features are not currently supported in LEAN's architecture.
+        /// </para>
+        /// </remarks>
         public override IBuyingPowerModel GetBuyingPowerModel(Security security)
         {
             if (security.Type == SecurityType.CryptoFuture)
@@ -151,8 +208,9 @@ namespace QuantConnect.Brokerages
                 );
             }
 
-            // Spot trading uses cash-based buying power
-            // In unified account, spot balances also serve as collateral for futures
+            // Spot trading uses cash-based buying power (NO leverage, NO borrowing)
+            // Spot holdings serve ONLY as collateral for futures positions
+            // If you need spot margin trading (borrowing), this model does NOT support it
             return base.GetBuyingPowerModel(security);
         }
 
