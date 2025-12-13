@@ -27,14 +27,14 @@ class PEPESpreadAnalysis(BaseSpreadAnalysis):
             'leg1_symbol': 'PEPEUSDT',
             'leg1_security_type': SecurityType.Crypto,
             'leg1_market': Market.Gate,
-            'leg1_resolution': Resolution.Tick,  # PEPE价格太小(科学计数法),Orderbook无法解析,使用Tick
+            'leg1_resolution': Resolution.Orderbook,
             'leg1_data_normalization': DataNormalizationMode.Raw,
 
             # Leg 2: Perpetual Futures (永续合约)
             'leg2_symbol': 'PEPEUSDT',
             'leg2_security_type': SecurityType.CryptoFuture,
             'leg2_market': Market.Gate,
-            'leg2_resolution': Resolution.Tick,  # PEPE价格太小(科学计数法),Orderbook无法解析,使用Tick
+            'leg2_resolution': Resolution.Orderbook,
             'leg2_data_normalization': DataNormalizationMode.Raw,
 
             # Backtest Configuration
