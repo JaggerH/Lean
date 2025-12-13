@@ -1,0 +1,9 @@
+{
+  "environment": "backtesting",
+  "algorithm-type-name": "DOGESpreadAnalysis",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/validate_data/test_DOGE_spread.py",
+  "data-folder": "../../../Data/",
+  "close-automatically": true,
+  "show-missing-data-logs": false
+}

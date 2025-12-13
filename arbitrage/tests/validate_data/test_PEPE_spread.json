@@ -1,0 +1,9 @@
+{
+  "environment": "backtesting",
+  "algorithm-type-name": "PEPESpreadAnalysis",
+  "algorithm-language": "Python",
+  "algorithm-location": "../../../arbitrage/tests/validate_data/test_PEPE_spread.py",
+  "data-folder": "../../../Data/",
+  "close-automatically": true,
+  "show-missing-data-logs": false
+}

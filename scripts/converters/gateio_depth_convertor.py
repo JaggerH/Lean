@@ -443,8 +443,9 @@ def convert_daily_orderbook_depth(date_files, dst_root, lean_symbol, date_str):
     # Write to zip file
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         with zf.open(csv_filename, 'w') as f:
-            # Write without header
-            out_df.to_csv(f, index=False, header=False)
+            # Write without header, use float_format to prevent scientific notation
+            # %.10f ensures enough precision for very small prices (like PEPE: 0.000009)
+            out_df.to_csv(f, index=False, header=False, float_format='%.10f')
 
     logger.info(f"  ✅ Created: {zip_path} ({len(out_df)} snapshots)")
 

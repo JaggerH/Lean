@@ -145,6 +145,8 @@ class BaseSpreadAnalysis(AQCAlgorithm):
             security = self.AddEquity(symbol, resolution, market, extended_hours)
         elif security_type == SecurityType.Crypto:
             security = self.AddCrypto(symbol, resolution, market)
+        elif security_type == SecurityType.CryptoFuture:
+            security = self.AddCryptoFuture(symbol, resolution, market)
         elif security_type == SecurityType.Future:
             security = self.AddFuture(symbol, resolution, market)
         else:
@@ -239,12 +241,12 @@ class BaseSpreadAnalysis(AQCAlgorithm):
                 figsize=cfg.get('plot_figsize', (16, 9))
             )
 
-            # 绘制理论价差
+            # 绘制理论价差（连续曲线）
             ax.plot(timestamps, spreads_pct,
-                   linewidth=1.0, color='gray', alpha=0.6,
+                   linewidth=1.5, color='blue', alpha=0.7,
                    label=f'Theoretical Spread ({len(spreads_pct):,} points)')
 
-            # 绘制可执行价差（如果有）
+            # 绘制可执行价差（散点标注）
             if len(self.collector.executable_spread_data) > 0:
                 from QuantConnect.TradingPairs import MarketState
                 crossed_ts = []
@@ -255,9 +257,9 @@ class BaseSpreadAnalysis(AQCAlgorithm):
                         crossed_spreads.append(spread * 100)
 
                 if len(crossed_ts) > 0:
-                    ax.plot(crossed_ts, crossed_spreads,
-                           linewidth=1.2, color='red', alpha=0.8,
-                           label=f'CROSSED Market ({len(crossed_spreads):,} points)')
+                    ax.scatter(crossed_ts, crossed_spreads,
+                              s=30, color='red', alpha=0.8, marker='o',
+                              label=f'CROSSED Market ({len(crossed_spreads):,} points)')
 
             # 添加阈值线
             ax.axhline(y=0, color='black', linestyle='-', linewidth=1.5, alpha=0.5)
