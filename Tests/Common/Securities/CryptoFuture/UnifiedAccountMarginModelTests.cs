@@ -15,8 +15,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NUnit.Framework;
 using QuantConnect.Algorithm;
+using QuantConnect.Brokerages;
 using QuantConnect.Data.Market;
 using QuantConnect.Orders;
 using QuantConnect.Securities;
@@ -36,6 +38,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void SpotAssetsContributeToFuturesMargin()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
 
             // Add USDT cash (base collateral)
             algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
@@ -74,6 +77,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void CurrencyDiscountsAppliedCorrectly(string baseCurrency, decimal expectedDiscount)
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
 
             // Add spot crypto
@@ -134,6 +138,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void MultipleFuturesShareMarginCorrectly()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 50000m, 1.0m);
 
             // Add BTC futures with position
@@ -147,16 +152,16 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             SetPrice(ethFuture, 2000m);
             ethFuture.BuyingPowerModel = new UnifiedAccountMarginModel(leverage: 5);
 
-            // BTC maintenance margin (Tier 2: 2%)
-            var btcMaintenanceMargin = 100000m * 0.02m; // $2,000
+            // BTC initial margin = 100,000 / 5 = 20,000
+            var btcInitialMargin = 100000m / 5m; // $20,000
 
-            // Available margin for ETH = Total collateral - BTC maintenance
-            var availableForETH = 50000m - btcMaintenanceMargin; // $48,000
+            // Available margin for ETH = Total collateral - BTC initial margin
+            var availableForETH = 50000m - btcInitialMargin; // $30,000
 
             var marginRemaining = ethFuture.BuyingPowerModel.GetBuyingPower(
                 new BuyingPowerParameters(algo.Portfolio, ethFuture, OrderDirection.Buy));
 
-            var expectedBuyingPower = availableForETH * 5m; // $240,000
+            var expectedBuyingPower = availableForETH * 5m; // $150,000
 
             Assert.AreEqual((double)expectedBuyingPower, (double)marginRemaining.Value, 1.0,
                 "Multiple futures should share collateral correctly");
@@ -169,6 +174,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void BackwardCompatibility_NoSpotHoldings()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
 
             var btcFuture = algo.AddCryptoFuture("BTCUSDT");
@@ -195,6 +201,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void DifferentQuoteCurrencySpotDoesNotParticipate()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
             algo.Portfolio.SetCash("BTC", 0m, 50000m); // BTC cash, not spot
 
@@ -211,11 +218,13 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             var marginRemaining = btcFuture.BuyingPowerModel.GetBuyingPower(
                 new BuyingPowerParameters(algo.Portfolio, btcFuture, OrderDirection.Buy));
 
-            // Should only use USDT cash, not BTC/USD spot
-            var expectedBuyingPower = 10000m * 5m;
+            // In unified account, all crypto holdings contribute regardless of quote currency
+            // Total margin balance = USDT (10,000) + BTC spot (50,000 * 0.95 discount) = 57,500
+            // Buying power = 57,500 * 5 = 287,500
+            var expectedBuyingPower = (10000m + (50000m * 0.95m)) * 5m;
 
             Assert.AreEqual((double)expectedBuyingPower, (double)marginRemaining.Value, 0.01,
-                "Spot with different quote currency should not contribute");
+                "In unified account, all crypto holdings contribute to margin");
         }
 
         /// <summary>
@@ -225,6 +234,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void ClosingPositionReleasesMarginCorrectly()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 50000m, 1.0m);
 
             var btcFuture = algo.AddCryptoFuture("BTCUSDT");
@@ -238,14 +248,15 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             var marginForClosing = btcFuture.BuyingPowerModel.GetBuyingPower(
                 new BuyingPowerParameters(algo.Portfolio, btcFuture, OrderDirection.Sell));
 
-            // When closing, we release:
-            // - Maintenance margin ($100k * 2% = $2,000)
-            // - Initial margin for that position ($100k / 5 = $20,000)
-            // Available = $50,000 + $2,000 + $20,000 = $72,000
-            // Buying power = $72,000 * 5 = $360,000
+            // When closing, we release margin:
+            // Current available = Total margin - Initial margin = $50,000 - $20,000 = $30,000
+            // Released: Maintenance margin ($100k * 2% = $2,000) + Initial margin ($20,000)
+            // Available after = $30,000 + $2,000 + $20,000 = $52,000
+            // Buying power = $52,000 * 5 = $260,000
 
+            var currentAvailable = 50000m - 20000m; // $30,000
             var expectedReleasedMargin = 2000m + 20000m; // Maintenance + Initial
-            var expectedBuyingPower = (50000m + expectedReleasedMargin) * 5m;
+            var expectedBuyingPower = (currentAvailable + expectedReleasedMargin) * 5m;
 
             Assert.Greater((double)marginForClosing.Value, (double)(50000m * 5m),
                 "Closing position should have more buying power than opening");
@@ -260,6 +271,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void CustomCurrencyDiscounts()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
 
             var btcSpot = algo.AddCrypto("BTCUSDT");
@@ -272,6 +284,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             // Custom discounts: BTC at 90% instead of default 95%
             var customDiscounts = new Dictionary<string, decimal>
             {
+                { "USDT", 1.0m },  // Must include USDT to avoid default 85% haircut
                 { "BTC", 0.90m }
             };
 
@@ -283,7 +296,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             var marginRemaining = btcFuture.BuyingPowerModel.GetBuyingPower(
                 new BuyingPowerParameters(algo.Portfolio, btcFuture, OrderDirection.Buy));
 
-            // Expected: 10,000 + (50,000 * 0.90) = 55,000 USDT
+            // Expected: 10,000 (USDT at 100%) + (50,000 * 0.90) = 55,000 USDT
             var expectedCollateral = 10000m + (50000m * 0.90m);
             var expectedBuyingPower = expectedCollateral * 5m;
 
@@ -334,6 +347,7 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
         public void ComplexScenario_MultipleAssetsAndFutures()
         {
             var algo = GetAlgorithm();
+            ClearAllCash(algo);
             algo.Portfolio.SetCash("USDT", 20000m, 1.0m);
 
             // Add multiple spot holdings
@@ -363,11 +377,11 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
             // Total = 53,250 USDT
             var expectedCollateral = 20000m + (0.5m * 50000m * 0.95m) + (5m * 2000m * 0.95m);
 
-            // BTC position maintenance margin (Tier 2: 2%)
-            var btcMaintenance = 50000m * 0.02m; // $1,000
+            // BTC position initial margin = $50,000 / 5 = $10,000
+            var btcInitialMargin = 50000m / 5m; // $10,000
 
-            // Available for ETH = Total - BTC maintenance
-            var availableForETH = expectedCollateral - btcMaintenance;
+            // Available for ETH = Total margin balance - BTC initial margin
+            var availableForETH = expectedCollateral - btcInitialMargin;
 
             var ethMargin = ethFuture.BuyingPowerModel.GetBuyingPower(
                 new BuyingPowerParameters(algo.Portfolio, ethFuture, OrderDirection.Buy));
@@ -378,11 +392,310 @@ namespace QuantConnect.Tests.Common.Securities.CryptoFuture
                 "Complex scenario with multiple assets should calculate correctly");
         }
 
+        /// <summary>
+        /// Test USDT borrowing (negative cash balance) reduces available margin
+        /// </summary>
+        [Test]
+        public void NegativeUSDTBalanceRepresentsBorrowing()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+
+            // Start with 10,000 USDT, then "borrow" 5,000 (set to -5000)
+            algo.Portfolio.SetCash("USDT", -5000m, 1.0m);
+
+            // Add BTC spot as collateral
+            var btcSpot = algo.AddCrypto("BTCUSDT");
+            SetPrice(btcSpot, 50000m);
+            btcSpot.Holdings.SetHoldings(50000m, 1m); // 1 BTC = $50,000
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+            btcFuture.BuyingPowerModel = new UnifiedAccountMarginModel(leverage: 5);
+
+            // Total margin balance = BTC value * discount - USDT borrowing
+            // = (50,000 * 0.95) - 5,000 = 47,500 - 5,000 = 42,500
+            // Borrowing initial margin = 5,000 * 0.25 = 1,250 (using default 25% rate)
+            // Available margin = 42,500 - 1,250 = 41,250
+            // Buying power = 41,250 * 5 = 206,250
+
+            var marginRemaining = btcFuture.BuyingPowerModel.GetBuyingPower(
+                new BuyingPowerParameters(algo.Portfolio, btcFuture, OrderDirection.Buy));
+
+            var btcCollateral = 50000m * 0.95m; // 47,500
+            var totalMarginBalance = btcCollateral + (-5000m); // 42,500 (negative USDT reduces balance)
+            var borrowingInitialMargin = 5000m * 0.25m; // 1,250
+            var availableMargin = totalMarginBalance - borrowingInitialMargin; // 41,250
+            var expectedBuyingPower = availableMargin * 5m; // 206,250
+
+            Assert.AreEqual((double)expectedBuyingPower, (double)marginRemaining.Value, 100.0,
+                "Negative USDT should reduce available margin as borrowing");
+        }
+
+        /// <summary>
+        /// Test borrowing initial margin calculation
+        /// </summary>
+        [Test]
+        public void BorrowingInitialMarginCalculation()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+
+            // Borrow 10,000 USDT (negative balance)
+            algo.Portfolio.SetCash("USDT", -10000m, 1.0m);
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+
+            var model = new UnifiedAccountMarginModel(
+                leverage: 5,
+                borrowingMarginRates: new Dictionary<string, decimal> { { "USDT", 0.30m } } // 30% custom rate
+            );
+            btcFuture.BuyingPowerModel = model;
+
+            // Borrowing initial margin = 10,000 * 0.30 = 3,000
+            var expectedBorrowingMargin = 10000m * 0.30m;
+
+            // Since we have no collateral and 10k borrowed, total margin balance = -10,000
+            // Available margin = -10,000 - 3,000 = -13,000
+            // Buying power should be 0 (can't trade with negative available margin)
+
+            var marginRemaining = btcFuture.BuyingPowerModel.GetBuyingPower(
+                new BuyingPowerParameters(algo.Portfolio, btcFuture, OrderDirection.Buy));
+
+            Assert.AreEqual(0, (double)marginRemaining.Value, 0.01,
+                "Should have zero buying power with only borrowing and no collateral");
+        }
+
+        /// <summary>
+        /// Test GetAccountRiskRatio method
+        /// </summary>
+        [Test]
+        public void GetAccountRiskRatioCalculation()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+            algo.Portfolio.SetCash("USDT", 50000m, 1.0m);
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+
+            var model = new UnifiedAccountMarginModel(leverage: 5, defaultMaintenanceRate: 0.02m);
+            btcFuture.BuyingPowerModel = model;
+
+            // Open a position: 2 BTC = $100,000
+            btcFuture.Holdings.SetHoldings(50000m, 2m);
+
+            // Total margin balance = 50,000 USDT
+            // Total maintenance margin = 100,000 * 0.02 = 2,000
+            // Risk ratio = (50,000 / 2,000) * 100 = 2,500%
+
+            var riskRatio = model.GetAccountRiskRatio(algo.Portfolio);
+            var expectedRatio = (50000m / 2000m) * 100m;
+
+            Assert.AreEqual((double)expectedRatio, (double)riskRatio, 0.01,
+                "Account risk ratio should be calculated correctly");
+        }
+
+        /// <summary>
+        /// Test GetAvailableMargin method
+        /// </summary>
+        [Test]
+        public void GetAvailableMarginCalculation()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+            algo.Portfolio.SetCash("USDT", 50000m, 1.0m);
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+
+            var model = new UnifiedAccountMarginModel(leverage: 5);
+            btcFuture.BuyingPowerModel = model;
+
+            // Open a position: 1 BTC = $50,000
+            btcFuture.Holdings.SetHoldings(50000m, 1m);
+
+            // Total margin balance = 50,000 USDT
+            // Futures initial margin = 50,000 / 5 = 10,000
+            // Available margin = 50,000 - 10,000 = 40,000
+
+            var availableMargin = model.GetAvailableMargin(algo.Portfolio);
+            var expectedAvailable = 50000m - 10000m;
+
+            Assert.AreEqual((double)expectedAvailable, (double)availableMargin, 0.01,
+                "Available margin should be total balance minus initial margin");
+        }
+
+        /// <summary>
+        /// Test risk ratio with borrowing
+        /// </summary>
+        [Test]
+        public void RiskRatioWithBorrowing()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+
+            // Start with borrowed 5,000 USDT
+            algo.Portfolio.SetCash("USDT", -5000m, 1.0m);
+
+            // Add BTC spot as collateral: 1 BTC = $50,000
+            var btcSpot = algo.AddCrypto("BTCUSDT");
+            SetPrice(btcSpot, 50000m);
+            btcSpot.Holdings.SetHoldings(50000m, 1m);
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+
+            var model = new UnifiedAccountMarginModel(
+                leverage: 5,
+                defaultMaintenanceRate: 0.02m,
+                borrowingMarginRates: new Dictionary<string, decimal> { { "USDT", 0.25m } }
+            );
+            btcFuture.BuyingPowerModel = model;
+
+            // Open futures position: 1 BTC = $50,000
+            btcFuture.Holdings.SetHoldings(50000m, 1m);
+
+            // Total margin balance:
+            // = (BTC * price * discount) + (USDT balance)
+            // = (1 * 50,000 * 0.95) + (-5,000)
+            // = 47,500 - 5,000 = 42,500
+
+            // Total maintenance margin:
+            // = Futures maintenance + Borrowing maintenance (tiered)
+            // = (50,000 * 0.02) + (5,000 * 1% tiered rate)
+            // = 1,000 + 50 = 1,050
+
+            // Risk ratio = (42,500 / 1,050) * 100 = 4,047.62%
+
+            var riskRatio = model.GetAccountRiskRatio(algo.Portfolio);
+            var expectedRatio = (42500m / 1050m) * 100m;
+
+            Assert.AreEqual((double)expectedRatio, (double)riskRatio, 1.0,
+                "Risk ratio should account for borrowing reducing margin balance");
+        }
+
+        /// <summary>
+        /// Test that borrowing margin rates are validated
+        /// </summary>
+        [Test]
+        public void BorrowingMarginRateValidation()
+        {
+            Assert.Throws<ArgumentException>(() =>
+            {
+                new UnifiedAccountMarginModel(
+                    borrowingMarginRates: new Dictionary<string, decimal> { { "USDT", 1.5m } } // Invalid: > 1
+                );
+            }, "Should reject borrowing margin rate > 1");
+
+            Assert.Throws<ArgumentException>(() =>
+            {
+                new UnifiedAccountMarginModel(
+                    borrowingMarginRates: new Dictionary<string, decimal> { { "USDT", -0.1m } } // Invalid: < 0
+                );
+            }, "Should reject negative borrowing margin rate");
+        }
+
+        /// <summary>
+        /// Test scenario: Large collateral, small borrowing should have high risk ratio
+        /// </summary>
+        [Test]
+        public void LargeCollateralSmallBorrowingHighRiskRatio()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+
+            // 100,000 USDT collateral, 5,000 borrowed
+            algo.Portfolio.SetCash("USDT", 95000m, 1.0m); // Net: 95k in account
+
+            var btcFuture = algo.AddCryptoFuture("BTCUSDT");
+            SetPrice(btcFuture, 50000m);
+
+            var model = new UnifiedAccountMarginModel(leverage: 5, defaultMaintenanceRate: 0.02m);
+            btcFuture.BuyingPowerModel = model;
+
+            // Small position: 0.5 BTC = $25,000
+            btcFuture.Holdings.SetHoldings(50000m, 0.5m);
+
+            // Total margin balance = 95,000
+            // Maintenance margin = 25,000 * 0.02 = 500
+            // Risk ratio = (95,000 / 500) * 100 = 19,000%
+
+            var riskRatio = model.GetAccountRiskRatio(algo.Portfolio);
+
+            Assert.Greater((double)riskRatio, 10000.0, "Should have very high risk ratio with large collateral");
+        }
+
+        /// <summary>
+        /// Test that Crypto naked short is prohibited through GateUnifiedBrokerageModel
+        /// </summary>
+        [Test]
+        public void CryptoNakedShortIsProhibited()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+            algo.SetBrokerageModel(new GateUnifiedBrokerageModel());
+
+            algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
+
+            var btcSpot = algo.AddCrypto("BTCUSDT");
+            SetPrice(btcSpot, 50000m);
+
+            // Try to place a sell order without holding any BTC (naked short)
+            var order = new MarketOrder(btcSpot.Symbol, -0.1m, DateTime.UtcNow);
+
+            var canSubmit = algo.BrokerageModel.CanSubmitOrder(btcSpot, order, out var message);
+
+            Assert.IsFalse(canSubmit, "Naked short should be prohibited");
+            Assert.IsNotNull(message, "Should have error message");
+            Assert.AreEqual("NakedShortNotAllowed", message.Code, "Should have correct error code");
+        }
+
+        /// <summary>
+        /// Test that Crypto can sell to close existing long position
+        /// </summary>
+        [Test]
+        public void CryptoCanSellToCloseLongPosition()
+        {
+            var algo = GetAlgorithm();
+            ClearAllCash(algo);
+            algo.SetBrokerageModel(new GateUnifiedBrokerageModel());
+
+            algo.Portfolio.SetCash("USDT", 10000m, 1.0m);
+
+            var btcSpot = algo.AddCrypto("BTCUSDT");
+            SetPrice(btcSpot, 50000m);
+
+            // Hold 1 BTC
+            btcSpot.Holdings.SetHoldings(50000m, 1m);
+
+            // Try to sell 0.5 BTC (closing half of long position)
+            var order = new MarketOrder(btcSpot.Symbol, -0.5m, DateTime.UtcNow);
+
+            var canSubmit = algo.BrokerageModel.CanSubmitOrder(btcSpot, order, out var message);
+
+            Assert.IsTrue(canSubmit, "Selling to close long position should be allowed");
+            Assert.IsNull(message, "Should not have error message");
+        }
+
         private static QCAlgorithm GetAlgorithm()
         {
             var algo = new AlgorithmStub();
             algo.SetFinishedWarmingUp();
             return algo;
+        }
+
+        /// <summary>
+        /// Clears all cash from the portfolio to start with a clean slate
+        /// </summary>
+        private static void ClearAllCash(QCAlgorithm algo)
+        {
+            var cashesToClear = algo.Portfolio.CashBook.Keys.ToList();
+            foreach (var currency in cashesToClear)
+            {
+                algo.Portfolio.SetCash(currency, 0m, 1.0m);
+            }
         }
 
         private static void SetPrice(Security security, decimal price)
