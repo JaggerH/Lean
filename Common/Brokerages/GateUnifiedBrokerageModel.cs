@@ -112,18 +112,21 @@ namespace QuantConnect.Brokerages
         /// <summary>
         /// Gets the leverage for the specified security
         /// Returns different leverage based on security type:
-        /// - Spot (Crypto): 1x (NO leverage, cash-only trading)
-        ///   Note: Spot holdings serve as collateral for futures but cannot borrow for spot trading
+        /// - Spot (Crypto): 2x (via USDT borrowing in unified account)
         /// - Futures (CryptoFuture): 5x (configurable via SetLeverage, max 100x for major pairs)
         /// </summary>
         /// <param name="security">The security to get leverage for</param>
         /// <returns>The leverage to use for this security</returns>
         /// <remarks>
-        /// Simplified Implementation:
-        /// - Spot margin trading (borrowing) is NOT supported
-        /// - Spot leverage is always 1x (cash-only)
-        /// - Only futures can use leverage (default 5x)
-        /// - Spot assets contribute to futures margin with currency-specific discounts
+        /// Unified Account Implementation:
+        /// - Spot (Crypto): 2x leverage through USDT borrowing
+        ///   * Long-only (naked short prohibited)
+        ///   * Borrowing rate: 25% initial margin = max 4x theoretical, limited to 2x in practice
+        ///   * Tiered maintenance margin rates apply
+        /// - Futures (CryptoFuture): 5x default leverage
+        ///   * Both long and short positions allowed
+        ///   * Adjustable via SetLeverage
+        /// - Cross-margin: Spot and futures share the same margin pool
         /// </remarks>
         public override decimal GetLeverage(Security security)
         {
@@ -134,7 +137,7 @@ namespace QuantConnect.Brokerages
 
             return security.Type switch
             {
-                SecurityType.Crypto => 1m,         // Spot: NO leverage (cash-only, no borrowing)
+                SecurityType.Crypto => 2m,         // Spot: 2x leverage (via USDT borrowing, long-only)
                 SecurityType.CryptoFuture => 5m,   // Futures: 5x default leverage (adjustable via SetLeverage)
                 _ => throw new ArgumentException(
                     $"Gate.io Unified Account does not support security type {security.Type}. " +
@@ -163,54 +166,52 @@ namespace QuantConnect.Brokerages
 
         /// <summary>
         /// Gets a new buying power model for the security
-        /// Different models are used for Spot vs Futures trading
+        /// Both Spot and Futures use UnifiedAccountMarginModel for cross-margin support
         /// </summary>
         /// <param name="security">The security to get a buying power model for</param>
         /// <returns>The buying power model for this brokerage/security</returns>
         /// <remarks>
-        /// <para><strong>Futures (CryptoFuture):</strong></para>
+        /// <para><strong>Unified Account Model (Both Crypto and CryptoFuture):</strong></para>
         /// <list type="bullet">
-        /// <item>Uses UnifiedAccountMarginModel with cross-margin support</item>
-        /// <item>Spot crypto balances contribute as collateral with currency-specific discounts</item>
-        /// <item>Supports up to 5x leverage (configurable via SetLeverage)</item>
-        /// <item>Tiered maintenance margin rates based on position size</item>
+        /// <item>Cross-margin: All positions share the same margin pool</item>
+        /// <item>Spot crypto holdings serve as collateral with currency-specific discounts</item>
+        /// <item>USDT borrowing supported (negative CashBook balance)</item>
+        /// <item>Tiered maintenance margin rates for both futures and borrowing</item>
         /// </list>
         ///
         /// <para><strong>Spot (Crypto):</strong></para>
         /// <list type="bullet">
-        /// <item>Uses default cash-based buying power model (NO leverage)</item>
-        /// <item>NO margin trading / NO borrowing supported (simplified implementation)</item>
-        /// <item>Spot holdings serve ONLY as collateral for futures positions</item>
-        /// <item>Leverage is always 1x (cash-only trading)</item>
+        /// <item>Leverage: 2x (via USDT borrowing)</item>
+        /// <item>Long-only: Naked short selling is prohibited (enforced in CanSubmitOrder)</item>
+        /// <item>Borrowing: Can borrow USDT to increase buying power</item>
+        /// <item>Borrowing margin rate: 25% initial, tiered maintenance rates</item>
         /// </list>
         ///
-        /// <para><strong>Why Spot Doesn't Use UnifiedAccountMarginModel:</strong></para>
-        /// <para>
-        /// Implementing spot margin trading (borrowing) requires:
-        /// 1. Negative cash balance management (borrowing USDT/crypto)
-        /// 2. Interest payment mechanism for borrowed funds
-        /// 3. Borrow limit checks (exchange liquidity)
-        /// 4. Interest rate fluctuation handling in backtesting
-        /// These features are not currently supported in LEAN's architecture.
-        /// </para>
+        /// <para><strong>Futures (CryptoFuture):</strong></para>
+        /// <list type="bullet">
+        /// <item>Leverage: 5x (configurable via SetLeverage)</item>
+        /// <item>Both long and short positions allowed</item>
+        /// <item>Uses same collateral pool as spot</item>
+        /// <item>Tiered maintenance margin rates based on position size</item>
+        /// </list>
         /// </remarks>
         public override IBuyingPowerModel GetBuyingPowerModel(Security security)
         {
-            if (security.Type == SecurityType.CryptoFuture)
+            if (security.Type == SecurityType.Crypto || security.Type == SecurityType.CryptoFuture)
             {
-                // Futures use unified account margin model with cross-margin support
-                // Spot crypto balances contribute as collateral for futures positions
-                // with currency-specific discount rates (haircuts)
+                // Both Crypto and CryptoFuture use unified account margin model
+                // This enables:
+                // 1. Cross-margin between spot and futures
+                // 2. Spot holdings as collateral for futures
+                // 3. USDT borrowing for spot trading (up to 2x leverage)
+                // 4. Tiered maintenance margin rates
                 return new UnifiedAccountMarginModel(
-                    leverage: GetLeverage(security),
-                    defaultMaintenanceRate: 0.02m,  // 2% mid-tier maintenance margin
+                    leverage: GetLeverage(security),      // Crypto: 2x, Future: 5x
+                    defaultMaintenanceRate: 0.02m,        // 2% mid-tier maintenance margin
                     maintenanceAmount: 0
                 );
             }
 
-            // Spot trading uses cash-based buying power (NO leverage, NO borrowing)
-            // Spot holdings serve ONLY as collateral for futures positions
-            // If you need spot margin trading (borrowing), this model does NOT support it
             return base.GetBuyingPowerModel(security);
         }
 
@@ -280,6 +281,24 @@ namespace QuantConnect.Brokerages
                 message = new BrokerageMessageEvent(BrokerageMessageType.Warning, "NotSupported",
                     $"Order quantity {order.Quantity} must be a multiple of lot size {lotSize}");
                 return false;
+            }
+
+            // Prohibit naked short selling for Crypto (spot)
+            // Only allow selling to close existing long positions
+            if (security.Type == SecurityType.Crypto && order.Quantity < 0)
+            {
+                var currentHoldings = security.Holdings.Quantity;
+                var sellQuantity = Math.Abs(order.Quantity);
+
+                // Check if this is a naked short (selling more than we have)
+                if (sellQuantity > currentHoldings)
+                {
+                    message = new BrokerageMessageEvent(BrokerageMessageType.Warning, "NakedShortNotAllowed",
+                        $"Gate.io Unified Account does not allow naked short selling for Crypto (spot). " +
+                        $"Current holdings: {currentHoldings}, attempting to sell: {sellQuantity}. " +
+                        $"Only selling to close long positions is allowed.");
+                    return false;
+                }
             }
 
             return base.CanSubmitOrder(security, order, out message);
